@@ -47,6 +47,15 @@ def shell_quote(s: str) -> str:
     return "'" + s.replace("'", "'\\''") + "'"
 
 
+def _display_path(p: str) -> str:
+    home = os.path.expanduser("~")
+    if p == home:
+        return "~"
+    if p.startswith(home + os.sep):
+        return "~" + p[len(home):]
+    return p
+
+
 _CONTROL_CHAR_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 
 
@@ -81,7 +90,8 @@ small{color:#888}
   <h2 style="margin:0">claude-launcher</h2>
   <small>opens iTerm2 tab and runs <code>cl</code></small>
   <form class="row" method="post" action="/launch">
-    <input name="dir" placeholder="subdir of {projects_root} (blank = {default_dir})" autocomplete="off">
+    <input name="dir" placeholder="subdir of {projects_root}" autocomplete="off">
+    <small>blank &rarr; {default_dir}</small>
     <button type="submit">go</button>
   </form>
 </body></html>
@@ -89,8 +99,8 @@ small{color:#888}
 
 INDEX_HTML = (
     INDEX_HTML
-    .replace("{projects_root}", html.escape(PROJECTS_ROOT))
-    .replace("{default_dir}", html.escape(DEFAULT_DIR))
+    .replace("{projects_root}", html.escape(_display_path(PROJECTS_ROOT)))
+    .replace("{default_dir}", html.escape(_display_path(DEFAULT_DIR)))
 )
 
 
