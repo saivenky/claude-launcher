@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  claude-launcher LaunchAgent template.
+
+  Before loading:
+    1. Replace __SERVER_PY__ with the absolute path to server.py
+       e.g. /Users/you/projects/claude-launcher/server.py
+    2. (Optional) Adjust EnvironmentVariables.PATH if your `python3`
+       lives somewhere unusual.
+    3. Copy to ~/Library/LaunchAgents/
+    4. launchctl load ~/Library/LaunchAgents/com.saivenky.claude-launcher.plist
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.saivenky.claude-launcher</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/bin/env</string>
+        <string>python3</string>
+        <string>__SERVER_PY__</string>
+    </array>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+    </dict>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>KeepAlive</key>
+    <true/>
+
+    <key>StandardOutPath</key>
+    <string>/tmp/claude-launcher.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>/tmp/claude-launcher.log</string>
+
+    <key>ProcessType</key>
+    <string>Background</string>
+</dict>
+</plist>
