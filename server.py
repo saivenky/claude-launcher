@@ -9,9 +9,6 @@ import re
 import subprocess
 import sys
 
-if sys.platform != "darwin":
-    sys.exit("claude-launcher: macOS only (uses AppleScript + iTerm2)")
-
 HOST = os.environ.get("CLAUDE_LAUNCHER_HOST", "0.0.0.0")
 PORT = int(os.environ.get("CLAUDE_LAUNCHER_PORT", "8765"))
 DEFAULT_DIR = os.path.expanduser(os.environ.get("CLAUDE_LAUNCHER_DEFAULT_DIR", "~"))
@@ -187,6 +184,8 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main() -> None:
+    if sys.platform != "darwin":
+        sys.exit("claude-launcher: macOS only (uses AppleScript + iTerm2)")
     server = ThreadingHTTPServer((HOST, PORT), Handler)
     print(f"claude-launcher listening on {HOST}:{PORT}", file=sys.stderr)
     try:
