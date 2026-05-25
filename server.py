@@ -75,25 +75,35 @@ INDEX_HTML = """<!doctype html>
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; form-action 'self'">
 <title>cl</title>
 <style>
-body{font-family:-apple-system,system-ui,sans-serif;margin:0;padding:2rem;
-  display:flex;flex-direction:column;gap:1rem;align-items:center;
-  background:#111;color:#eee;min-height:100vh;justify-content:center}
-button,a.btn{font-size:1.4rem;padding:1.2rem 2rem;border-radius:12px;
-  border:none;background:#e85d3a;color:#fff;text-decoration:none;
-  width:100%;max-width:360px;text-align:center;cursor:pointer}
-input{font-size:1.1rem;padding:0.8rem 1rem;border-radius:10px;border:1px solid #444;
-  background:#222;color:#eee;width:100%;max-width:360px;box-sizing:border-box}
-.row{display:flex;flex-direction:column;gap:0.6rem;align-items:center;width:100%}
-small{color:#888}
+:root{--bg:#0e0f12;--fg:#d6d6d6;--dim:#6b7280;--prompt:#7fcd9b;--accent:#e8b65a;--input:#1a1c20}
+*{box-sizing:border-box}
+body{margin:0;padding:2rem 1rem;font:15px/1.5 "SF Mono","Menlo","Consolas",ui-monospace,monospace;
+  background:var(--bg);color:var(--fg);min-height:100vh}
+main{max-width:520px;margin:0 auto}
+.label{color:var(--dim);margin-bottom:1.25rem}
+.label b{color:var(--fg);font-weight:600}
+.cmd{display:flex;flex-wrap:wrap;align-items:baseline;column-gap:0;row-gap:.25rem;white-space:pre}
+.prompt{color:var(--prompt)}
+.input{flex:1 1 12ch;min-width:8ch;background:var(--input);color:var(--accent);
+  border:0;border-bottom:1px dashed var(--dim);font:inherit;padding:.15rem .4rem;outline:0;
+  caret-color:var(--accent)}
+.input::placeholder{color:#4b5563}
+.input:focus{border-bottom-color:var(--accent)}
+.go{margin-top:1.5rem;background:transparent;border:1px solid var(--fg);color:var(--fg);
+  font:inherit;padding:.5rem 1.5rem;cursor:pointer;letter-spacing:.05em}
+.go:hover,.go:active{background:var(--fg);color:var(--bg)}
+.hint{color:var(--dim);margin-top:1rem;font-size:13px}
+.hint code{color:var(--fg)}
 </style></head>
 <body>
-  <h2 style="margin:0">claude-launcher</h2>
-  <small>opens iTerm2 tab and runs <code>cl</code></small>
-  <form class="row" method="post" action="/launch">
-    <input name="dir" placeholder="subdir of {projects_root}" autocomplete="off">
-    <small>blank &rarr; {default_dir}</small>
-    <button type="submit">go</button>
+<main>
+  <div class="label"><b>claude-launcher</b> &middot; tap to edit, then launch</div>
+  <form method="post" action="/launch">
+    <div class="cmd"><span class="prompt">$ </span>cd {projects_root}/<input class="input" name="dir" autocomplete="off" placeholder="subdir"> &amp;&amp; cl</div>
+    <button class="go" type="submit">launch</button>
+    <div class="hint">blank &rarr; <code>{default_dir}</code></div>
   </form>
+</main>
 </body></html>
 """
 
