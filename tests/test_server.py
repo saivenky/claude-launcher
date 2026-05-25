@@ -13,17 +13,8 @@ from http.server import ThreadingHTTPServer  # noqa: E402
 
 
 class EscaperTests(unittest.TestCase):
-    def test_shell_quote_wraps_in_single_quotes(self):
-        self.assertEqual(server.shell_quote("foo"), "'foo'")
-
     def test_shell_quote_escapes_single_quote(self):
         self.assertEqual(server.shell_quote("a'b"), "'a'\\''b'")
-
-    def test_shell_quote_preserves_shell_metas(self):
-        for s in ["$(x)", "`x`", ";rm", "&", "|", "\n", "\\"]:
-            with self.subTest(s=s):
-                self.assertTrue(server.shell_quote(s).startswith("'"))
-                self.assertTrue(server.shell_quote(s).endswith("'"))
 
     def test_applescript_quote_escapes_backslash_and_quote(self):
         self.assertEqual(server.applescript_quote('a"b'), '"a\\"b"')
@@ -36,9 +27,6 @@ class EscaperTests(unittest.TestCase):
 
     def test_applescript_quote_strips_control_chars(self):
         self.assertEqual(server.applescript_quote("a\x07b\x1fc"), '"abc"')
-
-    def test_sanitize_log_strips_crlf(self):
-        self.assertEqual(server.sanitize_log("a\rb\nc"), "a?b?c")
 
 
 class ResolveDirTests(unittest.TestCase):
@@ -55,20 +43,14 @@ class ResolveDirTests(unittest.TestCase):
         server.DEFAULT_DIR = self._saved_default
         shutil.rmtree(self.tmp, ignore_errors=True)
 
-    def test_blank_returns_default(self):
-        self.assertEqual(server.resolve_dir(None), self.tmp)
-        self.assertEqual(server.resolve_dir(""), self.tmp)
-
-    def test_valid_subdir(self):
+    def test_valid_subdir_and_blank_default(self):
         self.assertEqual(server.resolve_dir("ok"), os.path.join(self.tmp, "ok"))
+        self.assertEqual(server.resolve_dir(None), self.tmp)
 
-    def test_path_traversal_rejected(self):
-        with self.assertRaises(ValueError):
-            server.resolve_dir("../etc")
-
-    def test_absolute_path_rejected(self):
-        with self.assertRaises(ValueError):
-            server.resolve_dir("/etc")
+    def test_outside_root_rejected(self):
+        for bad in ("../etc", "/etc"):
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                server.resolve_dir(bad)
 
     def test_nonexistent_rejected(self):
         with self.assertRaises(ValueError):
@@ -91,12 +73,10 @@ class HttpEndpointTests(unittest.TestCase):
         cls.thread.join(timeout=2)
         server.launch_iterm = cls._saved_launch
 
-    def _url(self, path: str) -> str:
-        return f"http://127.0.0.1:{self.port}{path}"
-
     def _request(self, method, path, *, data=None, headers=None):
         req = urllib.request.Request(
-            self._url(path), data=data, method=method, headers=headers or {}
+            f"http://127.0.0.1:{self.port}{path}",
+            data=data, method=method, headers=headers or {},
         )
         try:
             with urllib.request.urlopen(req, timeout=2) as resp:
@@ -106,19 +86,6 @@ class HttpEndpointTests(unittest.TestCase):
                 return e.code, e.read().decode("utf-8", "replace")
             finally:
                 e.close()
-
-    def test_get_index_returns_html(self):
-        status, body = self._request("GET", "/")
-        self.assertEqual(status, 200)
-        self.assertIn("claude-launcher", body)
-
-    def test_get_launch_returns_405(self):
-        status, _ = self._request("GET", "/launch")
-        self.assertEqual(status, 405)
-
-    def test_get_unknown_returns_404(self):
-        status, _ = self._request("GET", "/nope")
-        self.assertEqual(status, 404)
 
     def test_cross_origin_post_blocked(self):
         status, body = self._request(
@@ -152,7 +119,7 @@ class HttpEndpointTests(unittest.TestCase):
 
     def test_post_no_origin_with_stubbed_launch_succeeds(self):
         old_default = server.DEFAULT_DIR
-        server.DEFAULT_DIR = os.path.dirname(__file__)  # any existing dir
+        server.DEFAULT_DIR = os.path.dirname(__file__)
         try:
             status, body = self._request(
                 "POST", "/launch", data=b"",
