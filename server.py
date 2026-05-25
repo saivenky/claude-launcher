@@ -9,10 +9,14 @@ import re
 import subprocess
 import sys
 
+if sys.platform != "darwin":
+    sys.exit("claude-launcher: macOS only (uses AppleScript + iTerm2)")
+
 HOST = os.environ.get("CLAUDE_LAUNCHER_HOST", "0.0.0.0")
 PORT = int(os.environ.get("CLAUDE_LAUNCHER_PORT", "8765"))
 DEFAULT_DIR = os.path.expanduser(os.environ.get("CLAUDE_LAUNCHER_DEFAULT_DIR", "~"))
 PROJECTS_ROOT = os.path.expanduser(os.environ.get("CLAUDE_LAUNCHER_PROJECTS_ROOT", "~/projects"))
+COMMAND = os.environ.get("CLAUDE_LAUNCHER_COMMAND", "cl")
 
 
 def resolve_dir(dir_param: str | None) -> str:
@@ -26,7 +30,7 @@ def resolve_dir(dir_param: str | None) -> str:
 
 
 def launch_iterm(workdir: str) -> None:
-    cmd = f"cd {shell_quote(workdir)} && cl"
+    cmd = f"cd {shell_quote(workdir)} && {COMMAND}"
     script = f'''
 tell application "iTerm"
     activate
