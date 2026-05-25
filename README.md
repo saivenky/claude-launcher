@@ -57,7 +57,9 @@ A template is in `launchd/com.saivenky.claude-launcher.plist`.
 ```sh
 cp launchd/com.saivenky.claude-launcher.plist ~/Library/LaunchAgents/
 # Edit: replace __SERVER_PY__ with the absolute path to server.py
-launchctl load ~/Library/LaunchAgents/com.saivenky.claude-launcher.plist
+launchctl load   ~/Library/LaunchAgents/com.saivenky.claude-launcher.plist
+launchctl unload ~/Library/LaunchAgents/com.saivenky.claude-launcher.plist  # stop
+tail -F /tmp/claude-launcher.log                                            # logs
 ```
 
 ## License
