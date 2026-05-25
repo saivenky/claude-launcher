@@ -4,6 +4,7 @@ interfaces so a Tailscale device (e.g. phone) can hit it."""
 
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
+import html
 import os
 import re
 import subprocess
@@ -80,11 +81,17 @@ small{color:#888}
   <h2 style="margin:0">claude-launcher</h2>
   <small>opens iTerm2 tab and runs <code>cl</code></small>
   <form class="row" method="post" action="/launch">
-    <input name="dir" placeholder="subdir of projects root (blank = default dir)" autocomplete="off">
+    <input name="dir" placeholder="subdir of {projects_root} (blank = {default_dir})" autocomplete="off">
     <button type="submit">go</button>
   </form>
 </body></html>
 """
+
+INDEX_HTML = (
+    INDEX_HTML
+    .replace("{projects_root}", html.escape(PROJECTS_ROOT))
+    .replace("{default_dir}", html.escape(DEFAULT_DIR))
+)
 
 
 MAX_BODY_BYTES = 4096
