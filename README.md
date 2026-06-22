@@ -1,14 +1,22 @@
 # claude-launcher
 
-Tiny HTTP server that opens a new iTerm2 tab and launches the Claude
-Code CLI in a chosen directory. Built for triggering Claude sessions on
-a Mac from a phone over Tailscale.
+Tiny HTTP server to spawn and manage Claude Code sessions on a Mac from
+a phone over Tailscale. Opens a new iTerm2 tab running `claude` with
+Remote Control enabled — so you can drive the session from the Claude
+app — and lists the running sessions, each with a tap-to-close button.
+
+The launcher owns session *lifecycle* (spawn, list, close); the Claude
+app owns everything *inside* a session (typing tasks, approvals, output).
+Spawning a new local session is the one thing the app can't do — that's
+the gap this fills.
 
 ## Requirements
 
 - macOS with iTerm2
 - Python 3.10+
 - Claude Code CLI (`claude`) on `PATH`
+- For Remote Control: Claude Code v2.1.51+, a Pro/Max/Team/Enterprise
+  plan, and full-scope login (`claude auth login`, not an API key)
 
 First `/launch` will prompt macOS to grant automation access to iTerm2.
 Approve it.
@@ -19,8 +27,11 @@ Approve it.
 python3 server.py
 ```
 
-Open `http://<host>:8765/` in a browser, optionally type a subdirectory,
-tap **go**.
+Open `http://<host>:8765/` in a browser. Type a subdirectory and tap
+**launch** to start a session; the page below lists every running
+`claude` session — title, dir, last-active time, status
+(working/waiting/idle), and a recent-message snippet — sorted newest
+first to mirror the Claude app, each with a **×** to close it.
 
 ## Environment variables
 
@@ -31,6 +42,7 @@ tap **go**.
 | `CLAUDE_LAUNCHER_DEFAULT_DIR` | `~` | Used when the form's `dir` field is blank. |
 | `CLAUDE_LAUNCHER_PROJECTS_ROOT` | `~/projects` | Allowed parent for `dir`. Anything outside is rejected. |
 | `CLAUDE_LAUNCHER_COMMAND` | `cl` | Command run after `cd`. Use `claude` if you don't have a `cl` alias. |
+| `CLAUDE_LAUNCHER_REMOTE` | `1` | Append `--remote-control` so the Claude app can drive the session. Set `0` to disable. |
 
 ## Security model
 
@@ -44,7 +56,11 @@ What the server does enforce:
   `CLAUDE_LAUNCHER_PROJECTS_ROOT`).
 - Shell and AppleScript injection blocked (quoting + control-char
   stripping).
-- CSRF blocked (`/launch` is POST-only with same-origin `Origin` check).
+- CSRF blocked (`/launch` and `/close` are POST-only with same-origin
+  `Origin` check).
+- `/close` only acts on a session id that matches a currently-live
+  `claude` session, and only closes iTerm sessions — never arbitrary
+  processes or tabs.
 - Log injection blocked (CRLF + control chars scrubbed).
 
 If you need access control on top, add a shared-secret token to the

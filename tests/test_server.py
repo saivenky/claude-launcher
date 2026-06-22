@@ -2,6 +2,7 @@ import os
 import shutil
 import sys
 import threading
+import time
 import unittest
 import urllib.error
 import urllib.request
@@ -129,6 +130,123 @@ class HttpEndpointTests(unittest.TestCase):
             self.assertIn("launched in", body)
         finally:
             server.DEFAULT_DIR = old_default
+
+
+class SessionParseTests(unittest.TestCase):
+    def test_parse_iterm_sessions(self):
+        out = "ID1\x1f/dev/ttys001\x1f✳ Fix bug (claude)\nID2\x1f/dev/ttys002\x1fDefault\n"
+        self.assertEqual(
+            server._parse_iterm_sessions(out),
+            [("ID1", "ttys001", "✳ Fix bug (claude)"), ("ID2", "ttys002", "Default")],
+        )
+
+    def test_parse_iterm_sessions_skips_malformed(self):
+        self.assertEqual(server._parse_iterm_sessions("garbage-no-separators\n\n"), [])
+
+    def test_parse_claude_ttys_filters_to_claude(self):
+        out = (
+            "  32324 ttys001 claude\n"
+            "  11402 ttys006 claude --resume abc\n"
+            "  31125 ??      /usr/bin/python server.py\n"
+            "  99999 ttys009 node something\n"
+        )
+        self.assertEqual(
+            server._parse_claude_ttys(out),
+            {"ttys001": 32324, "ttys006": 11402},
+        )
+
+    def test_session_meta(self):
+        base = os.path.join(os.path.dirname(__file__), "_sessfix")
+        os.makedirs(base, exist_ok=True)
+        try:
+            with open(os.path.join(base, "39909.json"), "w") as f:
+                f.write('{"pid":39909,"cwd":"/Users/me/obsidian","status":"waiting",'
+                        '"bridgeSessionId":"session_abc"}')
+            with open(os.path.join(base, "11402.json"), "w") as f:
+                f.write('{"pid":11402,"cwd":"/x","status":"idle"}')  # no bridge
+            with open(os.path.join(base, "bad.json"), "w") as f:
+                f.write("not json")  # skipped
+            meta = server._session_meta(base)
+            self.assertEqual(meta[39909], {
+                "cwd": "/Users/me/obsidian", "status": "waiting", "remote": True,
+                "sessionId": "", "updatedAt": None,
+            })
+            self.assertEqual(meta[11402], {
+                "cwd": "/x", "status": "idle", "remote": False,
+                "sessionId": "", "updatedAt": None,
+            })
+            self.assertEqual(set(meta), {39909, 11402})
+        finally:
+            shutil.rmtree(base, ignore_errors=True)
+
+    def test_first_user_msg(self):
+        base = os.path.join(os.path.dirname(__file__), "_txfix")
+        sid = "AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA"
+        proj = os.path.join(base, "-Users-me-proj")
+        os.makedirs(proj, exist_ok=True)
+        try:
+            lines = [
+                '{"type":"user","message":{"content":"<system-reminder>skip me"}}',
+                '{"type":"assistant","message":{"content":"not user"}}',
+                '{"type":"user","message":{"content":[{"type":"tool_result","content":"skip"}]}}',
+                '{"type":"user","message":{"content":[{"type":"text","text":"fix the failing test"}]}}',
+            ]
+            with open(os.path.join(proj, sid + ".jsonl"), "w") as f:
+                f.write("\n".join(lines) + "\n")
+            self.assertEqual(server._first_user_msg(sid, base), "fix the failing test")
+            self.assertEqual(server._first_user_msg("bad-id", base), "")
+            self.assertEqual(server._first_user_msg(sid, base + "_missing"), "")
+        finally:
+            shutil.rmtree(base, ignore_errors=True)
+
+    def test_last_msg(self):
+        base = os.path.join(os.path.dirname(__file__), "_lmfix")
+        sid = "BBBBBBBB-BBBB-BBBB-BBBB-BBBBBBBBBBBB"
+        proj = os.path.join(base, "-Users-me-proj")
+        os.makedirs(proj, exist_ok=True)
+        try:
+            lines = [
+                '{"type":"user","message":{"content":[{"type":"text","text":"first ask"}]}}',
+                '{"type":"assistant","message":{"content":[{"type":"text","text":"done, all green"}]}}',
+                '{"type":"user","message":{"content":[{"type":"tool_result","content":"ignore me"}]}}',
+            ]
+            with open(os.path.join(proj, sid + ".jsonl"), "w") as f:
+                f.write("\n".join(lines) + "\n")
+            # last text message wins; trailing tool_result is skipped
+            self.assertEqual(server._last_msg(sid, base), "done, all green")
+            self.assertEqual(server._last_msg("bad-id", base), "")
+        finally:
+            shutil.rmtree(base, ignore_errors=True)
+
+    def test_last_active(self):
+        self.assertEqual(server._last_active(None), "")
+        self.assertEqual(server._last_active((time.time() - 30) * 1000), "now")
+        self.assertEqual(server._last_active((time.time() - 47 * 60) * 1000), "47m")
+        self.assertEqual(server._last_active((time.time() - 3 * 3600) * 1000), "3h")
+        self.assertEqual(server._last_active((time.time() - 4 * 86400) * 1000), "4d")
+
+    def test_clean_title(self):
+        self.assertEqual(
+            server._clean_title("✳ Analyze daily scheduling feasibility (Python)"),
+            "Analyze daily scheduling feasibility")
+        self.assertEqual(
+            server._clean_title("⠐ Improve /grill-me command functionality (caffeinate)"),
+            "Improve /grill-me command functionality")
+        self.assertEqual(server._clean_title("Plain title"), "Plain title")
+
+
+class CloseSessionTests(unittest.TestCase):
+    def test_rejects_bad_id_format(self):
+        self.assertFalse(server.close_session("../etc"))
+        self.assertFalse(server.close_session("short"))
+
+    def test_rejects_id_not_in_live_set(self):
+        saved = server.list_sessions
+        server.list_sessions = lambda: [{"id": "AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA"}]
+        try:
+            self.assertFalse(server.close_session("BBBBBBBB-BBBB-BBBB-BBBB-BBBBBBBBBBBB"))
+        finally:
+            server.list_sessions = saved
 
 
 if __name__ == "__main__":
