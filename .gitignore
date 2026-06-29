@@ -2,3 +2,6 @@ __pycache__/
 *.pyc
 .DS_Store
 tests/_tmpfix/
+
+# private task config (copy tasks.example.py -> tasks.py)
+/tasks.py

@@ -134,10 +134,13 @@ class HttpEndpointTests(unittest.TestCase):
 
 class SessionParseTests(unittest.TestCase):
     def test_parse_iterm_sessions(self):
-        out = "ID1\x1f/dev/ttys001\x1f✳ Fix bug (claude)\nID2\x1f/dev/ttys002\x1fDefault\n"
+        # four fields: id, tty, name, cl_task tag (blank when untagged)
+        out = ("ID1\x1f/dev/ttys001\x1f✳ Fix bug (claude)\x1fcapture\n"
+               "ID2\x1f/dev/ttys002\x1fDefault\x1f\n")
         self.assertEqual(
             server._parse_iterm_sessions(out),
-            [("ID1", "ttys001", "✳ Fix bug (claude)"), ("ID2", "ttys002", "Default")],
+            [("ID1", "ttys001", "✳ Fix bug (claude)", "capture"),
+             ("ID2", "ttys002", "Default", "")],
         )
 
     def test_parse_iterm_sessions_skips_malformed(self):
@@ -247,6 +250,128 @@ class CloseSessionTests(unittest.TestCase):
             self.assertFalse(server.close_session("BBBBBBBB-BBBB-BBBB-BBBB-BBBBBBBBBBBB"))
         finally:
             server.list_sessions = saved
+
+
+class LaunchCmdTests(unittest.TestCase):
+    def setUp(self):
+        self._remote, self._command = server.REMOTE, server.COMMAND
+        server.REMOTE, server.COMMAND = True, "cl"
+
+    def tearDown(self):
+        server.REMOTE, server.COMMAND = self._remote, self._command
+
+    def test_generic_launch_has_no_prompt(self):
+        self.assertEqual(server._launch_cmd("/w"), "cd '/w' && cl --remote-control")
+
+    def test_prompt_goes_before_remote_flag(self):
+        cmd = server._launch_cmd("/w", "/capture-task seed")
+        self.assertEqual(cmd, "cd '/w' && cl '/capture-task seed' --remote-control")
+        # the prompt must precede --remote-control, never trail it (else the
+        # flag's optional [name] arg swallows it)
+        self.assertLess(cmd.index("/capture-task"), cmd.index("--remote-control"))
+
+    def test_remote_disabled_omits_flag(self):
+        server.REMOTE = False
+        self.assertEqual(server._launch_cmd("/w", "/x"), "cd '/w' && cl '/x'")
+
+
+class RenderTasksTests(unittest.TestCase):
+    def setUp(self):
+        self._saved = server.TASKS
+
+    def tearDown(self):
+        server.TASKS = self._saved
+
+    def test_no_tasks_renders_blank(self):
+        server.TASKS = []
+        self.assertEqual(server._render_tasks(), "")
+
+    def test_tasks_render_buttons_and_text_box(self):
+        server.TASKS = [
+            {"id": "cap", "label": "cap", "workdir": "~", "command": "/c", "input": "text"},
+            {"id": "s", "label": "s", "workdir": "~", "command": "/s", "input": "none"},
+        ]
+        out = server._render_tasks()
+        self.assertIn('name="task" value="cap"', out)
+        self.assertIn("or launch a dir", out)          # divider before generic form
+        # only the text task gets a seed box; the 'none' task does not
+        self.assertEqual(out.count('name="input"'), 1)
+
+
+class NamedLaunchHttpTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls._saved_launch = server.launch_iterm
+        cls._saved_tasks = server.TASKS_BY_ID
+        cls.calls = []
+        server.launch_iterm = lambda *a, **k: cls.calls.append((a, k))
+        here = os.path.dirname(os.path.abspath(__file__))  # a dir that exists
+        server.TASKS_BY_ID = {
+            "cap": {"id": "cap", "label": "cap", "workdir": here,
+                    "command": "/capture-task", "input": "text"},
+            "sched": {"id": "sched", "label": "sched", "workdir": here,
+                      "command": "/scheduling today", "input": "none"},
+            "gone": {"id": "gone", "label": "gone", "workdir": "/no/such/dir",
+                     "command": "/x", "input": "none"},
+        }
+        cls.httpd = ThreadingHTTPServer(("127.0.0.1", 0), server.Handler)
+        cls.port = cls.httpd.server_address[1]
+        cls.thread = threading.Thread(target=cls.httpd.serve_forever, daemon=True)
+        cls.thread.start()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.httpd.shutdown()
+        cls.thread.join(timeout=2)
+        server.launch_iterm = cls._saved_launch
+        server.TASKS_BY_ID = cls._saved_tasks
+
+    def setUp(self):
+        type(self).calls.clear()
+
+    def _post(self, data):
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{self.port}/launch", data=data, method="POST",
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=2) as resp:
+                return resp.status, resp.read().decode("utf-8", "replace")
+        except urllib.error.HTTPError as e:
+            try:
+                return e.code, e.read().decode("utf-8", "replace")
+            finally:
+                e.close()
+
+    def test_unknown_task_rejected(self):
+        status, body = self._post(b"task=nope")
+        self.assertEqual(status, 400)
+        self.assertIn("unknown task", body)
+
+    def test_missing_workdir_rejected(self):
+        status, body = self._post(b"task=gone")
+        self.assertEqual(status, 400)
+        self.assertIn("workdir does not exist", body)
+
+    def test_named_launch_passes_command_and_task_id(self):
+        status, body = self._post(b"task=sched")
+        self.assertEqual(status, 200)
+        self.assertIn("launched sched", body)
+        args, kwargs = self.calls[-1]
+        self.assertEqual(args[1], "/scheduling today")      # prompt
+        self.assertEqual(kwargs["task_id"], "sched")        # tag stamped
+
+    def test_text_input_seed_appended(self):
+        status, _ = self._post(b"task=cap&input=buy%20milk")
+        self.assertEqual(status, 200)
+        args, _ = self.calls[-1]
+        self.assertEqual(args[1], "/capture-task buy milk")
+
+    def test_text_input_blank_uses_bare_command(self):
+        status, _ = self._post(b"task=cap&input=")
+        self.assertEqual(status, 200)
+        args, _ = self.calls[-1]
+        self.assertEqual(args[1], "/capture-task")
 
 
 if __name__ == "__main__":

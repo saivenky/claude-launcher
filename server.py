@@ -1,6 +1,13 @@
 #!/usr/bin/env python3
-"""Trigger a new iTerm2 tab running `cl` (interactive Claude). Bound to all
-interfaces so a Tailscale device (e.g. phone) can hit it."""
+"""Spawn and manage Claude Code sessions on a Mac from a phone over Tailscale.
+
+Two ways to launch, on one page:
+  - generic: type a subdir under PROJECTS_ROOT -> runs `cl` there
+  - named tasks: one-tap buttons from tasks.py -> runs `cl <slash-command>` in
+    a fixed workdir, stamped with user.cl_task so the live list can label it
+
+tasks.py is optional and private; without it you just get the generic
+launcher."""
 
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
@@ -13,6 +20,11 @@ import subprocess
 import sys
 import time
 
+try:
+    from tasks import TASKS
+except ImportError:
+    TASKS = []  # no private task config -> generic launcher only
+
 HOST = os.environ.get("CLAUDE_LAUNCHER_HOST", "0.0.0.0")
 PORT = int(os.environ.get("CLAUDE_LAUNCHER_PORT", "8765"))
 DEFAULT_DIR = os.path.expanduser(os.environ.get("CLAUDE_LAUNCHER_DEFAULT_DIR", "~"))
@@ -21,6 +33,9 @@ COMMAND = os.environ.get("CLAUDE_LAUNCHER_COMMAND", "cl")
 REMOTE = os.environ.get("CLAUDE_LAUNCHER_REMOTE", "1").strip().lower() not in (
     "0", "false", "no", "off", "",
 )
+
+TASKS_BY_ID = {t["id"]: t for t in TASKS}
+TASK_LABELS = {t["id"]: t["label"] for t in TASKS}
 
 
 def resolve_dir(dir_param: str | None) -> str:
@@ -33,9 +48,32 @@ def resolve_dir(dir_param: str | None) -> str:
     return candidate
 
 
-def launch_iterm(workdir: str) -> None:
-    run_command = COMMAND + (" --remote-control" if REMOTE else "")
-    cmd = f"cd {shell_quote(workdir)} && {run_command}"
+def _launch_cmd(workdir: str, prompt: str | None = None) -> str:
+    """The `cd <workdir> && cl [prompt] [--remote-control]` shell line.
+
+    Prompt goes BEFORE --remote-control: that flag takes an optional [name]
+    arg, so a trailing prompt would be swallowed as the session name (the
+    session then opens idle instead of running the prompt).
+    """
+    run = COMMAND
+    if prompt:
+        run += " " + shell_quote(prompt)
+    if REMOTE:
+        run += " --remote-control"
+    return f"cd {shell_quote(workdir)} && {run}"
+
+
+def launch_iterm(workdir: str, prompt: str | None = None, task_id: str | None = None) -> None:
+    """Open an iTerm tab running the launch command in workdir.
+
+    Named tasks pass their slash-command as ``prompt`` and their id as
+    ``task_id``; the id is stamped on the session as user.cl_task so the live
+    list can label it. Generic launches pass neither.
+    """
+    cmd = _launch_cmd(workdir, prompt)
+    stamp = ""
+    if task_id:
+        stamp = f'\n        set variable named "user.cl_task" to {applescript_quote(task_id)}'
     script = f'''
 tell application "iTerm"
     activate
@@ -44,7 +82,9 @@ tell application "iTerm"
     else
         tell current window to create tab with default profile
     end if
-    tell current session of current window to write text {applescript_quote(cmd)}
+    tell current session of current window
+        write text {applescript_quote(cmd)}{stamp}
+    end tell
 end tell
 '''
     subprocess.run(["osascript", "-e", script], check=True)
@@ -81,8 +121,9 @@ def sanitize_log(s: str) -> str:
 
 _SESSION_ID_RE = re.compile(r"^[0-9A-Fa-f-]{36}$")
 
-# Emit one line per iTerm session: id <US> tty <US> name. US (0x1f) can't appear
-# in any of the fields, so splitting is unambiguous.
+# Emit one line per iTerm session: id <US> tty <US> name <US> cl_task. US (0x1f)
+# can't appear in any field, so splitting is unambiguous. An unset user.cl_task
+# comes back as `missing value`, so coerce it to "" first.
 _LIST_SCRIPT = """
 if application "iTerm" is running then
   tell application "iTerm"
@@ -91,7 +132,11 @@ if application "iTerm" is running then
     repeat with w in windows
       repeat with t in tabs of w
         repeat with s in sessions of t
-          set out to out & (id of s) & sep & (tty of s) & sep & (name of s) & linefeed
+          tell s
+            set tag to (variable named "user.cl_task")
+            if tag is missing value then set tag to ""
+            set out to out & (id) & sep & (tty) & sep & (name) & sep & tag & linefeed
+          end tell
         end repeat
       end repeat
     end repeat
@@ -120,17 +165,17 @@ return "notfound"
 """
 
 
-def _parse_iterm_sessions(out: str) -> list[tuple[str, str, str]]:
-    """(session_id, tty_basename, name) for each line of _LIST_SCRIPT output."""
+def _parse_iterm_sessions(out: str) -> list[tuple[str, str, str, str]]:
+    """(session_id, tty_basename, name, cl_task) for each _LIST_SCRIPT line."""
     rows = []
     for line in out.split("\n"):
         if not line:
             continue
         parts = line.split("\x1f")
-        if len(parts) != 3:
+        if len(parts) != 4:
             continue
-        sid, tty, name = parts
-        rows.append((sid.strip(), os.path.basename(tty.strip()), name.strip()))
+        sid, tty, name, tag = parts
+        rows.append((sid.strip(), os.path.basename(tty.strip()), name.strip(), tag.strip()))
     return rows
 
 
@@ -300,14 +345,17 @@ def list_sessions() -> list[dict]:
     claude = _parse_claude_ttys(ps_out)
     meta = _session_meta()
     rows = []
-    for sid, tty, name in sessions:
+    for sid, tty, name, tag in sessions:
         pid = claude.get(tty)
         if pid is None:
             continue
         m = meta.get(pid, {})
-        title = _clean_title(name)
-        if not title or title == "Claude Code":
-            title = _first_user_msg(m.get("sessionId", "")) or title or "claude"
+        if tag:
+            title = TASK_LABELS.get(tag, tag)
+        else:
+            title = _clean_title(name)
+            if not title or title == "Claude Code":
+                title = _first_user_msg(m.get("sessionId", "")) or title or "claude"
         updated = m.get("updatedAt")
         rows.append({
             "id": sid,
@@ -354,6 +402,15 @@ main{max-width:520px;margin:0 auto}
   caret-color:var(--accent)}
 .input::placeholder{color:#4b5563}
 .input:focus{border-bottom-color:var(--accent)}
+.task{display:flex;align-items:stretch;gap:.5rem;margin-bottom:.75rem}
+.task .input{flex:1 1 auto;min-width:8ch;background:var(--input);color:var(--accent);
+  border:0;border-bottom:1px dashed var(--dim);font:inherit;padding:.4rem .6rem;outline:0;
+  caret-color:var(--accent)}
+.task .input::placeholder{color:#4b5563}
+.task .input:focus{border-bottom-color:var(--accent)}
+.task .go{margin-top:0}
+.orsep{color:var(--dim);font-size:12px;margin:1.5rem 0 1.1rem;padding-top:1.2rem;
+  border-top:1px solid #1f2227;letter-spacing:.05em}
 .go{margin-top:1.5rem;background:transparent;border:1px solid var(--fg);color:var(--fg);
   font:inherit;padding:.5rem 1.5rem;cursor:pointer;letter-spacing:.05em}
 .go:hover,.go:active{background:var(--fg);color:var(--bg)}
@@ -381,7 +438,8 @@ main{max-width:520px;margin:0 auto}
 </style></head>
 <body>
 <main>
-  <div class="label"><b>claude-launcher</b> &middot; tap to edit, then launch</div>
+  <div class="label"><b>claude-launcher</b> &middot; launch &amp; manage sessions</div>
+  {tasks}
   <form method="post" action="/launch">
     <div class="cmd"><span class="prompt">$ </span>cd {projects_root}/<input class="input" name="dir" autocomplete="off" placeholder="subdir"> &amp;&amp; cl</div>
     <button class="go" type="submit">launch</button>
@@ -397,6 +455,28 @@ INDEX_TEMPLATE = (
     .replace("{projects_root}", html.escape(_display_path(PROJECTS_ROOT)))
     .replace("{default_dir}", html.escape(_display_path(DEFAULT_DIR)))
 )
+
+
+def _render_tasks() -> str:
+    """One-tap task buttons (and inline text inputs) from tasks.py, or '' if no
+    tasks are configured. Ends with a divider setting them off from the generic
+    launcher below."""
+    if not TASKS:
+        return ""
+    out = []
+    for t in TASKS:
+        tid = html.escape(t["id"])
+        label = html.escape(t["label"])
+        out.append('<form class="task" method="post" action="/launch">')
+        out.append(f'<input type="hidden" name="task" value="{tid}">')
+        if t.get("input") == "text":
+            out.append(
+                f'<input class="input" name="input" autocomplete="off" '
+                f'placeholder="{label}…">'
+            )
+        out.append(f'<button class="go" type="submit">{label}</button></form>')
+    out.append('<div class="orsep">or launch a dir</div>')
+    return "".join(out)
 
 
 def _render_sessions() -> str:
@@ -433,7 +513,11 @@ def _render_sessions() -> str:
 
 
 def _render_index() -> str:
-    return INDEX_TEMPLATE.replace("{sessions}", _render_sessions())
+    return (
+        INDEX_TEMPLATE
+        .replace("{tasks}", _render_tasks())
+        .replace("{sessions}", _render_sessions())
+    )
 
 
 MAX_BODY_BYTES = 4096
@@ -517,6 +601,10 @@ class Handler(BaseHTTPRequestHandler):
             self._handle_launch(qs)
 
     def _handle_launch(self, qs: dict) -> None:
+        task_id = (qs.get("task") or [""])[0]
+        if task_id:
+            self._launch_task(task_id, qs)
+            return
         dir_param = (qs.get("dir") or [None])[0]
         try:
             workdir = resolve_dir(dir_param)
@@ -529,6 +617,27 @@ class Handler(BaseHTTPRequestHandler):
             self._send(500, f"osascript failed: {e}\n")
             return
         self._send(200, f"launched in {workdir}\n")
+
+    def _launch_task(self, task_id: str, qs: dict) -> None:
+        task = TASKS_BY_ID.get(task_id)
+        if not task:
+            self._send(400, "unknown task\n")
+            return
+        prompt = task["command"]
+        if task.get("input") == "text":
+            seed = (qs.get("input") or [""])[0].strip()
+            if seed:
+                prompt = f"{prompt} {seed}"
+        workdir = os.path.expanduser(task["workdir"])
+        if not os.path.isdir(workdir):
+            self._send(400, f"workdir does not exist: {workdir}\n")
+            return
+        try:
+            launch_iterm(workdir, prompt, task_id=task["id"])
+        except subprocess.CalledProcessError as e:
+            self._send(500, f"osascript failed: {e}\n")
+            return
+        self._send(200, f"launched {task['id']}\n")
 
     def _handle_close(self, qs: dict) -> None:
         session_id = (qs.get("session_id") or [""])[0]

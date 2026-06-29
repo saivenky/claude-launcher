@@ -33,6 +33,25 @@ Open `http://<host>:8765/` in a browser. Type a subdirectory and tap
 (working/waiting/idle), and a recent-message snippet — sorted newest
 first to mirror the Claude app, each with a **×** to close it.
 
+## Named tasks (optional)
+
+Above the generic field you can show one-tap buttons for sessions you
+launch often. Copy `tasks.example.py` to `tasks.py` and list them:
+
+```python
+TASKS = [
+    {"id": "capture", "label": "capture", "workdir": "~/notes",
+     "command": "/capture", "input": "text"},
+]
+```
+
+Each task spawns `cl <command>` in `workdir` (a `/slash-command` is
+typical); `input: "text"` adds a seed box whose value is appended to the
+command. `tasks.py` is private (gitignored) — without it you just get the
+generic launcher. Task sessions are tagged (`user.cl_task`) so the live
+list shows their label; the list still includes every running `claude`
+session.
+
 ## Environment variables
 
 | Variable | Default | Meaning |
@@ -53,7 +72,9 @@ session.
 What the server does enforce:
 
 - Path traversal blocked (`realpath` + prefix check on
-  `CLAUDE_LAUNCHER_PROJECTS_ROOT`).
+  `CLAUDE_LAUNCHER_PROJECTS_ROOT`). Named-task workdirs come from your own
+  `tasks.py` (trusted config) and are intentionally *not* confined to
+  `PROJECTS_ROOT`; the generic `dir` field still is.
 - Shell and AppleScript injection blocked (quoting + control-char
   stripping).
 - CSRF blocked (`/launch` and `/close` are POST-only with same-origin
