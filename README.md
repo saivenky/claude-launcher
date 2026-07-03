@@ -52,6 +52,24 @@ generic launcher. Task sessions are tagged (`user.cl_task`) so the live
 list shows their label; the list still includes every running `claude`
 session.
 
+## Resume a conversation
+
+To get back into a Claude Code conversation you closed, paste its
+`sessionId` into the `$ cl --resume …` line and tap **resume**. The
+launcher looks up that conversation's transcript, finds the directory it
+ran in, and spawns a fresh session there with `claude --resume <id>` (Remote
+Control on, so the Claude app can drive it).
+
+You supply the id — the launcher only lists *live* sessions, so read the id
+off the Claude app. Notes:
+
+- A conversation that's currently live is refused (you're already in it; a
+  second session on one transcript would fork it). Close it first.
+- Resume is intentionally *not* confined to `PROJECTS_ROOT` — it can only
+  reopen a directory where you already ran `claude`, never an arbitrary
+  path, so it reaches `~/obsidian` and anything else outside the root. See
+  [ADR 0002](docs/adr/0002-resume-spans-all-conversations.md).
+
 ## Environment variables
 
 | Variable | Default | Meaning |
@@ -77,8 +95,11 @@ What the server does enforce:
   `PROJECTS_ROOT`; the generic `dir` field still is.
 - Shell and AppleScript injection blocked (quoting + control-char
   stripping).
-- CSRF blocked (`/launch` and `/close` are POST-only with same-origin
-  `Origin` check).
+- CSRF blocked (`/launch`, `/resume`, and `/close` are POST-only with
+  same-origin `Origin` check).
+- `/resume` only accepts a well-formed `sessionId` (validated before it
+  touches the shell) that already has a transcript on disk, and refuses ids
+  whose session is currently live.
 - `/close` only acts on a session id that matches a currently-live
   `claude` session, and only closes iTerm sessions — never arbitrary
   processes or tabs.

@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
 """Spawn and manage Claude Code sessions on a Mac from a phone over Tailscale.
 
-Two ways to launch, on one page:
+Three ways to start a session, on one page:
   - generic: type a subdir under PROJECTS_ROOT -> runs `cl` there
   - named tasks: one-tap buttons from tasks.py -> runs `cl <slash-command>` in
     a fixed workdir, stamped with user.cl_task so the live list can label it
+  - resume: paste a past conversation's sessionId -> runs `cl --resume <id>`
+    in that conversation's own dir (found from its transcript)
 
 tasks.py is optional and private; without it you just get the generic
-launcher."""
+launcher (and resume)."""
 
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
@@ -63,14 +65,29 @@ def _launch_cmd(workdir: str, prompt: str | None = None) -> str:
     return f"cd {shell_quote(workdir)} && {run}"
 
 
-def launch_iterm(workdir: str, prompt: str | None = None, task_id: str | None = None) -> None:
+def _resume_cmd(workdir: str, session_id: str) -> str:
+    """The `cd <workdir> && cl --resume <id> [--remote-control]` shell line.
+
+    The id goes BEFORE --remote-control for the same reason a prompt does:
+    that flag takes an optional [name] arg, so a trailing token would be
+    swallowed as the session name.
+    """
+    run = COMMAND + " --resume " + shell_quote(session_id)
+    if REMOTE:
+        run += " --remote-control"
+    return f"cd {shell_quote(workdir)} && {run}"
+
+
+def launch_iterm(workdir: str, prompt: str | None = None, task_id: str | None = None,
+                 resume_id: str | None = None) -> None:
     """Open an iTerm tab running the launch command in workdir.
 
     Named tasks pass their slash-command as ``prompt`` and their id as
     ``task_id``; the id is stamped on the session as user.cl_task so the live
-    list can label it. Generic launches pass neither.
+    list can label it. Resume passes ``resume_id`` (a Conversation's sessionId)
+    to spawn ``cl --resume``. Generic launches pass none of them.
     """
-    cmd = _launch_cmd(workdir, prompt)
+    cmd = _resume_cmd(workdir, resume_id) if resume_id else _launch_cmd(workdir, prompt)
     stamp = ""
     if task_id:
         stamp = f'\n        set variable named "user.cl_task" to {applescript_quote(task_id)}'
@@ -303,6 +320,33 @@ def _last_msg(session_id: str, base: str = _PROJECTS_STATE, window: int = 131072
     return ""
 
 
+def _conversation_cwd(session_id: str, base: str = _PROJECTS_STATE) -> str:
+    """Directory to resume a Conversation in, or '' if it has no transcript.
+
+    The transcript's own ``cwd`` (first line carrying one) is authoritative.
+    Un-munging the project-dir name ('/' -> '-') is a lossy fallback — a '-'
+    in a real dir name is indistinguishable from a path separator — so it is
+    only reached when the transcript is too short to record a cwd. Callers
+    still verify the result is an existing dir.
+    """
+    path = _transcript_path(session_id, base)
+    if not path:
+        return ""
+    try:
+        with open(path) as fh:
+            for line in fh:
+                try:
+                    o = json.loads(line)
+                except ValueError:
+                    continue
+                cwd = o.get("cwd")
+                if cwd:
+                    return cwd
+    except OSError:
+        return ""
+    return os.path.basename(os.path.dirname(path)).replace("-", "/")
+
+
 def _last_active(updated_at: object) -> str:
     """updatedAt (ms epoch) -> relative last-activity: now / 47m / 2h / 4d.
 
@@ -365,10 +409,20 @@ def list_sessions() -> list[dict]:
             "remote": m.get("remote", False),
             "active": _last_active(updated),
             "snippet": _last_msg(m.get("sessionId", "")),
+            "sessionId": m.get("sessionId", ""),
             "_updated": updated if isinstance(updated, (int, float)) else 0,
         })
     rows.sort(key=lambda r: r["_updated"], reverse=True)
     return rows
+
+
+def _live_session_ids() -> set[str]:
+    """sessionIds of currently-live Sessions — the resume live-guard set.
+
+    Resuming a Conversation that is already live would put two Sessions on one
+    transcript, so /resume refuses any id in here.
+    """
+    return {sid for s in list_sessions() if (sid := s.get("sessionId"))}
 
 
 def close_session(session_id: str) -> bool:
@@ -444,6 +498,11 @@ main{max-width:520px;margin:0 auto}
     <div class="cmd"><span class="prompt">$ </span>cd {projects_root}/<input class="input" name="dir" autocomplete="off" placeholder="subdir"> &amp;&amp; cl</div>
     <button class="go" type="submit">launch</button>
     <div class="hint">blank &rarr; <code>{default_dir}</code></div>
+  </form>
+  <form method="post" action="/resume">
+    <div class="cmd"><span class="prompt">$ </span>cl --resume <input class="input" name="session_id" autocomplete="off" placeholder="sessionId"></div>
+    <button class="go" type="submit">resume</button>
+    <div class="hint">a closed session's id &mdash; from the Claude app</div>
   </form>
   <section class="sessions">{sessions}</section>
 </main>
@@ -553,7 +612,7 @@ class Handler(BaseHTTPRequestHandler):
         if parsed.path == "/":
             self._send(200, _render_index(), "text/html; charset=utf-8")
             return
-        if parsed.path == "/launch":
+        if parsed.path in ("/launch", "/resume", "/close"):
             self.send_response(405)
             self.send_header("Allow", "POST")
             self.send_header("Content-Length", "0")
@@ -563,7 +622,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         parsed = urlparse(self.path)
-        if parsed.path not in ("/launch", "/close"):
+        if parsed.path not in ("/launch", "/close", "/resume"):
             self._send(404, "not found\n")
             return
         ok, detail = self._same_origin_ok()
@@ -597,6 +656,8 @@ class Handler(BaseHTTPRequestHandler):
             qs.setdefault(k, v)
         if parsed.path == "/close":
             self._handle_close(qs)
+        elif parsed.path == "/resume":
+            self._handle_resume(qs)
         else:
             self._handle_launch(qs)
 
@@ -638,6 +699,28 @@ class Handler(BaseHTTPRequestHandler):
             self._send(500, f"osascript failed: {e}\n")
             return
         self._send(200, f"launched {task['id']}\n")
+
+    def _handle_resume(self, qs: dict) -> None:
+        session_id = (qs.get("session_id") or [""])[0].strip()
+        if not _SESSION_ID_RE.match(session_id):
+            self._send(400, "invalid session id\n")
+            return
+        if not _transcript_path(session_id):
+            self._send(400, "no such conversation\n")
+            return
+        if session_id in _live_session_ids():
+            self._send(400, "already live\n")
+            return
+        workdir = _conversation_cwd(session_id)
+        if not workdir or not os.path.isdir(workdir):
+            self._send(400, "conversation's dir is gone\n")
+            return
+        try:
+            launch_iterm(workdir, resume_id=session_id)
+        except subprocess.CalledProcessError as e:
+            self._send(500, f"osascript failed: {e}\n")
+            return
+        self._send(200, f"resumed {session_id}\n")
 
     def _handle_close(self, qs: dict) -> None:
         session_id = (qs.get("session_id") or [""])[0]

@@ -15,7 +15,23 @@ _Avoid_: server, app (overloaded), backend
 **Session**:
 One running `claude` process on the Mac. Its lifecycle is owned by the
 **Launcher**; its inner I/O is owned by the **Remote Control bridge**.
+Reads and writes exactly one **Conversation**.
 _Avoid_: tab, terminal, process
+
+**Conversation**:
+The durable thread a **Session** reads and writes, persisted as
+`~/.claude/projects/*/<sessionId>.jsonl`. Outlives the **Session** that
+created it; over time several Sessions can embody the *same* Conversation
+(close it, **resume** it later = a new Session on the same Conversation).
+This is what Claude Code's own `sessionId` identifies.
+_Avoid_: session (that's the live process here), transcript (the file/
+artifact, not the living thread), history
+
+**Resume**:
+Spawn a new **Session** bound to an existing **Conversation** (via
+`claude --resume <sessionId>`). Distinct from re-attaching to a *live*
+Session, which is the **Remote Control bridge**'s job, not the Launcher's.
+_Avoid_: reopen, restore, continue (overloaded by `claude --continue`)
 
 **Task**:
 A named, preset **Session** launch defined in `tasks.py` — fixed workdir
@@ -44,6 +60,9 @@ _Avoid_: access, availability
 ## Relationships
 
 - A **Launcher** spawns and closes many **Sessions**
+- A **Session** reads/writes exactly one **Conversation**; a
+  **Conversation** outlives its Session and can be **resumed** into a new
+  one
 - A **Session**'s lifecycle flows over the **Launcher transport**; its
   I/O flows over the **Remote Control bridge** — different channels
 - A **Launcher transport** choice is bounded by the required
@@ -65,3 +84,6 @@ _Avoid_: access, availability
 - "no install" was used to mean lighter overall — flagged: it constrains
   only the *phone* side; the Mac still runs **Launcher** code (and any
   transport's native bits).
+- "resume a session" conflated the live **Session** with the durable
+  thread — resolved: you resume a **Conversation** (spawn a new Session on
+  it); you re-attach to a live Session (the bridge's job, not resume).

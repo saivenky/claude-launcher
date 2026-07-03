@@ -274,6 +274,17 @@ class LaunchCmdTests(unittest.TestCase):
         server.REMOTE = False
         self.assertEqual(server._launch_cmd("/w", "/x"), "cd '/w' && cl '/x'")
 
+    def test_resume_cmd_id_precedes_remote_flag(self):
+        sid = "AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA"
+        cmd = server._resume_cmd("/w", sid)
+        self.assertEqual(cmd, f"cd '/w' && cl --resume '{sid}' --remote-control")
+        # id before --remote-control, else the flag's [name] arg eats it
+        self.assertLess(cmd.index("--resume"), cmd.index("--remote-control"))
+
+    def test_resume_cmd_remote_disabled_omits_flag(self):
+        server.REMOTE = False
+        self.assertEqual(server._resume_cmd("/w", "x"), "cd '/w' && cl --resume 'x'")
+
 
 class RenderTasksTests(unittest.TestCase):
     def setUp(self):
@@ -372,6 +383,166 @@ class NamedLaunchHttpTests(unittest.TestCase):
         self.assertEqual(status, 200)
         args, _ = self.calls[-1]
         self.assertEqual(args[1], "/capture-task")
+
+
+class ConversationCwdTests(unittest.TestCase):
+    def setUp(self):
+        self.base = os.path.join(os.path.dirname(__file__), "_cwdfix")
+        self.proj = os.path.join(self.base, "-Users-me-proj")
+        os.makedirs(self.proj, exist_ok=True)
+
+    def tearDown(self):
+        shutil.rmtree(self.base, ignore_errors=True)
+
+    def _write(self, sid, lines):
+        with open(os.path.join(self.proj, sid + ".jsonl"), "w") as f:
+            f.write("\n".join(lines) + "\n")
+
+    def test_reads_cwd_from_transcript_skipping_meta_lines(self):
+        sid = "AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA"
+        self._write(sid, [
+            '{"type":"mode","sessionId":"x"}',          # meta: no cwd
+            '{"type":"bridge-session"}',                # meta: no cwd
+            '{"type":"user","cwd":"/Users/me/obsidian","message":{"content":"hi"}}',
+        ])
+        self.assertEqual(server._conversation_cwd(sid, self.base), "/Users/me/obsidian")
+
+    def test_falls_back_to_unmunged_dir_name_when_no_cwd(self):
+        sid = "BBBBBBBB-BBBB-BBBB-BBBB-BBBBBBBBBBBB"
+        self._write(sid, ['{"type":"mode","sessionId":"x"}'])  # never carries a cwd
+        # lossy un-munge of the -Users-me-proj project dir
+        self.assertEqual(server._conversation_cwd(sid, self.base), "/Users/me/proj")
+
+    def test_unknown_or_malformed_id_returns_blank(self):
+        self.assertEqual(
+            server._conversation_cwd("CCCCCCCC-CCCC-CCCC-CCCC-CCCCCCCCCCCC", self.base), "")
+        self.assertEqual(server._conversation_cwd("bad-id", self.base), "")
+
+
+class LiveSessionIdsTests(unittest.TestCase):
+    def test_collects_nonblank_session_ids(self):
+        saved = server.list_sessions
+        server.list_sessions = lambda: [
+            {"sessionId": "s1"}, {"sessionId": ""}, {"sessionId": "s2"},
+        ]
+        try:
+            self.assertEqual(server._live_session_ids(), {"s1", "s2"})
+        finally:
+            server.list_sessions = saved
+
+
+_GOOD = "AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA"    # transcript + existing cwd
+_LIVE = "BBBBBBBB-BBBB-BBBB-BBBB-BBBBBBBBBBBB"    # currently-live Session
+_GONE = "CCCCCCCC-CCCC-CCCC-CCCC-CCCCCCCCCCCC"    # transcript, but cwd deleted
+_UNKNOWN = "DDDDDDDD-DDDD-DDDD-DDDD-DDDDDDDDDDDD"  # no transcript
+
+
+class ResumeHttpTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls._saved = {
+            "launch_iterm": server.launch_iterm,
+            "transcript": server._transcript_path,
+            "cwd": server._conversation_cwd,
+            "live": server._live_session_ids,
+        }
+        cls.here = os.path.dirname(os.path.abspath(__file__))  # a dir that exists
+        cls.calls = []
+        server.launch_iterm = lambda *a, **k: cls.calls.append((a, k))
+        server._transcript_path = lambda sid, *a, **k: (
+            "/x/" + sid + ".jsonl" if sid in (_GOOD, _LIVE, _GONE) else "")
+        server._conversation_cwd = lambda sid, *a, **k: (
+            "/no/such/dir" if sid == _GONE else cls.here)
+        server._live_session_ids = lambda: {_LIVE}
+        cls.httpd = ThreadingHTTPServer(("127.0.0.1", 0), server.Handler)
+        cls.port = cls.httpd.server_address[1]
+        cls.thread = threading.Thread(target=cls.httpd.serve_forever, daemon=True)
+        cls.thread.start()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.httpd.shutdown()
+        cls.thread.join(timeout=2)
+        server.launch_iterm = cls._saved["launch_iterm"]
+        server._transcript_path = cls._saved["transcript"]
+        server._conversation_cwd = cls._saved["cwd"]
+        server._live_session_ids = cls._saved["live"]
+
+    def setUp(self):
+        type(self).calls.clear()
+
+    def _post(self, data):
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{self.port}/resume", data=data, method="POST",
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=2) as resp:
+                return resp.status, resp.read().decode("utf-8", "replace")
+        except urllib.error.HTTPError as e:
+            try:
+                return e.code, e.read().decode("utf-8", "replace")
+            finally:
+                e.close()
+
+    def test_malformed_id_rejected(self):
+        status, body = self._post(b"session_id=not-a-uuid")
+        self.assertEqual(status, 400)
+        self.assertIn("invalid session id", body)
+        self.assertEqual(self.calls, [])
+
+    def test_unknown_id_rejected(self):
+        status, body = self._post(f"session_id={_UNKNOWN}".encode())
+        self.assertEqual(status, 400)
+        self.assertIn("no such conversation", body)
+        self.assertEqual(self.calls, [])
+
+    def test_live_id_rejected(self):
+        status, body = self._post(f"session_id={_LIVE}".encode())
+        self.assertEqual(status, 400)
+        self.assertIn("already live", body)
+        self.assertEqual(self.calls, [])
+
+    def test_missing_dir_rejected(self):
+        status, body = self._post(f"session_id={_GONE}".encode())
+        self.assertEqual(status, 400)
+        self.assertIn("dir is gone", body)
+        self.assertEqual(self.calls, [])
+
+    def test_valid_resume_spawns_session(self):
+        status, body = self._post(f"session_id={_GOOD}".encode())
+        self.assertEqual(status, 200)
+        self.assertIn(f"resumed {_GOOD}", body)
+        args, kwargs = self.calls[-1]
+        self.assertEqual(args[0], self.here)          # workdir from transcript cwd
+        self.assertEqual(kwargs["resume_id"], _GOOD)  # spawns cl --resume <id>
+
+    def test_get_is_405(self):
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{self.port}/resume", method="GET")
+        try:
+            urllib.request.urlopen(req, timeout=2)
+            code = 200
+        except urllib.error.HTTPError as e:
+            code = e.code
+            e.close()
+        self.assertEqual(code, 405)  # POST-only, mirrors /launch
+
+    def test_cross_origin_rejected(self):
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{self.port}/resume",
+            data=f"session_id={_GOOD}".encode(), method="POST",
+            headers={"Origin": "http://evil.com",
+                     "Content-Type": "application/x-www-form-urlencoded"},
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=2) as resp:
+                status = resp.status
+        except urllib.error.HTTPError as e:
+            status = e.code
+            e.close()
+        self.assertEqual(status, 403)
+        self.assertEqual(self.calls, [])
 
 
 if __name__ == "__main__":
