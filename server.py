@@ -1,12 +1,16 @@
 #!/usr/bin/env python3
 """Spawn and manage Claude Code sessions on a Mac from a phone over Tailscale.
 
-Three ways to start a session, on one page:
+Vocabulary (see CONTEXT.md): a **Session** is the durable thread Claude Code
+identifies by `sessionId`; a **Run** is one `claude` process executing it,
+concretely an iTerm pane. The launcher only ever creates and destroys Runs.
+
+Three ways to start a Run, on one page:
   - generic: type a subdir under PROJECTS_ROOT -> runs `cl` there
   - named tasks: one-tap buttons from tasks.py -> runs `cl <slash-command>` in
     a fixed workdir, stamped with user.cl_task so the live list can label it
-  - resume: paste a past conversation's sessionId -> runs `cl --resume <id>`
-    in that conversation's own dir (found from its transcript)
+  - resume: paste a past Session's sessionId -> runs `cl --resume <id>`
+    in that Session's own dir (found from its transcript)
 
 tasks.py is optional and private; without it you just get the generic
 launcher (and resume)."""
@@ -83,8 +87,8 @@ def launch_iterm(workdir: str, prompt: str | None = None, task_id: str | None = 
     """Open an iTerm tab running the launch command in workdir.
 
     Named tasks pass their slash-command as ``prompt`` and their id as
-    ``task_id``; the id is stamped on the session as user.cl_task so the live
-    list can label it. Resume passes ``resume_id`` (a Conversation's sessionId)
+    ``task_id``; the id is stamped on the pane as user.cl_task so the live
+    list can label it. Resume passes ``resume_id`` (a Session's sessionId)
     to spawn ``cl --resume``. Generic launches pass none of them.
     """
     cmd = _resume_cmd(workdir, resume_id) if resume_id else _launch_cmd(workdir, prompt)
@@ -134,11 +138,14 @@ def sanitize_log(s: str) -> str:
     return _CONTROL_CHAR_RE.sub("?", s).replace("\n", "?").replace("\r", "?")
 
 
-# --- live session discovery (iTerm sessions running `claude`) -----------------
+# --- live Run discovery (iTerm panes running `claude`) ------------------------
 
-_SESSION_ID_RE = re.compile(r"^[0-9A-Fa-f-]{36}$")
+# Both a Run id (an iTerm pane) and a Session id (Claude's sessionId) are
+# 36-char UUIDs. This checks *shape only* and belongs to neither: the two are
+# distinguished by which field they arrive in, never by their format.
+_UUID_RE = re.compile(r"^[0-9A-Fa-f-]{36}$")
 
-# Emit one line per iTerm session: id <US> tty <US> name <US> cl_task. US (0x1f)
+# Emit one line per iTerm pane: id <US> tty <US> name <US> cl_task. US (0x1f)
 # can't appear in any field, so splitting is unambiguous. An unset user.cl_task
 # comes back as `missing value`, so coerce it to "" first.
 _LIST_SCRIPT = """
@@ -182,8 +189,8 @@ return "notfound"
 """
 
 
-def _parse_iterm_sessions(out: str) -> list[tuple[str, str, str, str]]:
-    """(session_id, tty_basename, name, cl_task) for each _LIST_SCRIPT line."""
+def _parse_iterm_panes(out: str) -> list[tuple[str, str, str, str]]:
+    """(run_id, tty_basename, name, cl_task) for each _LIST_SCRIPT line."""
     rows = []
     for line in out.split("\n"):
         if not line:
@@ -216,11 +223,16 @@ def _parse_claude_ttys(out: str) -> dict[str, int]:
     return result
 
 
-_SESSIONS_DIR = os.path.expanduser("~/.claude/sessions")
+_RUNS_DIR = os.path.expanduser("~/.claude/sessions")
 
 
-def _session_meta(base: str = _SESSIONS_DIR) -> dict[int, dict]:
-    """pid -> {cwd, status, remote} from claude's ~/.claude/sessions/<pid>.json."""
+def _run_meta(base: str = _RUNS_DIR) -> dict[int, dict]:
+    """pid -> {cwd, status, remote, sessionId, updatedAt}.
+
+    Claude Code writes one of these per live process, in a directory it calls
+    `sessions/`. They describe Runs; the `sessionId` inside points at the
+    Session the Run is executing.
+    """
     meta: dict[int, dict] = {}
     try:
         names = os.listdir(base)
@@ -251,7 +263,7 @@ _PROJECTS_STATE = os.path.expanduser("~/.claude/projects")
 
 
 def _transcript_path(session_id: str, base: str = _PROJECTS_STATE) -> str:
-    if not _SESSION_ID_RE.match(session_id):
+    if not _UUID_RE.match(session_id):
         return ""
     matches = glob.glob(os.path.join(base, "*", session_id + ".jsonl"))
     return matches[0] if matches else ""
@@ -320,8 +332,8 @@ def _last_msg(session_id: str, base: str = _PROJECTS_STATE, window: int = 131072
     return ""
 
 
-def _conversation_cwd(session_id: str, base: str = _PROJECTS_STATE) -> str:
-    """Directory to resume a Conversation in, or '' if it has no transcript.
+def _session_cwd(session_id: str, base: str = _PROJECTS_STATE) -> str:
+    """Directory to resume a Session in, or '' if it has no transcript.
 
     The transcript's own ``cwd`` (first line carrying one) is authoritative.
     Un-munging the project-dir name ('/' -> '-') is a lossy fallback — a '-'
@@ -365,7 +377,7 @@ def _last_active(updated_at: object) -> str:
 
 
 def _clean_title(name: str) -> str:
-    """Strip iTerm's status glyph + trailing '(profile)' from a tab title."""
+    """Strip iTerm's status glyph + trailing '(profile)' from a pane title."""
     s = re.sub(r"\s*\([^)]*\)\s*$", "", name).strip()
     return re.sub(r"^[\W_]+", "", s).strip()
 
@@ -376,10 +388,10 @@ def _osascript(script: str) -> str:
     ).stdout
 
 
-def list_sessions() -> list[dict]:
-    """Live `claude` sessions visible as iTerm sessions, in tab order."""
+def list_runs() -> list[dict]:
+    """Live `claude` Runs visible as iTerm panes, in tab order."""
     try:
-        sessions = _parse_iterm_sessions(_osascript(_LIST_SCRIPT))
+        sessions = _parse_iterm_panes(_osascript(_LIST_SCRIPT))
         ps_out = subprocess.run(
             ["ps", "-axo", "pid=,tty=,command="],
             capture_output=True, text=True, check=True,
@@ -387,7 +399,7 @@ def list_sessions() -> list[dict]:
     except (subprocess.CalledProcessError, FileNotFoundError):
         return []
     claude = _parse_claude_ttys(ps_out)
-    meta = _session_meta()
+    meta = _run_meta()
     rows = []
     for sid, tty, name, tag in sessions:
         pid = claude.get(tty)
@@ -417,22 +429,22 @@ def list_sessions() -> list[dict]:
 
 
 def _live_session_ids() -> set[str]:
-    """sessionIds of currently-live Sessions — the resume live-guard set.
+    """sessionIds of Sessions with a live Run — the resume live-guard set.
 
-    Resuming a Conversation that is already live would put two Sessions on one
+    Resuming a Session that already has a live Run would put two Runs on one
     transcript, so /resume refuses any id in here.
     """
-    return {sid for s in list_sessions() if (sid := s.get("sessionId"))}
+    return {sid for s in list_runs() if (sid := s.get("sessionId"))}
 
 
-def close_session(session_id: str) -> bool:
-    """Close the iTerm session with this id, but only if it's a live claude one."""
-    if not _SESSION_ID_RE.match(session_id):
+def close_run(run_id: str) -> bool:
+    """Close the iTerm pane with this Run id, but only if it's a live claude one."""
+    if not _UUID_RE.match(run_id):
         return False
-    if session_id not in {s["id"] for s in list_sessions()}:
+    if run_id not in {r["id"] for r in list_runs()}:
         return False
     try:
-        return _osascript(_CLOSE_SCRIPT % session_id).strip() == "ok"
+        return _osascript(_CLOSE_SCRIPT % run_id).strip() == "ok"
     except (subprocess.CalledProcessError, FileNotFoundError):
         return False
 
@@ -538,13 +550,13 @@ def _render_tasks() -> str:
     return "".join(out)
 
 
-def _render_sessions() -> str:
-    rows = list_sessions()
+def _render_runs() -> str:
+    rows = list_runs()
     if not rows:
-        return '<div class="empty">no live sessions</div>'
-    out = ['<div class="shead">open sessions &middot; tap &times; to close</div>']
+        return '<div class="empty">no live runs</div>'
+    out = ['<div class="shead">open runs &middot; tap &times; to close</div>']
     for s in rows:
-        sid = html.escape(s["id"])
+        rid = html.escape(s["id"])
         head = html.escape(s["title"])
         st = s.get("status", "")
         label = {"busy": "working", "waiting": "waiting", "idle": "idle"}.get(st, st)
@@ -562,7 +574,7 @@ def _render_sessions() -> str:
         out.append(
             '<div class="srow">'
             '<form method="post" action="/close">'
-            f'<input type="hidden" name="session_id" value="{sid}">'
+            f'<input type="hidden" name="run_id" value="{rid}">'
             '<button class="x" type="submit" title="close">&times;</button></form>'
             f'<div class="smeta"><div class="sname">{head}{rc}</div>'
             f'<div class="sdir">{meta}</div>{snip_html}</div>'
@@ -575,7 +587,7 @@ def _render_index() -> str:
     return (
         INDEX_TEMPLATE
         .replace("{tasks}", _render_tasks())
-        .replace("{sessions}", _render_sessions())
+        .replace("{sessions}", _render_runs())
     )
 
 
@@ -702,18 +714,18 @@ class Handler(BaseHTTPRequestHandler):
 
     def _handle_resume(self, qs: dict) -> None:
         session_id = (qs.get("session_id") or [""])[0].strip()
-        if not _SESSION_ID_RE.match(session_id):
+        if not _UUID_RE.match(session_id):
             self._send(400, "invalid session id\n")
             return
         if not _transcript_path(session_id):
-            self._send(400, "no such conversation\n")
+            self._send(400, "no such session\n")
             return
         if session_id in _live_session_ids():
             self._send(400, "already live\n")
             return
-        workdir = _conversation_cwd(session_id)
+        workdir = _session_cwd(session_id)
         if not workdir or not os.path.isdir(workdir):
-            self._send(400, "conversation's dir is gone\n")
+            self._send(400, "session's dir is gone\n")
             return
         try:
             launch_iterm(workdir, resume_id=session_id)
@@ -723,9 +735,9 @@ class Handler(BaseHTTPRequestHandler):
         self._send(200, f"resumed {session_id}\n")
 
     def _handle_close(self, qs: dict) -> None:
-        session_id = (qs.get("session_id") or [""])[0]
-        if not close_session(session_id):
-            self._send(400, "could not close session\n")
+        run_id = (qs.get("run_id") or [""])[0]
+        if not close_run(run_id):
+            self._send(400, "could not close run\n")
             return
         # 303 -> GET / so the refreshed list reflects the close.
         self.send_response(303)

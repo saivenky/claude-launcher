@@ -3,12 +3,20 @@
 Tiny HTTP server to spawn and manage Claude Code sessions on a Mac from
 a phone over Tailscale. Opens a new iTerm2 tab running `claude` with
 Remote Control enabled — so you can drive the session from the Claude
-app — and lists the running sessions, each with a tap-to-close button.
+app — and lists what's running, each with a tap-to-close button.
 
-The launcher owns session *lifecycle* (spawn, list, close); the Claude
-app owns everything *inside* a session (typing tasks, approvals, output).
+The launcher owns *lifecycle* (spawn, list, close); the Claude app owns
+everything *inside* a session (typing tasks, approvals, output).
 Spawning a new local session is the one thing the app can't do — that's
 the gap this fills.
+
+Two words, used precisely throughout (see [CONTEXT.md](CONTEXT.md)):
+
+- a **session** is the durable thread Claude Code identifies by
+  `sessionId` — the one the Claude app shows you, the one you resume.
+- a **run** is one `claude` process executing a session, concretely an
+  iTerm pane. The launcher only ever starts and closes runs. **Closing a
+  run never destroys a session.**
 
 ## Requirements
 
@@ -28,8 +36,8 @@ python3 server.py
 ```
 
 Open `http://<host>:8765/` in a browser. Type a subdirectory and tap
-**launch** to start a session; the page below lists every running
-`claude` session — title, dir, last-active time, status
+**launch** to start a run; the page below lists every running
+`claude` run — title, dir, last-active time, status
 (working/waiting/idle), and a recent-message snippet — sorted newest
 first to mirror the Claude app, each with a **×** to close it.
 
@@ -48,23 +56,22 @@ TASKS = [
 Each task spawns `cl <command>` in `workdir` (a `/slash-command` is
 typical); `input: "text"` adds a seed box whose value is appended to the
 command. `tasks.py` is private (gitignored) — without it you just get the
-generic launcher. Task sessions are tagged (`user.cl_task`) so the live
-list shows their label; the list still includes every running `claude`
-session.
+generic launcher. Task runs are tagged (`user.cl_task`) so the live list
+shows their label; the list still includes every running `claude` run.
 
-## Resume a conversation
+## Resume a session
 
-To get back into a Claude Code conversation you closed, paste its
-`sessionId` into the `$ cl --resume …` line and tap **resume**. The
-launcher looks up that conversation's transcript, finds the directory it
-ran in, and spawns a fresh session there with `claude --resume <id>` (Remote
-Control on, so the Claude app can drive it).
+To get back into a Claude Code session you closed, paste its `sessionId`
+into the `$ cl --resume …` line and tap **resume**. The launcher looks up
+that session's transcript, finds the directory it ran in, and starts a
+fresh run there with `claude --resume <id>` (Remote Control on, so the
+Claude app can drive it).
 
-You supply the id — the launcher only lists *live* sessions, so read the id
+You supply the id — the launcher only lists *live* runs, so read the id
 off the Claude app. Notes:
 
-- A conversation that's currently live is refused (you're already in it; a
-  second session on one transcript would fork it). Close it first.
+- A session that already has a live run is refused (you're already in it;
+  a second run on one transcript would fork it). Close it first.
 - Resume is intentionally *not* confined to `PROJECTS_ROOT` — it can only
   reopen a directory where you already ran `claude`, never an arbitrary
   path, so it reaches `~/obsidian` and anything else outside the root. See
@@ -99,10 +106,9 @@ What the server does enforce:
   same-origin `Origin` check).
 - `/resume` only accepts a well-formed `sessionId` (validated before it
   touches the shell) that already has a transcript on disk, and refuses ids
-  whose session is currently live.
-- `/close` only acts on a session id that matches a currently-live
-  `claude` session, and only closes iTerm sessions — never arbitrary
-  processes or tabs.
+  whose run is currently live.
+- `/close` only acts on a run id that matches a currently-live `claude`
+  run, and only closes iTerm panes — never arbitrary processes or tabs.
 - Log injection blocked (CRLF + control chars scrubbed).
 
 If you need access control on top, add a shared-secret token to the

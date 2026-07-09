@@ -132,19 +132,19 @@ class HttpEndpointTests(unittest.TestCase):
             server.DEFAULT_DIR = old_default
 
 
-class SessionParseTests(unittest.TestCase):
-    def test_parse_iterm_sessions(self):
+class RunParseTests(unittest.TestCase):
+    def test_parse_iterm_panes(self):
         # four fields: id, tty, name, cl_task tag (blank when untagged)
         out = ("ID1\x1f/dev/ttys001\x1f✳ Fix bug (claude)\x1fcapture\n"
                "ID2\x1f/dev/ttys002\x1fDefault\x1f\n")
         self.assertEqual(
-            server._parse_iterm_sessions(out),
+            server._parse_iterm_panes(out),
             [("ID1", "ttys001", "✳ Fix bug (claude)", "capture"),
              ("ID2", "ttys002", "Default", "")],
         )
 
-    def test_parse_iterm_sessions_skips_malformed(self):
-        self.assertEqual(server._parse_iterm_sessions("garbage-no-separators\n\n"), [])
+    def test_parse_iterm_panes_skips_malformed(self):
+        self.assertEqual(server._parse_iterm_panes("garbage-no-separators\n\n"), [])
 
     def test_parse_claude_ttys_filters_to_claude(self):
         out = (
@@ -158,7 +158,7 @@ class SessionParseTests(unittest.TestCase):
             {"ttys001": 32324, "ttys006": 11402},
         )
 
-    def test_session_meta(self):
+    def test_run_meta(self):
         base = os.path.join(os.path.dirname(__file__), "_sessfix")
         os.makedirs(base, exist_ok=True)
         try:
@@ -169,7 +169,7 @@ class SessionParseTests(unittest.TestCase):
                 f.write('{"pid":11402,"cwd":"/x","status":"idle"}')  # no bridge
             with open(os.path.join(base, "bad.json"), "w") as f:
                 f.write("not json")  # skipped
-            meta = server._session_meta(base)
+            meta = server._run_meta(base)
             self.assertEqual(meta[39909], {
                 "cwd": "/Users/me/obsidian", "status": "waiting", "remote": True,
                 "sessionId": "", "updatedAt": None,
@@ -238,18 +238,18 @@ class SessionParseTests(unittest.TestCase):
         self.assertEqual(server._clean_title("Plain title"), "Plain title")
 
 
-class CloseSessionTests(unittest.TestCase):
+class CloseRunTests(unittest.TestCase):
     def test_rejects_bad_id_format(self):
-        self.assertFalse(server.close_session("../etc"))
-        self.assertFalse(server.close_session("short"))
+        self.assertFalse(server.close_run("../etc"))
+        self.assertFalse(server.close_run("short"))
 
     def test_rejects_id_not_in_live_set(self):
-        saved = server.list_sessions
-        server.list_sessions = lambda: [{"id": "AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA"}]
+        saved = server.list_runs
+        server.list_runs = lambda: [{"id": "AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA"}]
         try:
-            self.assertFalse(server.close_session("BBBBBBBB-BBBB-BBBB-BBBB-BBBBBBBBBBBB"))
+            self.assertFalse(server.close_run("BBBBBBBB-BBBB-BBBB-BBBB-BBBBBBBBBBBB"))
         finally:
-            server.list_sessions = saved
+            server.list_runs = saved
 
 
 class LaunchCmdTests(unittest.TestCase):
@@ -385,7 +385,7 @@ class NamedLaunchHttpTests(unittest.TestCase):
         self.assertEqual(args[1], "/capture-task")
 
 
-class ConversationCwdTests(unittest.TestCase):
+class SessionCwdTests(unittest.TestCase):
     def setUp(self):
         self.base = os.path.join(os.path.dirname(__file__), "_cwdfix")
         self.proj = os.path.join(self.base, "-Users-me-proj")
@@ -405,30 +405,30 @@ class ConversationCwdTests(unittest.TestCase):
             '{"type":"bridge-session"}',                # meta: no cwd
             '{"type":"user","cwd":"/Users/me/obsidian","message":{"content":"hi"}}',
         ])
-        self.assertEqual(server._conversation_cwd(sid, self.base), "/Users/me/obsidian")
+        self.assertEqual(server._session_cwd(sid, self.base), "/Users/me/obsidian")
 
     def test_falls_back_to_unmunged_dir_name_when_no_cwd(self):
         sid = "BBBBBBBB-BBBB-BBBB-BBBB-BBBBBBBBBBBB"
         self._write(sid, ['{"type":"mode","sessionId":"x"}'])  # never carries a cwd
         # lossy un-munge of the -Users-me-proj project dir
-        self.assertEqual(server._conversation_cwd(sid, self.base), "/Users/me/proj")
+        self.assertEqual(server._session_cwd(sid, self.base), "/Users/me/proj")
 
     def test_unknown_or_malformed_id_returns_blank(self):
         self.assertEqual(
-            server._conversation_cwd("CCCCCCCC-CCCC-CCCC-CCCC-CCCCCCCCCCCC", self.base), "")
-        self.assertEqual(server._conversation_cwd("bad-id", self.base), "")
+            server._session_cwd("CCCCCCCC-CCCC-CCCC-CCCC-CCCCCCCCCCCC", self.base), "")
+        self.assertEqual(server._session_cwd("bad-id", self.base), "")
 
 
 class LiveSessionIdsTests(unittest.TestCase):
     def test_collects_nonblank_session_ids(self):
-        saved = server.list_sessions
-        server.list_sessions = lambda: [
+        saved = server.list_runs
+        server.list_runs = lambda: [
             {"sessionId": "s1"}, {"sessionId": ""}, {"sessionId": "s2"},
         ]
         try:
             self.assertEqual(server._live_session_ids(), {"s1", "s2"})
         finally:
-            server.list_sessions = saved
+            server.list_runs = saved
 
 
 _GOOD = "AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA"    # transcript + existing cwd
@@ -443,7 +443,7 @@ class ResumeHttpTests(unittest.TestCase):
         cls._saved = {
             "launch_iterm": server.launch_iterm,
             "transcript": server._transcript_path,
-            "cwd": server._conversation_cwd,
+            "cwd": server._session_cwd,
             "live": server._live_session_ids,
         }
         cls.here = os.path.dirname(os.path.abspath(__file__))  # a dir that exists
@@ -451,7 +451,7 @@ class ResumeHttpTests(unittest.TestCase):
         server.launch_iterm = lambda *a, **k: cls.calls.append((a, k))
         server._transcript_path = lambda sid, *a, **k: (
             "/x/" + sid + ".jsonl" if sid in (_GOOD, _LIVE, _GONE) else "")
-        server._conversation_cwd = lambda sid, *a, **k: (
+        server._session_cwd = lambda sid, *a, **k: (
             "/no/such/dir" if sid == _GONE else cls.here)
         server._live_session_ids = lambda: {_LIVE}
         cls.httpd = ThreadingHTTPServer(("127.0.0.1", 0), server.Handler)
@@ -465,7 +465,7 @@ class ResumeHttpTests(unittest.TestCase):
         cls.thread.join(timeout=2)
         server.launch_iterm = cls._saved["launch_iterm"]
         server._transcript_path = cls._saved["transcript"]
-        server._conversation_cwd = cls._saved["cwd"]
+        server._session_cwd = cls._saved["cwd"]
         server._live_session_ids = cls._saved["live"]
 
     def setUp(self):
@@ -494,7 +494,7 @@ class ResumeHttpTests(unittest.TestCase):
     def test_unknown_id_rejected(self):
         status, body = self._post(f"session_id={_UNKNOWN}".encode())
         self.assertEqual(status, 400)
-        self.assertIn("no such conversation", body)
+        self.assertIn("no such session", body)
         self.assertEqual(self.calls, [])
 
     def test_live_id_rejected(self):
