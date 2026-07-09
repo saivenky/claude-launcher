@@ -12,18 +12,23 @@ Three ways to start a Run, on one page:
   - resume: paste a past Session's sessionId -> runs `cl --resume <id>`
     in that Session's own dir (found from its transcript)
 
+The page is a small JS client over a JSON API (ADR 0003): actions post JSON,
+show a toast, and refresh the Run list in place instead of navigating away.
+
 tasks.py is optional and private; without it you just get the generic
 launcher (and resume)."""
 
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import urlparse, parse_qs
+from urllib.parse import urlparse
 import glob
+import hashlib
 import html
 import json
 import os
 import re
 import subprocess
 import sys
+import threading
 import time
 
 try:
@@ -83,13 +88,19 @@ def _resume_cmd(workdir: str, session_id: str) -> str:
 
 
 def launch_iterm(workdir: str, prompt: str | None = None, task_id: str | None = None,
-                 resume_id: str | None = None) -> None:
-    """Open an iTerm tab running the launch command in workdir.
+                 resume_id: str | None = None) -> str:
+    """Open an iTerm pane running the launch command in workdir; return its Run id.
 
     Named tasks pass their slash-command as ``prompt`` and their id as
     ``task_id``; the id is stamped on the pane as user.cl_task so the live
     list can label it. Resume passes ``resume_id`` (a Session's sessionId)
     to spawn ``cl --resume``. Generic launches pass none of them.
+
+    The AppleScript returns `id of current session` — the new pane's UUID,
+    which is the same id `list_runs` keys rows by. The client needs it to
+    paint an optimistic row: a Run is not visible to `list_runs` until
+    `claude` shows up in `ps` (1-3s later), so without this correlation key
+    a launch looks like it did nothing.
     """
     cmd = _resume_cmd(workdir, resume_id) if resume_id else _launch_cmd(workdir, prompt)
     stamp = ""
@@ -105,10 +116,12 @@ tell application "iTerm"
     end if
     tell current session of current window
         write text {applescript_quote(cmd)}{stamp}
+        return id
     end tell
 end tell
 '''
-    subprocess.run(["osascript", "-e", script], check=True)
+    run_id = _osascript(script).strip()
+    return run_id if _UUID_RE.match(run_id) else ""
 
 
 def shell_quote(s: str) -> str:
@@ -144,6 +157,11 @@ def sanitize_log(s: str) -> str:
 # 36-char UUIDs. This checks *shape only* and belongs to neither: the two are
 # distinguished by which field they arrive in, never by their format.
 _UUID_RE = re.compile(r"^[0-9A-Fa-f-]{36}$")
+
+# The only statuses Claude Code writes. Whitelisted because `status` lands in
+# a `st-<status>` CSS class on the client — it becomes structure, not text, so
+# it is the one field `textContent` cannot make safe.
+_STATUSES = ("busy", "waiting", "idle")
 
 # Emit one line per iTerm pane: id <US> tty <US> name <US> cl_task. US (0x1f)
 # can't appear in any field, so splitting is unambiguous. An unset user.cl_task
@@ -198,8 +216,8 @@ def _parse_iterm_panes(out: str) -> list[tuple[str, str, str, str]]:
         parts = line.split("\x1f")
         if len(parts) != 4:
             continue
-        sid, tty, name, tag = parts
-        rows.append((sid.strip(), os.path.basename(tty.strip()), name.strip(), tag.strip()))
+        rid, tty, name, tag = parts
+        rows.append((rid.strip(), os.path.basename(tty.strip()), name.strip(), tag.strip()))
     return rows
 
 
@@ -249,12 +267,14 @@ def _run_meta(base: str = _RUNS_DIR) -> dict[int, dict]:
         pid = j.get("pid")
         if not isinstance(pid, int):
             continue
+        status = j.get("status", "")
+        updated = j.get("updatedAt")
         meta[pid] = {
             "cwd": j.get("cwd", ""),
-            "status": j.get("status", ""),
+            "status": status if status in _STATUSES else "",
             "remote": bool(j.get("bridgeSessionId")),
             "sessionId": j.get("sessionId", ""),
-            "updatedAt": j.get("updatedAt"),
+            "updatedAt": updated if isinstance(updated, (int, float)) else None,
         }
     return meta
 
@@ -293,7 +313,7 @@ def _msg_text(line: str, roles: tuple = ("user", "assistant")) -> str:
 
 
 def _first_user_msg(session_id: str, base: str = _PROJECTS_STATE) -> str:
-    """Opening user prompt — title fallback when the tab-title is generic."""
+    """Opening user prompt — title fallback when the pane title is generic."""
     path = _transcript_path(session_id, base)
     if not path:
         return ""
@@ -309,7 +329,7 @@ def _first_user_msg(session_id: str, base: str = _PROJECTS_STATE) -> str:
 
 
 def _last_msg(session_id: str, base: str = _PROJECTS_STATE, window: int = 131072) -> str:
-    """Most-recent message text — the 'where is this session' preview the web shows.
+    """Most-recent message text — the 'where is this Run' preview the page shows.
 
     Tails the last ``window`` bytes so big transcripts stay cheap to read.
     """
@@ -359,23 +379,6 @@ def _session_cwd(session_id: str, base: str = _PROJECTS_STATE) -> str:
     return os.path.basename(os.path.dirname(path)).replace("-", "/")
 
 
-def _last_active(updated_at: object) -> str:
-    """updatedAt (ms epoch) -> relative last-activity: now / 47m / 2h / 4d.
-
-    Mirrors the recency the Claude web UI shows, so rows line up with it.
-    """
-    if not isinstance(updated_at, (int, float)):
-        return ""
-    mins = (time.time() - updated_at / 1000) / 60
-    if mins < 1:
-        return "now"
-    if mins < 60:
-        return f"{int(mins)}m"
-    if mins < 1440:
-        return f"{int(mins / 60)}h"
-    return f"{int(mins / 1440)}d"
-
-
 def _clean_title(name: str) -> str:
     """Strip iTerm's status glyph + trailing '(profile)' from a pane title."""
     s = re.sub(r"\s*\([^)]*\)\s*$", "", name).strip()
@@ -388,73 +391,123 @@ def _osascript(script: str) -> str:
     ).stdout
 
 
+def _ps_output() -> str:
+    return subprocess.run(
+        ["ps", "-axo", "pid=,tty=,command="], capture_output=True, text=True, check=True
+    ).stdout
+
+
 def list_runs() -> list[dict]:
-    """Live `claude` Runs visible as iTerm panes, in tab order."""
+    """Live `claude` Runs visible as iTerm panes, newest activity first.
+
+    ``updatedAt`` ships raw (epoch ms). Formatting it server-side into "47m"
+    would make an idle Run's payload change every minute, defeating the ETag
+    and every "nothing changed, skip the re-render" check downstream.
+    """
     try:
-        sessions = _parse_iterm_panes(_osascript(_LIST_SCRIPT))
-        ps_out = subprocess.run(
-            ["ps", "-axo", "pid=,tty=,command="],
-            capture_output=True, text=True, check=True,
-        ).stdout
+        panes = _parse_iterm_panes(_osascript(_LIST_SCRIPT))
+        ps_out = _ps_output()
     except (subprocess.CalledProcessError, FileNotFoundError):
         return []
     claude = _parse_claude_ttys(ps_out)
     meta = _run_meta()
     rows = []
-    for sid, tty, name, tag in sessions:
+    for rid, tty, name, tag in panes:
         pid = claude.get(tty)
         if pid is None:
-            continue
+            continue  # pane exists, `claude` not in ps yet -> not a Run
         m = meta.get(pid, {})
+        session_id = m.get("sessionId", "")
+        # `claude` reaches `ps` ~0.5s before it writes sessions/<pid>.json. In
+        # that window the Run has no Session, no cwd and no updatedAt, and its
+        # pane is still titled by the shell ("login"). Report it as *starting*
+        # rather than as a half-empty Run that sorts to the bottom of the list.
+        starting = not session_id
         if tag:
             title = TASK_LABELS.get(tag, tag)
         else:
             title = _clean_title(name)
             if not title or title == "Claude Code":
-                title = _first_user_msg(m.get("sessionId", "")) or title or "claude"
-        updated = m.get("updatedAt")
+                title = _first_user_msg(session_id) or title or "claude"
         rows.append({
-            "id": sid,
+            "id": rid,
+            "sessionId": session_id,
             "title": title,
-            "dir": m.get("cwd", ""),
+            "dir": _display_path(m.get("cwd", "")) if m.get("cwd") else "",
             "status": m.get("status", ""),
             "remote": m.get("remote", False),
-            "active": _last_active(updated),
-            "snippet": _last_msg(m.get("sessionId", "")),
-            "sessionId": m.get("sessionId", ""),
-            "_updated": updated if isinstance(updated, (int, float)) else 0,
+            "updatedAt": m.get("updatedAt"),
+            "snippet": _last_msg(session_id),
+            "starting": starting,
         })
-    rows.sort(key=lambda r: r["_updated"], reverse=True)
+    # Starting Runs first — they are the newest thing that happened, and they
+    # have no updatedAt to sort by. Then most-recently-active, as the Claude
+    # app orders them.
+    rows.sort(key=lambda r: (not r["starting"], -(r["updatedAt"] or 0)))
     return rows
+
+
+# One AppleScript walk costs ~140ms (84ms iTerm + 53ms `ps`). Memoize briefly so
+# the burst-poll after a launch, the periodic poll, and a second open tab all
+# collapse into one walk. Mutations invalidate it — a closed Run must vanish on
+# the very next poll, not up to a TTL later.
+_RUNS_TTL = 0.75
+_runs_lock = threading.Lock()
+_runs_cache: tuple[float, list[dict]] = (0.0, [])
+
+
+def cached_runs() -> list[dict]:
+    global _runs_cache
+    with _runs_lock:
+        stamp, rows = _runs_cache
+        if time.monotonic() - stamp < _RUNS_TTL:
+            return rows
+        rows = list_runs()
+        _runs_cache = (time.monotonic(), rows)
+        return rows
+
+
+def invalidate_runs() -> None:
+    global _runs_cache
+    with _runs_lock:
+        _runs_cache = (0.0, [])
 
 
 def _live_session_ids() -> set[str]:
     """sessionIds of Sessions with a live Run — the resume live-guard set.
 
     Resuming a Session that already has a live Run would put two Runs on one
-    transcript, so /resume refuses any id in here.
+    transcript, so /api/resume refuses any id in here.
     """
-    return {sid for s in list_runs() if (sid := s.get("sessionId"))}
+    return {sid for r in cached_runs() if (sid := r.get("sessionId"))}
 
 
 def close_run(run_id: str) -> bool:
     """Close the iTerm pane with this Run id, but only if it's a live claude one."""
     if not _UUID_RE.match(run_id):
         return False
-    if run_id not in {r["id"] for r in list_runs()}:
+    if run_id not in {r["id"] for r in cached_runs()}:
         return False
     try:
-        return _osascript(_CLOSE_SCRIPT % run_id).strip() == "ok"
+        ok = _osascript(_CLOSE_SCRIPT % run_id).strip() == "ok"
     except (subprocess.CalledProcessError, FileNotFoundError):
         return False
+    if ok:
+        invalidate_runs()
+    return ok
 
+
+# --- page ---------------------------------------------------------------------
+
+CSP = ("default-src 'none'; script-src 'self'; connect-src 'self'; "
+       "style-src 'unsafe-inline'; base-uri 'none'")
 
 INDEX_HTML = """<!doctype html>
 <html><head><meta name="viewport" content="width=device-width,initial-scale=1">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; form-action 'self'">
 <title>cl</title>
 <style>
-:root{--bg:#0e0f12;--fg:#d6d6d6;--dim:#6b7280;--prompt:#7fcd9b;--accent:#e8b65a;--input:#1a1c20}
+:root{--bg:#0e0f12;--fg:#d6d6d6;--dim:#6b7280;--prompt:#7fcd9b;--accent:#e8b65a;--input:#1a1c20;
+  --err:#e06c6c}
 *{box-sizing:border-box}
 body{margin:0;padding:2rem 1rem;font:15px/1.5 "SF Mono","Menlo","Consolas",ui-monospace,monospace;
   background:var(--bg);color:var(--fg);min-height:100vh}
@@ -469,55 +522,57 @@ main{max-width:520px;margin:0 auto}
 .input::placeholder{color:#4b5563}
 .input:focus{border-bottom-color:var(--accent)}
 .task{display:flex;align-items:stretch;gap:.5rem;margin-bottom:.75rem}
-.task .input{flex:1 1 auto;min-width:8ch;background:var(--input);color:var(--accent);
-  border:0;border-bottom:1px dashed var(--dim);font:inherit;padding:.4rem .6rem;outline:0;
-  caret-color:var(--accent)}
-.task .input::placeholder{color:#4b5563}
-.task .input:focus{border-bottom-color:var(--accent)}
+.task .input{flex:1 1 auto;min-width:8ch;padding:.4rem .6rem}
 .task .go{margin-top:0}
 .orsep{color:var(--dim);font-size:12px;margin:1.5rem 0 1.1rem;padding-top:1.2rem;
   border-top:1px solid #1f2227;letter-spacing:.05em}
 .go{margin-top:1.5rem;background:transparent;border:1px solid var(--fg);color:var(--fg);
   font:inherit;padding:.5rem 1.5rem;cursor:pointer;letter-spacing:.05em}
 .go:hover,.go:active{background:var(--fg);color:var(--bg)}
+.go:disabled{opacity:.5;cursor:default}
 .hint{color:var(--dim);margin-top:1rem;font-size:13px}
 .hint code{color:var(--fg)}
 .sessions{margin-top:2.5rem}
 .shead{color:var(--dim);font-size:13px;margin-bottom:.5rem;letter-spacing:.05em}
 .empty{color:var(--dim);font-size:13px;margin-top:2.5rem}
 .srow{display:flex;align-items:flex-start;gap:.6rem;padding:.5rem 0;border-top:1px solid #1f2227}
-.srow form{margin:0}
 .x{background:transparent;border:1px solid var(--dim);color:var(--dim);font:inherit;
   line-height:1;padding:.15rem .55rem;cursor:pointer;border-radius:2px}
-.x:hover,.x:active{border-color:#e06c6c;color:#e06c6c}
+.x:hover,.x:active{border-color:var(--err);color:var(--err)}
+.x:disabled{opacity:.4;cursor:default}
 .smeta{min-width:0;flex:1}
 .sname{color:var(--fg);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .sdir{color:var(--dim);font-size:12px;margin-top:.15rem}
 .ssnip{color:var(--dim);font-size:12px;margin-top:.3rem;opacity:.8;
   display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.pending .sname{color:var(--dim)}
 .sage{color:var(--prompt)}
 .st-busy{color:var(--prompt)}
 .st-waiting{color:var(--accent)}
 .st-idle{color:var(--dim)}
 .rc{color:var(--prompt);font-size:11px;border:1px solid #2a2d33;border-radius:2px;
   padding:0 .35rem;margin-left:.5rem;vertical-align:middle}
+#toast{position:fixed;left:1rem;right:1rem;bottom:1rem;max-width:520px;margin:0 auto;
+  padding:.7rem .9rem;font-size:13px;border-radius:3px;cursor:pointer;
+  background:var(--input);border:1px solid var(--dim);color:var(--fg)}
+#toast.err{border-color:var(--err);color:var(--err)}
+#toast[hidden]{display:none}
 </style></head>
 <body>
 <main>
-  <div class="label"><b>claude-launcher</b> &middot; launch &amp; manage sessions</div>
+  <div class="label"><b>claude-launcher</b> &middot; launch &amp; manage runs</div>
+  <noscript><div class="empty">this page needs JavaScript &mdash; it drives a JSON API.</div></noscript>
   {tasks}
-  <form method="post" action="/launch">
-    <div class="cmd"><span class="prompt">$ </span>cd {projects_root}/<input class="input" name="dir" autocomplete="off" placeholder="subdir"> &amp;&amp; cl</div>
-    <button class="go" type="submit">launch</button>
-    <div class="hint">blank &rarr; <code>{default_dir}</code></div>
-  </form>
-  <form method="post" action="/resume">
-    <div class="cmd"><span class="prompt">$ </span>cl --resume <input class="input" name="session_id" autocomplete="off" placeholder="sessionId"></div>
-    <button class="go" type="submit">resume</button>
-    <div class="hint">a closed session's id &mdash; from the Claude app</div>
-  </form>
-  <section class="sessions">{sessions}</section>
+  <div class="cmd"><span class="prompt">$ </span>cd {projects_root}/<input class="input" id="dir" autocomplete="off" placeholder="subdir"> &amp;&amp; cl</div>
+  <button class="go" id="launch" type="button">launch</button>
+  <div class="hint">blank &rarr; <code>{default_dir}</code></div>
+  <div class="cmd" style="margin-top:1.5rem"><span class="prompt">$ </span>cl --resume <input class="input" id="sid" autocomplete="off" placeholder="sessionId"></div>
+  <button class="go" id="resume" type="button">resume</button>
+  <div class="hint">a closed session's id &mdash; from the Claude app</div>
+  <section class="sessions" id="runs"></section>
 </main>
+<div id="toast" hidden></div>
+<script src="/app.js"></script>
 </body></html>
 """
 
@@ -527,9 +582,231 @@ INDEX_TEMPLATE = (
     .replace("{default_dir}", html.escape(_display_path(DEFAULT_DIR)))
 )
 
+# The client never assigns innerHTML. Every value from the API enters the DOM as
+# a text node, so no input can escape into markup — a structural guarantee, not a
+# per-field escaping habit. `status` is the sole exception (it becomes a CSS
+# class), which is why the server whitelists it against _STATUSES.
+APP_JS = r"""
+"use strict";
+const $ = (id) => document.getElementById(id);
+const LABELS = {busy: "working", waiting: "waiting", idle: "idle"};
+const POLL_MS = 4000;      // steady cadence while the page is visible
+const BURST_MS = 400;      // while waiting for a just-launched Run to appear
+const START_DEADLINE = 10000;
+
+let lastEtag = null;
+let lastRuns = [];
+let timer = null;
+let inflight = false;
+const pending = new Map();   // runId -> true, Runs launched but not yet in `ps`
+
+function ago(ms) {
+  if (!ms) return "";
+  const m = (Date.now() - ms) / 60000;
+  if (m < 1) return "now";
+  if (m < 60) return Math.floor(m) + "m";
+  if (m < 1440) return Math.floor(m / 60) + "h";
+  return Math.floor(m / 1440) + "d";
+}
+
+let toastTimer = null;
+function toast(msg, ok) {
+  const t = $("toast");
+  t.textContent = msg;
+  t.className = ok ? "" : "err";
+  t.hidden = false;
+  clearTimeout(toastTimer);
+  // Success fades; errors stay until tapped, because you are about to look
+  // at the list and wonder why nothing spawned.
+  if (ok) toastTimer = setTimeout(() => { t.hidden = true; }, 4000);
+}
+
+function el(tag, cls, text) {
+  const e = document.createElement(tag);
+  if (cls) e.className = cls;
+  if (text != null) e.textContent = text;
+  return e;
+}
+
+function rowNode(r) {
+  // Two flavours of not-yet-running look identical on purpose: `pending` is a
+  // Run we launched but the server cannot see yet, `starting` is one it sees
+  // but Claude Code has not registered. Both are "starting…".
+  const starting = r.pending || r.starting;
+  const row = el("div", starting ? "srow pending" : "srow");
+
+  const x = el("button", "x", "×");
+  x.type = "button";
+  x.title = "close";
+  // A pending Run has no pane the server will admit to yet, so /api/close
+  // would 400. Once it lists the pane, closing works even while starting.
+  if (r.pending) x.disabled = true;
+  else x.addEventListener("click", () => closeRun(r.id));
+  row.appendChild(x);
+
+  const meta = el("div", "smeta");
+  const name = el("div", "sname");
+  name.appendChild(document.createTextNode(starting ? "starting…" : (r.title || "claude")));
+  if (r.remote) name.appendChild(el("span", "rc", "remote"));
+  meta.appendChild(name);
+
+  const bits = [];
+  if (r.dir) bits.push(el("span", null, r.dir));
+  if (r.updatedAt) {
+    const age = el("span", "sage", ago(r.updatedAt));
+    age.dataset.at = String(r.updatedAt);
+    bits.push(age);
+  }
+  if (r.status) bits.push(el("span", "st st-" + r.status, LABELS[r.status] || r.status));
+  const sub = el("div", "sdir");
+  bits.forEach((b, i) => {
+    if (i) sub.appendChild(document.createTextNode(" · "));
+    sub.appendChild(b);
+  });
+  meta.appendChild(sub);
+
+  if (r.snippet) meta.appendChild(el("div", "ssnip", r.snippet));
+  row.appendChild(meta);
+  return row;
+}
+
+function render(runs) {
+  const host = $("runs");
+  const shown = runs.slice();
+  const live = new Set(runs.map((r) => r.id));
+  for (const id of pending.keys()) {
+    if (!live.has(id)) shown.unshift({id: id, title: "starting…", pending: true});
+  }
+  host.replaceChildren();
+  if (!shown.length) {
+    host.appendChild(el("div", "empty", "no live runs"));
+    return;
+  }
+  host.appendChild(el("div", "shead", "open runs · tap × to close"));
+  shown.forEach((r) => host.appendChild(rowNode(r)));
+}
+
+// A 304 means the data is unchanged, but wall-clock moved: only the relative
+// ages need touching, and only they get touched.
+function refreshAges() {
+  document.querySelectorAll("[data-at]").forEach((n) => {
+    n.textContent = ago(Number(n.dataset.at));
+  });
+}
+
+async function poll() {
+  if (inflight) return;
+  inflight = true;
+  try {
+    const headers = lastEtag ? {"If-None-Match": lastEtag} : {};
+    const r = await fetch("/api/runs", {headers: headers});
+    if (r.status === 304) { refreshAges(); return; }
+    if (!r.ok) return;
+    lastEtag = r.headers.get("ETag");
+    const body = await r.json();
+    lastRuns = body.runs || [];
+    lastRuns.forEach((r2) => pending.delete(r2.id));
+    render(lastRuns);
+  } catch (e) {
+    // network blip; the next tick retries
+  } finally {
+    inflight = false;
+  }
+}
+
+// Chained timeout, never setInterval: a 140ms server behind a slow cellular RTT
+// would otherwise stack overlapping requests. Burst until nothing is starting.
+function settling() {
+  return pending.size > 0 || lastRuns.some((r) => r.starting);
+}
+
+function schedule() {
+  clearTimeout(timer);
+  if (document.hidden) return;
+  timer = setTimeout(tick, settling() ? BURST_MS : POLL_MS);
+}
+
+async function tick() {
+  await poll();
+  schedule();
+}
+
+async function api(path, body) {
+  const r = await fetch(path, {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify(body),
+  });
+  try {
+    return await r.json();
+  } catch (e) {
+    return {ok: false, message: "http " + r.status};
+  }
+}
+
+// A Run is invisible to the server until `claude` reaches `ps`. Paint it
+// optimistically, burst-poll until it materialises, give up loudly.
+function watch(runId) {
+  if (!runId) return;
+  pending.set(runId, true);
+  render(lastRuns);
+  setTimeout(() => {
+    if (pending.delete(runId)) {
+      toast("run failed to start", false);
+      render(lastRuns);
+    }
+  }, START_DEADLINE);
+  schedule();
+}
+
+function afterLaunch(res, seedInput) {
+  toast(res.message, !!res.ok);
+  if (!res.ok) return;                 // keep the seed text so it can be fixed
+  if (seedInput) seedInput.value = "";
+  watch(res.runId);
+}
+
+async function launchDir() {
+  afterLaunch(await api("/api/launch", {dir: $("dir").value.trim()}), null);
+}
+
+async function launchTask(button) {
+  const seed = button.parentElement.querySelector("input");
+  const body = {task: button.dataset.task};
+  if (seed) body.input = seed.value.trim();
+  afterLaunch(await api("/api/launch", body), seed);
+}
+
+async function resumeSession() {
+  const box = $("sid");
+  const res = await api("/api/resume", {sessionId: box.value.trim()});
+  afterLaunch(res, box);
+}
+
+async function closeRun(runId) {
+  const res = await api("/api/close", {runId: runId});
+  toast(res.message, !!res.ok);
+  await poll();      // closing a pane is synchronous; no burst needed
+  schedule();
+}
+
+$("launch").addEventListener("click", launchDir);
+$("resume").addEventListener("click", resumeSession);
+$("toast").addEventListener("click", () => { $("toast").hidden = true; });
+document.querySelectorAll("[data-task]").forEach((b) => {
+  b.addEventListener("click", () => launchTask(b));
+});
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden) clearTimeout(timer);
+  else tick();
+});
+
+tick();
+"""
+
 
 def _render_tasks() -> str:
-    """One-tap task buttons (and inline text inputs) from tasks.py, or '' if no
+    """One-tap task buttons (and inline seed boxes) from tasks.py, or '' if no
     tasks are configured. Ends with a divider setting them off from the generic
     launcher below."""
     if not TASKS:
@@ -538,79 +815,60 @@ def _render_tasks() -> str:
     for t in TASKS:
         tid = html.escape(t["id"])
         label = html.escape(t["label"])
-        out.append('<form class="task" method="post" action="/launch">')
-        out.append(f'<input type="hidden" name="task" value="{tid}">')
+        out.append('<div class="task">')
         if t.get("input") == "text":
-            out.append(
-                f'<input class="input" name="input" autocomplete="off" '
-                f'placeholder="{label}…">'
-            )
-        out.append(f'<button class="go" type="submit">{label}</button></form>')
+            out.append(f'<input class="input" autocomplete="off" placeholder="{label}…">')
+        out.append(f'<button class="go" type="button" data-task="{tid}">{label}</button></div>')
     out.append('<div class="orsep">or launch a dir</div>')
     return "".join(out)
 
 
-def _render_runs() -> str:
-    rows = list_runs()
-    if not rows:
-        return '<div class="empty">no live runs</div>'
-    out = ['<div class="shead">open runs &middot; tap &times; to close</div>']
-    for s in rows:
-        rid = html.escape(s["id"])
-        head = html.escape(s["title"])
-        st = s.get("status", "")
-        label = {"busy": "working", "waiting": "waiting", "idle": "idle"}.get(st, st)
-        rc = ' <span class="rc">remote</span>' if s.get("remote") else ""
-        bits = []
-        if s["dir"]:
-            bits.append(html.escape(_display_path(s["dir"])))
-        if s.get("active"):
-            bits.append(f'<span class="sage">{html.escape(s["active"])}</span>')
-        if st:
-            bits.append(f'<span class="st st-{html.escape(st)}">{html.escape(label)}</span>')
-        meta = " &middot; ".join(bits)
-        snip = html.escape(s.get("snippet", ""))
-        snip_html = f'<div class="ssnip">{snip}</div>' if snip else ""
-        out.append(
-            '<div class="srow">'
-            '<form method="post" action="/close">'
-            f'<input type="hidden" name="run_id" value="{rid}">'
-            '<button class="x" type="submit" title="close">&times;</button></form>'
-            f'<div class="smeta"><div class="sname">{head}{rc}</div>'
-            f'<div class="sdir">{meta}</div>{snip_html}</div>'
-            '</div>'
-        )
-    return "".join(out)
-
-
 def _render_index() -> str:
-    return (
-        INDEX_TEMPLATE
-        .replace("{tasks}", _render_tasks())
-        .replace("{sessions}", _render_runs())
-    )
+    return INDEX_TEMPLATE.replace("{tasks}", _render_tasks())
+
+
+def _runs_payload() -> tuple[bytes, str]:
+    """Serialized Run list plus its ETag."""
+    body = json.dumps({"runs": cached_runs()}, separators=(",", ":")).encode("utf-8")
+    return body, '"' + hashlib.sha256(body).hexdigest()[:16] + '"'
 
 
 MAX_BODY_BYTES = 4096
+_API_POSTS = ("/api/launch", "/api/resume", "/api/close")
 
 
 class Handler(BaseHTTPRequestHandler):
-    def _send(self, code: int, body: str, ctype: str = "text/plain; charset=utf-8") -> None:
-        data = body.encode("utf-8")
+    def _send(self, code: int, data: bytes, ctype: str, extra: dict | None = None) -> None:
         self.send_response(code)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(data)))
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("X-Frame-Options", "DENY")
         self.send_header("Referrer-Policy", "same-origin")
+        # no-store everywhere: the client tracks the Run-list ETag itself and
+        # revalidates explicitly, so it never needs the browser HTTP cache.
         self.send_header("Cache-Control", "no-store")
+        if ctype.startswith("text/html"):
+            self.send_header("Content-Security-Policy", CSP)
+        for k, v in (extra or {}).items():
+            self.send_header(k, v)
         self.end_headers()
-        self.wfile.write(data)
+        if self.command != "HEAD":
+            self.wfile.write(data)
+
+    def _json(self, code: int, obj: dict, extra: dict | None = None) -> None:
+        self._send(code, json.dumps(obj).encode("utf-8"),
+                   "application/json; charset=utf-8", extra)
+
+    def _fail(self, code: int, message: str) -> None:
+        self._json(code, {"ok": False, "message": message})
 
     def _same_origin_ok(self) -> tuple[bool, str]:
+        """Fail closed. Every caller is our own fetch, which always sends Origin
+        on a POST; a missing header now means something else is calling."""
         origin = self.headers.get("Origin")
         if not origin:
-            return True, ""
+            return False, "origin missing"
         if origin == "null":
             return False, "origin=null"
         host = (self.headers.get("Host") or "").lower()
@@ -620,22 +878,32 @@ class Handler(BaseHTTPRequestHandler):
         return False, f"origin={origin!r} host={host!r}"
 
     def do_GET(self) -> None:
-        parsed = urlparse(self.path)
-        if parsed.path == "/":
-            self._send(200, _render_index(), "text/html; charset=utf-8")
+        path = urlparse(self.path).path
+        if path == "/":
+            self._send(200, _render_index().encode("utf-8"), "text/html; charset=utf-8")
             return
-        if parsed.path in ("/launch", "/resume", "/close"):
+        if path == "/app.js":
+            self._send(200, APP_JS.encode("utf-8"), "text/javascript; charset=utf-8")
+            return
+        if path == "/api/runs":
+            body, etag = _runs_payload()
+            if self.headers.get("If-None-Match") == etag:
+                self._send(304, b"", "application/json; charset=utf-8", {"ETag": etag})
+                return
+            self._send(200, body, "application/json; charset=utf-8", {"ETag": etag})
+            return
+        if path in _API_POSTS:
             self.send_response(405)
             self.send_header("Allow", "POST")
             self.send_header("Content-Length", "0")
             self.end_headers()
             return
-        self._send(404, "not found\n")
+        self._fail(404, "not found")
 
     def do_POST(self) -> None:
-        parsed = urlparse(self.path)
-        if parsed.path not in ("/launch", "/close", "/resume"):
-            self._send(404, "not found\n")
+        path = urlparse(self.path).path
+        if path not in _API_POSTS:
+            self._fail(404, "not found")
             return
         ok, detail = self._same_origin_ok()
         if not ok:
@@ -645,105 +913,112 @@ class Handler(BaseHTTPRequestHandler):
                 if self.headers.get(h)
             )
             sys.stderr.write(f"403 cross-origin: {sanitize_log(detail)} | {sanitize_log(dbg)}\n")
-            self._send(403, f"cross-origin blocked ({detail})\n")
+            self._fail(403, f"cross-origin blocked ({detail})")
             return
-        body_qs: dict = {}
+        # Requiring JSON makes a cross-origin POST a preflighted request, and the
+        # preflight fails because no CORS headers are sent. CSRF is then blocked
+        # structurally, not merely by inspecting Origin.
+        ctype = (self.headers.get("Content-Type") or "").split(";", 1)[0].strip().lower()
+        if ctype != "application/json":
+            self._fail(415, "expected application/json")
+            return
         try:
             length = int(self.headers.get("Content-Length") or "0")
         except ValueError:
-            self._send(400, "bad content-length\n")
+            self._fail(400, "bad content-length")
             return
         if length > MAX_BODY_BYTES:
-            self._send(413, "body too large\n")
+            self._fail(413, "body too large")
             return
-        if length > 0:
-            ctype = (self.headers.get("Content-Type") or "").split(";", 1)[0].strip().lower()
-            if ctype and ctype != "application/x-www-form-urlencoded":
-                self._send(415, "unsupported media type\n")
-                return
-            raw = self.rfile.read(length).decode("utf-8", errors="replace")
-            body_qs = parse_qs(raw)
-        qs = parse_qs(parsed.query)
-        for k, v in body_qs.items():
-            qs.setdefault(k, v)
-        if parsed.path == "/close":
-            self._handle_close(qs)
-        elif parsed.path == "/resume":
-            self._handle_resume(qs)
+        try:
+            body = json.loads(self.rfile.read(length).decode("utf-8", errors="replace") or "{}")
+        except ValueError:
+            self._fail(400, "bad json")
+            return
+        if not isinstance(body, dict):
+            self._fail(400, "expected a json object")
+            return
+        if path == "/api/close":
+            self._handle_close(body)
+        elif path == "/api/resume":
+            self._handle_resume(body)
         else:
-            self._handle_launch(qs)
+            self._handle_launch(body)
 
-    def _handle_launch(self, qs: dict) -> None:
-        task_id = (qs.get("task") or [""])[0]
+    @staticmethod
+    def _str(body: dict, key: str) -> str:
+        v = body.get(key, "")
+        return v.strip() if isinstance(v, str) else ""
+
+    def _handle_launch(self, body: dict) -> None:
+        task_id = self._str(body, "task")
         if task_id:
-            self._launch_task(task_id, qs)
+            self._launch_task(task_id, body)
             return
-        dir_param = (qs.get("dir") or [None])[0]
         try:
-            workdir = resolve_dir(dir_param)
+            workdir = resolve_dir(self._str(body, "dir"))
         except ValueError as e:
-            self._send(400, f"{e}\n")
+            self._fail(400, str(e))
             return
         try:
-            launch_iterm(workdir)
+            run_id = launch_iterm(workdir)
         except subprocess.CalledProcessError as e:
-            self._send(500, f"osascript failed: {e}\n")
+            self._fail(500, f"osascript failed: {e}")
             return
-        self._send(200, f"launched in {workdir}\n")
+        invalidate_runs()
+        self._json(200, {"ok": True, "runId": run_id,
+                         "message": f"launched in {_display_path(workdir)}"})
 
-    def _launch_task(self, task_id: str, qs: dict) -> None:
+    def _launch_task(self, task_id: str, body: dict) -> None:
         task = TASKS_BY_ID.get(task_id)
         if not task:
-            self._send(400, "unknown task\n")
+            self._fail(400, "unknown task")
             return
         prompt = task["command"]
         if task.get("input") == "text":
-            seed = (qs.get("input") or [""])[0].strip()
+            seed = self._str(body, "input")
             if seed:
                 prompt = f"{prompt} {seed}"
         workdir = os.path.expanduser(task["workdir"])
         if not os.path.isdir(workdir):
-            self._send(400, f"workdir does not exist: {workdir}\n")
+            self._fail(400, f"workdir does not exist: {workdir}")
             return
         try:
-            launch_iterm(workdir, prompt, task_id=task["id"])
+            run_id = launch_iterm(workdir, prompt, task_id=task["id"])
         except subprocess.CalledProcessError as e:
-            self._send(500, f"osascript failed: {e}\n")
+            self._fail(500, f"osascript failed: {e}")
             return
-        self._send(200, f"launched {task['id']}\n")
+        invalidate_runs()
+        self._json(200, {"ok": True, "runId": run_id, "message": f"launched {task['id']}"})
 
-    def _handle_resume(self, qs: dict) -> None:
-        session_id = (qs.get("session_id") or [""])[0].strip()
+    def _handle_resume(self, body: dict) -> None:
+        session_id = self._str(body, "sessionId")
         if not _UUID_RE.match(session_id):
-            self._send(400, "invalid session id\n")
+            self._fail(400, "invalid session id")
             return
         if not _transcript_path(session_id):
-            self._send(400, "no such session\n")
+            self._fail(400, "no such session")
             return
         if session_id in _live_session_ids():
-            self._send(400, "already live\n")
+            self._fail(400, "already live")
             return
         workdir = _session_cwd(session_id)
         if not workdir or not os.path.isdir(workdir):
-            self._send(400, "session's dir is gone\n")
+            self._fail(400, "session's dir is gone")
             return
         try:
-            launch_iterm(workdir, resume_id=session_id)
+            run_id = launch_iterm(workdir, resume_id=session_id)
         except subprocess.CalledProcessError as e:
-            self._send(500, f"osascript failed: {e}\n")
+            self._fail(500, f"osascript failed: {e}")
             return
-        self._send(200, f"resumed {session_id}\n")
+        invalidate_runs()
+        self._json(200, {"ok": True, "runId": run_id, "message": f"resumed {session_id}"})
 
-    def _handle_close(self, qs: dict) -> None:
-        run_id = (qs.get("run_id") or [""])[0]
-        if not close_run(run_id):
-            self._send(400, "could not close run\n")
+    def _handle_close(self, body: dict) -> None:
+        if not close_run(self._str(body, "runId")):
+            self._fail(400, "could not close run")
             return
-        # 303 -> GET / so the refreshed list reflects the close.
-        self.send_response(303)
-        self.send_header("Location", "/")
-        self.send_header("Content-Length", "0")
-        self.end_headers()
+        self._json(200, {"ok": True, "message": "closed"})
 
     def log_message(self, fmt: str, *args) -> None:
         msg = fmt % args

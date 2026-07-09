@@ -36,10 +36,19 @@ python3 server.py
 ```
 
 Open `http://<host>:8765/` in a browser. Type a subdirectory and tap
-**launch** to start a run; the page below lists every running
-`claude` run — title, dir, last-active time, status
-(working/waiting/idle), and a recent-message snippet — sorted newest
-first to mirror the Claude app, each with a **×** to close it.
+**launch** to start a run; the page below lists every running `claude`
+run — title, dir, last-active time, status (working/waiting/idle), and a
+recent-message snippet — sorted newest first to mirror the Claude app,
+each with a **×** to close it.
+
+Nothing navigates away. Tapping a button posts JSON, shows a toast, and
+refreshes the run list in place; the list polls every 4s while the page
+is visible and pauses when it isn't. A freshly launched run shows as
+`starting…` for the second or so before `claude` registers itself.
+
+**The page requires JavaScript.** It's a small client over a JSON API
+(`GET /api/runs`, `POST /api/launch|resume|close`) — see
+[ADR 0003](docs/adr/0003-launcher-page-runs-javascript.md).
 
 ## Named tasks (optional)
 
@@ -75,7 +84,7 @@ off the Claude app. Notes:
 - Resume is intentionally *not* confined to `PROJECTS_ROOT` — it can only
   reopen a directory where you already ran `claude`, never an arbitrary
   path, so it reaches `~/obsidian` and anything else outside the root. See
-  [ADR 0002](docs/adr/0002-resume-spans-all-conversations.md).
+  [ADR 0002](docs/adr/0002-resume-spans-all-sessions.md).
 
 ## Environment variables
 
@@ -102,17 +111,25 @@ What the server does enforce:
   `PROJECTS_ROOT`; the generic `dir` field still is.
 - Shell and AppleScript injection blocked (quoting + control-char
   stripping).
-- CSRF blocked (`/launch`, `/resume`, and `/close` are POST-only with
-  same-origin `Origin` check).
-- `/resume` only accepts a well-formed `sessionId` (validated before it
+- CSRF blocked structurally: every `/api/*` action is POST-only and must
+  send `Content-Type: application/json`, which is not a CORS "simple
+  request" — a cross-origin `fetch` has to preflight, and the preflight
+  fails because no CORS headers are sent. The `Origin` header is also
+  required and must be same-origin (it fails *closed* when absent, so
+  `curl` must send one too).
+- XSS blocked structurally: the API returns raw JSON and the client only
+  ever writes it into the DOM as text (`textContent`, never `innerHTML`),
+  so transcript snippets cannot become markup. `status` is whitelisted
+  server-side because it alone becomes a CSS class.
+- `/api/resume` only accepts a well-formed `sessionId` (validated before it
   touches the shell) that already has a transcript on disk, and refuses ids
   whose run is currently live.
-- `/close` only acts on a run id that matches a currently-live `claude`
+- `/api/close` only acts on a run id that matches a currently-live `claude`
   run, and only closes iTerm panes — never arbitrary processes or tabs.
 - Log injection blocked (CRLF + control chars scrubbed).
 
-If you need access control on top, add a shared-secret token to the
-form and check it with `hmac.compare_digest`.
+If you need access control on top, add a shared-secret token to the JSON
+body and check it with `hmac.compare_digest`.
 
 ## Auto-start at login (launchd)
 
