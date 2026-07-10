@@ -291,6 +291,11 @@ _UUID_RE = re.compile(r"^[0-9A-Fa-f-]{36}$")
 # it is the one field `textContent` cannot make safe.
 _STATUSES = ("busy", "waiting", "idle")
 
+# The Remote Control bridge id (Claude Code's `bridgeSessionId`). It becomes a
+# `https://claude.ai/code/<id>` deep link on the client — a URL, not plain text
+# — so it is whitelisted here the way `status` is, before it can reach an href.
+_BRIDGE_RE = re.compile(r"^session_[A-Za-z0-9]+$")
+
 # Emit one line per iTerm pane: id <US> tty <US> name <US> cl_task. US (0x1f)
 # can't appear in any field, so splitting is unambiguous. An unset user.cl_task
 # comes back as `missing value`, so coerce it to "" first.
@@ -397,10 +402,14 @@ def _run_meta(base: str = _RUNS_DIR) -> dict[int, dict]:
             continue
         status = j.get("status", "")
         updated = j.get("updatedAt")
+        bridge = j.get("bridgeSessionId")
         meta[pid] = {
             "cwd": j.get("cwd", ""),
             "status": status if status in _STATUSES else "",
-            "remote": bool(j.get("bridgeSessionId")),
+            "remote": bool(bridge),
+            # The validated bridge id, or "" — the client turns a non-empty one
+            # into a claude.ai/code deep link, so it must be a clean URL segment.
+            "bridge": bridge if isinstance(bridge, str) and _BRIDGE_RE.match(bridge) else "",
             "sessionId": j.get("sessionId", ""),
             "updatedAt": updated if isinstance(updated, (int, float)) else None,
         }
@@ -564,6 +573,7 @@ def list_runs() -> list[dict]:
             "dir": _display_path(m.get("cwd", "")) if m.get("cwd") else "",
             "status": m.get("status", ""),
             "remote": m.get("remote", False),
+            "bridge": m.get("bridge", ""),
             "updatedAt": m.get("updatedAt"),
             "snippet": _last_msg(session_id),
             "starting": starting,
@@ -702,6 +712,10 @@ textarea.input{min-height:4.25rem;resize:vertical;line-height:1.5;white-space:pr
 .st-idle{color:var(--dim)}
 .rc{flex:0 0 auto;color:var(--prompt);font-size:11px;border:1px solid #2f3a33;border-radius:3px;
   padding:.05rem .35rem;letter-spacing:.03em}
+.stlink{color:inherit;text-decoration:none}
+.stlink:hover,.stlink:focus-visible{text-decoration:underline}
+a.rc{cursor:pointer;text-decoration:none;transition:background .12s,color .12s}
+a.rc:hover,a.rc:active,a.rc:focus-visible{background:var(--prompt);color:var(--bg)}
 #toast{position:fixed;left:1rem;right:1rem;bottom:1rem;max-width:520px;margin:0 auto;
   padding:.7rem .9rem;font-size:13px;border-radius:3px;cursor:pointer;
   background:var(--input);border:1px solid var(--dim);color:var(--fg)}
@@ -804,8 +818,26 @@ function rowNode(r) {
 
   const meta = el("div", "smeta");
   const name = el("div", "sname");
-  name.appendChild(el("span", "stitle", starting ? "starting…" : (r.title || "claude")));
-  if (r.remote) name.appendChild(el("span", "rc", "remote"));
+  // A remote-control Run deep-links straight into the Claude app: tap the title
+  // (or the ↗ badge) to drive that exact Session from your phone, instead of
+  // opening the app and hunting for it. The id is server-whitelisted to
+  // session_<alnum>; re-check here before it ever becomes an href.
+  const rc = (r.bridge && /^session_[A-Za-z0-9]+$/.test(r.bridge)) ? r.bridge : "";
+  const label = starting ? "starting…" : (r.title || "claude");
+  if (rc && !starting) {
+    const link = "https://claude.ai/code/" + rc;
+    const a = el("a", "stitle stlink", label);
+    a.href = link; a.target = "_blank"; a.rel = "noopener";
+    a.setAttribute("aria-label", "open “" + label + "” in the Claude app");
+    name.appendChild(a);
+    const open = el("a", "rc rclink", "open ↗");
+    open.href = link; open.target = "_blank"; open.rel = "noopener";
+    open.setAttribute("aria-label", "open in the Claude app");
+    name.appendChild(open);
+  } else {
+    name.appendChild(el("span", "stitle", label));
+    if (r.remote) name.appendChild(el("span", "rc", "remote"));
+  }
   meta.appendChild(name);
 
   const bits = [];

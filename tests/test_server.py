@@ -426,18 +426,23 @@ class RunParseTests(unittest.TestCase):
                         '"bridgeSessionId":"session_abc","updatedAt":123}')
             with open(os.path.join(base, "11402.json"), "w") as f:
                 f.write('{"pid":11402,"cwd":"/x","status":"idle"}')  # no bridge
+            with open(os.path.join(base, "77000.json"), "w") as f:
+                # a malformed bridge id: still "remote", but not a usable deep link
+                f.write('{"pid":77000,"cwd":"/z","bridgeSessionId":"../evil"}')
             with open(os.path.join(base, "bad.json"), "w") as f:
                 f.write("not json")  # skipped
             meta = server._run_meta(base)
             self.assertEqual(meta[39909], {
                 "cwd": "/Users/me/obsidian", "status": "waiting", "remote": True,
-                "sessionId": "", "updatedAt": 123,
+                "bridge": "session_abc", "sessionId": "", "updatedAt": 123,
             })
             self.assertEqual(meta[11402], {
                 "cwd": "/x", "status": "idle", "remote": False,
-                "sessionId": "", "updatedAt": None,
+                "bridge": "", "sessionId": "", "updatedAt": None,
             })
-            self.assertEqual(set(meta), {39909, 11402})
+            self.assertEqual(meta[77000]["remote"], True)   # field present
+            self.assertEqual(meta[77000]["bridge"], "")     # but not a valid deep-link id
+            self.assertEqual(set(meta), {39909, 11402, 77000})
         finally:
             shutil.rmtree(base, ignore_errors=True)
 
