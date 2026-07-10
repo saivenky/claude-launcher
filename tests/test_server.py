@@ -180,7 +180,7 @@ class HttpEndpointTests(_HttpCase):
         self.assertIn("script-src 'self'", csp)
         self.assertIn("connect-src 'self'", csp)
         self.assertNotIn("unsafe-inline", csp.split("style-src")[0])
-        self.assertIn('<script src="/app.js"></script>', body)
+        self.assertIn('<script src="app.js"></script>', body)
         self.assertIn("<noscript>", body)
 
     def test_app_js_is_served_and_never_assigns_innerhtml(self):
@@ -633,6 +633,71 @@ class RenderTasksTests(unittest.TestCase):
         self.assertNotIn("<form", out)                  # forms are gone; JS posts JSON
         self.assertIn("or launch a dir", out)           # divider before generic launcher
         self.assertEqual(out.count("<input"), 1)        # only the text task gets a seed box
+
+    def test_a_button_group_shares_one_seed_box(self):
+        server.TASKS = [{
+            "id": "jot", "workdir": "~", "exec": ["/bin/sh"], "input": "textarea",
+            "buttons": [{"id": "jot", "label": "jot"},
+                        {"id": "jot-log", "label": "log", "args": ["--log"]}],
+        }]
+        out = server._render_tasks()
+        self.assertEqual(out.count("<textarea"), 1)     # one shared box, not two
+        self.assertIn('data-task="jot"', out)
+        self.assertIn('data-task="jot-log"', out)
+        self.assertIn('class="btnrow"', out)            # buttons grouped in a row
+
+    def test_a_group_flattens_each_button_to_its_own_dispatch(self):
+        t = {"id": "jot", "workdir": "~", "exec": ["/bin/sh", "run.sh"],
+             "log": "l.log", "input": "textarea",
+             "buttons": [{"id": "jot", "label": "jot"},
+                         {"id": "jot-log", "label": "log", "args": ["--log"]}]}
+        by_id = {b["id"]: server._resolve(t, b) for b in server._buttons(t)}
+        self.assertEqual(by_id["jot"]["exec"], ["/bin/sh", "run.sh"])
+        self.assertEqual(by_id["jot-log"]["exec"], ["/bin/sh", "run.sh", "--log"])
+        self.assertEqual(by_id["jot-log"]["workdir"], "~")   # shared field inherited
+        self.assertNotIn("buttons", by_id["jot"])            # groups never reach the handler
+
+
+class RefreshTasksTests(unittest.TestCase):
+    """tasks.py edits go live without a launcher restart (mtime-gated reload)."""
+
+    def setUp(self):
+        self._saved = (server.TASKS, server.TASKS_BY_ID, server.TASK_LABELS,
+                       server._TASKS_MTIME, server._load_tasks, server._tasks_mtime)
+
+    def tearDown(self):
+        (server.TASKS, server.TASKS_BY_ID, server.TASK_LABELS,
+         server._TASKS_MTIME, server._load_tasks, server._tasks_mtime) = self._saved
+
+    def test_an_unchanged_mtime_never_reloads(self):
+        # The hot path a test relies on: a stable file is never re-read, so a
+        # directly-injected TASKS_BY_ID survives a request.
+        server._TASKS_MTIME = 100
+        server._tasks_mtime = lambda: 100
+        server._load_tasks = lambda: self.fail("must not reload an unchanged file")
+        server.refresh_tasks()
+
+    def test_a_changed_file_is_reloaded(self):
+        server._TASKS_MTIME = 100
+        server._tasks_mtime = lambda: 200
+        server._load_tasks = lambda: (["t"], {"x": {"id": "x", "label": "x"}}, {"x": "x"})
+        server.refresh_tasks()
+        self.assertIn("x", server.TASKS_BY_ID)
+        self.assertEqual(server._TASKS_MTIME, 200)
+
+    def test_a_bad_edit_keeps_the_last_good_config(self):
+        good = {"good": {"id": "good", "label": "good"}}
+        server.TASKS_BY_ID = dict(good)
+        server._TASKS_MTIME = 100
+        server._tasks_mtime = lambda: 200
+
+        def boom():
+            raise ValueError("half-typed tasks.py")
+
+        server._load_tasks = boom
+        server.refresh_tasks()
+        self.assertEqual(server.TASKS_BY_ID, good)          # previous buttons survive
+        self.assertEqual(server._TASKS_MTIME, 200)          # advanced, so no retry-thrash
 
 
 class NamedLaunchHttpTests(_HttpCase):

@@ -30,6 +30,12 @@ Fields:
                  "text"     -> a one-line seed box, appended to command/exec
                  "textarea" -> a multi-line seed box, for a sentence or three
     placeholder  optional placeholder text for the seed box (defaults to the label)
+    buttons      optional list of {id, label, args?} — several buttons over ONE
+                 shared seed box instead of one button. Each button runs the task's
+                 command/exec with its own `args` appended (before the seed), so one
+                 Dispatch offers variants that differ only by a flag. With `buttons`
+                 set, the task's own top-level `label` is unused; give each button a
+                 stable `id` (it is the user.cl_task tag and the launch target).
 """
 
 TASKS = [
@@ -48,13 +54,18 @@ TASKS = [
         "input": "text",
     },
     {
-        # A Dispatch: no session is spawned, the agent just runs.
+        # A Dispatch with a button group: no session is spawned; one seed box, two
+        # buttons. `jot` runs the script as-is; `log` appends --log first. Both send
+        # whatever is in the shared textarea.
         "id": "jot",
-        "label": "jot",
         "workdir": "~/projects/my-agents",
         "exec": ["/bin/bash", "scripts/run_jot.sh"],
         "log": "logs/jot.log",
         "input": "textarea",
-        "placeholder": "a thought — a thing to do, or log: a thing that happened",
+        "placeholder": "a thought — a thing to do, or a thing that happened",
+        "buttons": [
+            {"id": "jot", "label": "jot"},
+            {"id": "jot-log", "label": "log", "args": ["--log"]},
+        ],
     },
 ]

@@ -24,10 +24,12 @@ tasks.py is optional and private; without it you just get the generic
 launcher (and resume)."""
 
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from urllib.parse import urlparse
 import glob
 import hashlib
 import html
+import importlib
 import json
 import os
 import re
@@ -35,11 +37,6 @@ import subprocess
 import sys
 import threading
 import time
-
-try:
-    from tasks import TASKS
-except ImportError:
-    TASKS = []  # no private task config -> generic launcher only
 
 HOST = os.environ.get("CLAUDE_LAUNCHER_HOST", "0.0.0.0")
 PORT = int(os.environ.get("CLAUDE_LAUNCHER_PORT", "8765"))
@@ -50,9 +47,6 @@ REMOTE = os.environ.get("CLAUDE_LAUNCHER_REMOTE", "1").strip().lower() not in (
     "0", "false", "no", "off", "",
 )
 
-TASKS_BY_ID = {t["id"]: t for t in TASKS}
-TASK_LABELS = {t["id"]: t["label"] for t in TASKS}
-
 # A seed is typed on a phone, not piped. Anything longer is a paste accident, and
 # a NUL cannot cross an argv boundary at all.
 #
@@ -61,9 +55,35 @@ TASK_LABELS = {t["id"]: t["label"] for t in TASKS}
 # a confusing "body too large" before this check ever ran.
 MAX_SEED_CHARS = 800
 
+_TASKS_PATH = Path(__file__).resolve().parent / "tasks.py"
+_TASKS_LOCK = threading.Lock()
+
+
+def _buttons(task: dict) -> list:
+    """The buttons a task renders. A task with an explicit `buttons` list shows
+    several buttons over one shared seed box; a plain task is its own single button.
+    Each button appends `args` to the task's `exec` (or overrides a field), so one
+    Dispatch can offer variants — jot vs. log — differing only by a flag."""
+    return task.get("buttons") or [{"id": task["id"], "label": task["label"]}]
+
+
+def _resolve(task: dict, button: dict) -> dict:
+    """A button flattened into a complete task spec the launch handler understands:
+    the task's shared fields, the button's own fields folded in, and the button's
+    `args` appended to `exec`. Keyed by the button id, so the handler never learns
+    about groups."""
+    if "id" not in button or "label" not in button:
+        raise ValueError(f"task {task.get('id')!r}: each button needs an id and a label")
+    spec = {k: v for k, v in task.items() if k != "buttons"}
+    spec.update({k: v for k, v in button.items() if k != "args"})
+    if "exec" in spec and button.get("args"):
+        spec["exec"] = [*spec["exec"], *button["args"]]
+    return spec
+
 
 def _validate_tasks(tasks) -> None:
-    """Fail at import, not on tap, when tasks.py has a typo."""
+    """Reject a malformed task. Fail loud at startup; a live reload catches this and
+    keeps the last-good config instead (see refresh_tasks)."""
     for t in tasks:
         if "exec" in t and not (isinstance(t["exec"], list) and t["exec"]
                                 and all(isinstance(a, str) for a in t["exec"])):
@@ -72,7 +92,55 @@ def _validate_tasks(tasks) -> None:
             raise ValueError(f"task {t.get('id')!r}: a Dispatch has exec, a Task has command — not both")
 
 
-_validate_tasks(TASKS)
+def _load_tasks() -> tuple[list, dict, dict]:
+    """Import tasks.py from disk and flatten its button groups. Returns
+    (TASKS, TASKS_BY_ID, TASK_LABELS); an absent tasks.py is the generic launcher,
+    not an error. Validates, so the caller can fail loud (startup) or catch it
+    (live reload)."""
+    try:
+        import tasks
+        importlib.reload(tasks)   # pick up any edits made since the last import
+        raw = list(tasks.TASKS)
+    except ImportError:
+        raw = []  # no private task config -> generic launcher only
+    by_id = {b["id"]: _resolve(t, b) for t in raw for b in _buttons(t)}
+    _validate_tasks(list(by_id.values()))
+    labels = {bid: spec["label"] for bid, spec in by_id.items()}
+    return raw, by_id, labels
+
+
+def _tasks_mtime():
+    try:
+        return _TASKS_PATH.stat().st_mtime
+    except OSError:
+        return None
+
+
+# Fail loud at startup: booting on a broken tasks.py is a misconfiguration, not a
+# transient mid-edit.
+TASKS, TASKS_BY_ID, TASK_LABELS = _load_tasks()
+_TASKS_MTIME = _tasks_mtime()
+
+
+def refresh_tasks() -> None:
+    """Reload tasks.py when it has changed on disk, so an edit goes live without a
+    launcher restart. mtime-gated: an unchanged file costs one stat per request, not
+    a re-exec. A reload that fails to import or validate keeps the last-good config
+    and logs to stderr — a half-typed save degrades to the previous buttons rather
+    than breaking a tap. Tests never write tasks.py, so its mtime is stable and this
+    never overwrites a directly-injected TASKS_BY_ID."""
+    global TASKS, TASKS_BY_ID, TASK_LABELS, _TASKS_MTIME
+    mtime = _tasks_mtime()
+    if mtime == _TASKS_MTIME:
+        return
+    with _TASKS_LOCK:
+        if mtime == _TASKS_MTIME:   # another thread already reloaded
+            return
+        try:
+            TASKS, TASKS_BY_ID, TASK_LABELS = _load_tasks()
+        except Exception as exc:  # noqa: BLE001 - a bad edit must not break a tap
+            print(f"tasks.py reload failed, keeping previous config: {exc}", file=sys.stderr)
+        _TASKS_MTIME = mtime   # either way, don't re-attempt the same file each request
 
 
 def resolve_dir(dir_param: str | None) -> str:
@@ -588,6 +656,7 @@ main{max-width:520px;margin:0 auto}
    it gets a real box and the button drops below it. */
 .task.multiline{flex-direction:column;align-items:stretch;margin-bottom:1.1rem}
 .task.multiline .go{align-self:flex-start}
+.task .btnrow{display:flex;gap:.5rem;flex-wrap:wrap}
 textarea.input{min-height:5.5rem;resize:vertical;line-height:1.5;white-space:pre-wrap;
   border:1px solid #262a30;border-bottom:1px dashed var(--dim);border-radius:2px}
 .orsep{color:var(--dim);font-size:12px;margin:1.5rem 0 1.1rem;padding-top:1.2rem;
@@ -837,7 +906,7 @@ async function launchDir() {
 }
 
 async function launchTask(button) {
-  const seed = button.parentElement.querySelector("input, textarea");
+  const seed = button.closest(".task").querySelector("input, textarea");
   const body = {task: button.dataset.task};
   if (seed) body.input = seed.value.trim();
   afterLaunch(await api("api/launch", body), seed);
@@ -875,22 +944,30 @@ def _render_tasks() -> str:
     """One-tap task buttons (and inline seed boxes) from tasks.py, or '' if no
     tasks are configured. Ends with a divider setting them off from the generic
     launcher below."""
+    refresh_tasks()   # pick up any tasks.py edit since the last page load
     if not TASKS:
         return ""
     out = []
     for t in TASKS:
-        tid = html.escape(t["id"])
-        label = html.escape(t["label"])
         kind = t.get("input", "none")
-        placeholder = html.escape(t.get("placeholder", f"{t['label']}…"))
+        placeholder = html.escape(t.get("placeholder") or f'{t.get("label") or t["id"]}…')
         multiline = kind == "textarea"
+        buttons = _buttons(t)
         out.append(f'<div class="task{" multiline" if multiline else ""}">')
         if multiline:
             out.append(f'<textarea class="input" rows="4" autocomplete="off" '
                        f'placeholder="{placeholder}"></textarea>')
         elif kind == "text":
             out.append(f'<input class="input" autocomplete="off" placeholder="{placeholder}">')
-        out.append(f'<button class="go" type="button" data-task="{tid}">{label}</button></div>')
+        btns = "".join(
+            f'<button class="go" type="button" data-task="{html.escape(b["id"])}">'
+            f'{html.escape(b["label"])}</button>'
+            for b in buttons
+        )
+        # Several buttons share one seed box: group them in a row so launchTask still
+        # finds the input by walking up to the enclosing .task.
+        out.append(f'<div class="btnrow">{btns}</div>' if len(buttons) > 1 else btns)
+        out.append("</div>")
     out.append('<div class="orsep">or launch a dir</div>')
     return "".join(out)
 
@@ -1051,6 +1128,7 @@ class Handler(BaseHTTPRequestHandler):
         return seed
 
     def _launch_task(self, task_id: str, body: dict) -> None:
+        refresh_tasks()   # a button added to tasks.py works without a restart
         task = TASKS_BY_ID.get(task_id)
         if not task:
             self._fail(400, "unknown task")
