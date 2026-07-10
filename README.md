@@ -68,6 +68,35 @@ command. `tasks.py` is private (gitignored) — without it you just get the
 generic launcher. Task runs are tagged (`user.cl_task`) so the live list
 shows their label; the list still includes every running `claude` run.
 
+## Dispatches (optional)
+
+A task with `exec` instead of `command` is a **Dispatch**: a preset command
+run *detached* — no `claude`, no session, no pane, nothing in the run list
+and nothing to close. It exists for fire-and-forget agents you want to
+trigger from a phone without opening a session to babysit.
+
+```python
+TASKS = [
+    {"id": "jot", "label": "jot", "workdir": "~/projects/my-agents",
+     "exec": ["/bin/bash", "scripts/run_jot.sh"], "log": "logs/jot.log",
+     "input": "textarea", "placeholder": "a thought…"},
+]
+```
+
+`exec` is a list, exec'd with no shell, and the seed is appended as one
+further argv element — so it can never be word-split or interpolated.
+`input: "textarea"` gives a multi-line box, because a thought for an agent
+is a sentence or three rather than a filename. `log` (relative to `workdir`)
+collects stdout+stderr; omit it and output is discarded.
+
+A Dispatch returns no `runId`, so the page just toasts and moves on. Its
+own output is its only trace — set `log`, or use it only for a command that
+records its own results. See [ADR 0004](docs/adr/0004-dispatches-run-detached-not-as-runs.md).
+
+**The spawned command inherits the launcher's environment**, which under
+launchd is bare. If it needs more (a `PATH` entry, `USER`), set it in a
+wrapper script rather than relying on what happens to be inherited.
+
 ## Resume a session
 
 To get back into a Claude Code session you closed, paste its `sessionId`

@@ -749,5 +749,161 @@ class LiveSessionIdsTests(unittest.TestCase):
             server.invalidate_runs()
 
 
+class DispatchTests(_HttpCase):
+    """A Dispatch starts no Run: no claude, no Session, no pane (ADR 0004)."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls._saved_tasks = dict(server.TASKS_BY_ID)
+        cls._saved_dispatch = server.dispatch
+        cls._saved_launch = server.launch_iterm
+        server.launch_iterm = lambda *a, **k: _RUN
+        cls.httpd = ThreadingHTTPServer(("127.0.0.1", 0), server.Handler)
+        cls.port = cls.httpd.server_address[1]
+        cls.thread = threading.Thread(target=cls.httpd.serve_forever, daemon=True)
+        cls.thread.start()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.httpd.shutdown()
+        cls.thread.join(timeout=2)
+        server.TASKS_BY_ID = cls._saved_tasks
+        server.dispatch = cls._saved_dispatch
+        server.launch_iterm = cls._saved_launch
+
+    def setUp(self):
+        self.calls = []
+        server.dispatch = lambda *a, **k: self.calls.append((a, k))
+        here = os.path.dirname(__file__)
+        server.TASKS_BY_ID = {
+            "jot": {"id": "jot", "label": "jot", "workdir": here,
+                    "exec": ["/bin/bash", "run.sh"], "log": "logs/jot.log",
+                    "input": "textarea"},
+            "bare": {"id": "bare", "label": "bare", "workdir": here,
+                     "exec": ["/usr/bin/true"], "input": "none"},
+            "sess": {"id": "sess", "label": "sess", "workdir": here,
+                     "command": "/capture", "input": "text"},
+        }
+
+    def test_a_dispatch_returns_no_run_id(self):
+        status, body = self._post("/api/launch", {"task": "jot", "input": "wash the dog bed"})
+        self.assertEqual(status, 200)
+        self.assertTrue(body["ok"])
+        self.assertNotIn("runId", body)          # nothing to paint an optimistic row for
+        self.assertIn("dispatched jot", body["message"])
+
+    def test_the_seed_is_passed_as_argv_never_through_a_shell(self):
+        self._post("/api/launch", {"task": "jot", "input": "rm -rf / ; echo $HOME"})
+        (workdir, argv, seed, log), _ = self.calls[0]
+        self.assertEqual(argv, ["/bin/bash", "run.sh"])
+        self.assertEqual(seed, "rm -rf / ; echo $HOME")   # inert: one argv element
+        self.assertTrue(log.endswith("logs/jot.log"))
+
+    def test_a_multiline_seed_survives_intact(self):
+        self._post("/api/launch", {"task": "jot", "input": "move the Kallax\nanchor it"})
+        (_, _, seed, _), _ = self.calls[0]
+        self.assertEqual(seed, "move the Kallax\nanchor it")
+
+    def test_a_dispatch_needing_a_seed_refuses_an_empty_one(self):
+        status, body = self._post("/api/launch", {"task": "jot", "input": "   "})
+        self.assertEqual(status, 400)
+        self.assertIn("needs a seed", body["message"])
+        self.assertEqual(self.calls, [])
+
+    def test_an_input_none_dispatch_runs_with_no_seed(self):
+        status, _ = self._post("/api/launch", {"task": "bare", "input": "ignored"})
+        self.assertEqual(status, 200)
+        (_, _, seed, _), _ = self.calls[0]
+        self.assertEqual(seed, "")
+
+    def test_an_oversized_seed_is_refused_before_it_is_spawned(self):
+        status, body = self._post("/api/launch", {"task": "jot", "input": "x" * 801})
+        self.assertEqual(status, 400)
+        self.assertIn("800 characters", body["message"])
+        self.assertEqual(self.calls, [])
+
+    def test_a_nul_in_the_seed_is_refused(self):
+        status, _ = self._post("/api/launch", {"task": "jot", "input": "a\x00b"})
+        self.assertEqual(status, 400)
+        self.assertEqual(self.calls, [])
+
+    def test_the_seed_cap_fits_inside_the_body_cap(self):
+        # Worst-case UTF-8 is 4 bytes/char; a seed that passes must never have
+        # tripped "body too large" first.
+        self.assertLessEqual(server.MAX_SEED_CHARS * 4, server.MAX_BODY_BYTES)
+
+    def test_a_task_still_starts_a_run(self):
+        status, body = self._post("/api/launch", {"task": "sess", "input": "hello"})
+        self.assertEqual(status, 200)
+        self.assertEqual(body["runId"], _RUN)     # a Task is still a Run
+        self.assertEqual(self.calls, [])          # and never a Dispatch
+
+    def test_a_missing_workdir_is_refused_for_a_dispatch(self):
+        server.TASKS_BY_ID["jot"]["workdir"] = "/definitely/not/here"
+        status, body = self._post("/api/launch", {"task": "jot", "input": "x"})
+        self.assertEqual(status, 400)
+        self.assertIn("workdir does not exist", body["message"])
+        self.assertEqual(self.calls, [])
+
+
+class TaskConfigTests(unittest.TestCase):
+    def test_exec_must_be_a_list_of_strings(self):
+        with self.assertRaises(ValueError):
+            server._validate_tasks([{"id": "x", "exec": "run.sh"}])
+        with self.assertRaises(ValueError):
+            server._validate_tasks([{"id": "x", "exec": []}])
+
+    def test_a_task_cannot_also_be_a_dispatch(self):
+        with self.assertRaises(ValueError):
+            server._validate_tasks([{"id": "x", "exec": ["/usr/bin/true"], "command": "/c"}])
+
+    def test_a_textarea_task_renders_a_textarea_and_a_button(self):
+        saved = server.TASKS
+        server.TASKS = [{"id": "jot", "label": "jot", "workdir": "~",
+                         "exec": ["/usr/bin/true"], "input": "textarea",
+                         "placeholder": "a thought"}]
+        try:
+            html_out = server._render_tasks()
+            self.assertIn('<textarea class="input"', html_out)
+            self.assertIn('placeholder="a thought"', html_out)
+            self.assertIn('class="task multiline"', html_out)
+            self.assertIn('data-task="jot"', html_out)
+        finally:
+            server.TASKS = saved
+
+    def test_a_placeholder_cannot_inject_markup(self):
+        saved = server.TASKS
+        server.TASKS = [{"id": "x", "label": "x", "workdir": "~", "exec": ["/usr/bin/true"],
+                         "input": "textarea", "placeholder": '"><script>alert(1)</script>'}]
+        try:
+            self.assertNotIn("<script>", server._render_tasks())
+        finally:
+            server.TASKS = saved
+
+
+class DispatchSpawnTests(unittest.TestCase):
+    """The real `dispatch`, exercised end to end against /bin/sh."""
+
+    def test_it_writes_the_seed_to_the_log_and_detaches(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            log = os.path.join(d, "logs", "out.log")
+            server.dispatch(d, ["/bin/sh", "-c", 'printf "%s" "$0"'], "hello $(whoami)", log)
+            for _ in range(40):                      # the child is detached; wait for it
+                if os.path.exists(log) and os.path.getsize(log):
+                    break
+                time.sleep(0.05)
+            with open(log) as fh:
+                # `$(whoami)` arrived literally: argv, never a shell expansion.
+                self.assertEqual(fh.read(), "hello $(whoami)")
+
+    def test_a_missing_log_directory_is_created(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            log = os.path.join(d, "deep", "nested", "out.log")
+            server.dispatch(d, ["/usr/bin/true"], "", log)
+            self.assertTrue(os.path.isdir(os.path.dirname(log)))
+
+
 if __name__ == "__main__":
     unittest.main()

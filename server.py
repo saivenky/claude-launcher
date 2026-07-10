@@ -12,6 +12,11 @@ Three ways to start a Run, on one page:
   - resume: paste a past Session's sessionId -> runs `cl --resume <id>`
     in that Session's own dir (found from its transcript)
 
+A fourth button kind starts no Run at all: a **Dispatch** (ADR 0004) is a
+tasks.py entry with `exec`, a preset command run detached — no Session, no
+pane, nothing to observe or close. It is how a fire-and-forget agent is
+triggered from a phone.
+
 The page is a small JS client over a JSON API (ADR 0003): actions post JSON,
 show a toast, and refresh the Run list in place instead of navigating away.
 
@@ -47,6 +52,27 @@ REMOTE = os.environ.get("CLAUDE_LAUNCHER_REMOTE", "1").strip().lower() not in (
 
 TASKS_BY_ID = {t["id"]: t for t in TASKS}
 TASK_LABELS = {t["id"]: t["label"] for t in TASKS}
+
+# A seed is typed on a phone, not piped. Anything longer is a paste accident, and
+# a NUL cannot cross an argv boundary at all.
+#
+# Kept well under MAX_BODY_BYTES (4096): a seed of N characters can reach 4N bytes
+# as UTF-8, so 800 always fits inside the body cap. Otherwise a long jot would trip
+# a confusing "body too large" before this check ever ran.
+MAX_SEED_CHARS = 800
+
+
+def _validate_tasks(tasks) -> None:
+    """Fail at import, not on tap, when tasks.py has a typo."""
+    for t in tasks:
+        if "exec" in t and not (isinstance(t["exec"], list) and t["exec"]
+                                and all(isinstance(a, str) for a in t["exec"])):
+            raise ValueError(f"task {t.get('id')!r}: exec must be a non-empty list of strings")
+        if "exec" in t and "command" in t:
+            raise ValueError(f"task {t.get('id')!r}: a Dispatch has exec, a Task has command — not both")
+
+
+_validate_tasks(TASKS)
 
 
 def resolve_dir(dir_param: str | None) -> str:
@@ -122,6 +148,40 @@ end tell
 '''
     run_id = _osascript(script).strip()
     return run_id if _UUID_RE.match(run_id) else ""
+
+
+def dispatch(workdir: str, argv: list[str], seed: str = "", log: str | None = None) -> None:
+    """Run a preset command detached, appending `seed` as one argv element.
+
+    A **Dispatch** is not a **Run**: no `claude`, no Session, no iTerm pane —
+    nothing to observe or close (ADR 0004). It exists for fire-and-forget agents
+    that take one input and leave their own trace elsewhere.
+
+    `argv` is a list, so it is exec'd directly with no shell. That makes the seed
+    inert by construction: it cannot be word-split, globbed, or interpolated,
+    which matters far more here than for `cl`, where the seed is a prompt rather
+    than the command line.
+
+    `start_new_session` detaches the child from the launcher's process group, so
+    it survives a launcher restart and never takes a Ctrl-C meant for the server.
+    We never `wait()`; `subprocess` reaps exited children on its next Popen, which
+    the 4-second run poll guarantees.
+    """
+    cmd = [*argv, seed] if seed else list(argv)
+    sink = subprocess.DEVNULL
+    handle = None
+    if log:
+        os.makedirs(os.path.dirname(log), exist_ok=True)
+        handle = open(log, "a", buffering=1)  # noqa: SIM115 - closed below, after the child dups it
+        sink = handle
+    try:
+        subprocess.Popen(
+            cmd, cwd=workdir, stdin=subprocess.DEVNULL, stdout=sink, stderr=subprocess.STDOUT,
+            start_new_session=True, close_fds=True,
+        )
+    finally:
+        if handle:
+            handle.close()
 
 
 def shell_quote(s: str) -> str:
@@ -524,6 +584,12 @@ main{max-width:520px;margin:0 auto}
 .task{display:flex;align-items:stretch;gap:.5rem;margin-bottom:.75rem}
 .task .input{flex:1 1 auto;min-width:8ch;padding:.4rem .6rem}
 .task .go{margin-top:0}
+/* A seed for a fire-and-forget agent is a sentence or three, not a filename, so
+   it gets a real box and the button drops below it. */
+.task.multiline{flex-direction:column;align-items:stretch;margin-bottom:1.1rem}
+.task.multiline .go{align-self:flex-start}
+textarea.input{min-height:5.5rem;resize:vertical;line-height:1.5;white-space:pre-wrap;
+  border:1px solid #262a30;border-bottom:1px dashed var(--dim);border-radius:2px}
 .orsep{color:var(--dim);font-size:12px;margin:1.5rem 0 1.1rem;padding-top:1.2rem;
   border-top:1px solid #1f2227;letter-spacing:.05em}
 .go{margin-top:1.5rem;background:transparent;border:1px solid var(--fg);color:var(--fg);
@@ -771,7 +837,7 @@ async function launchDir() {
 }
 
 async function launchTask(button) {
-  const seed = button.parentElement.querySelector("input");
+  const seed = button.parentElement.querySelector("input, textarea");
   const body = {task: button.dataset.task};
   if (seed) body.input = seed.value.trim();
   afterLaunch(await api("/api/launch", body), seed);
@@ -815,9 +881,15 @@ def _render_tasks() -> str:
     for t in TASKS:
         tid = html.escape(t["id"])
         label = html.escape(t["label"])
-        out.append('<div class="task">')
-        if t.get("input") == "text":
-            out.append(f'<input class="input" autocomplete="off" placeholder="{label}…">')
+        kind = t.get("input", "none")
+        placeholder = html.escape(t.get("placeholder", f"{t['label']}…"))
+        multiline = kind == "textarea"
+        out.append(f'<div class="task{" multiline" if multiline else ""}">')
+        if multiline:
+            out.append(f'<textarea class="input" rows="4" autocomplete="off" '
+                       f'placeholder="{placeholder}"></textarea>')
+        elif kind == "text":
+            out.append(f'<input class="input" autocomplete="off" placeholder="{placeholder}">')
         out.append(f'<button class="go" type="button" data-task="{tid}">{label}</button></div>')
     out.append('<div class="orsep">or launch a dir</div>')
     return "".join(out)
@@ -969,20 +1041,34 @@ class Handler(BaseHTTPRequestHandler):
         self._json(200, {"ok": True, "runId": run_id,
                          "message": f"launched in {_display_path(workdir)}"})
 
+    def _seed(self, task: dict, body: dict) -> str | None:
+        """The seed for a task that takes one, or None when it is unusable."""
+        if task.get("input", "none") == "none":
+            return ""
+        seed = self._str(body, "input")
+        if len(seed) > MAX_SEED_CHARS or "\x00" in seed:
+            return None
+        return seed
+
     def _launch_task(self, task_id: str, body: dict) -> None:
         task = TASKS_BY_ID.get(task_id)
         if not task:
             self._fail(400, "unknown task")
             return
-        prompt = task["command"]
-        if task.get("input") == "text":
-            seed = self._str(body, "input")
-            if seed:
-                prompt = f"{prompt} {seed}"
         workdir = os.path.expanduser(task["workdir"])
         if not os.path.isdir(workdir):
             self._fail(400, f"workdir does not exist: {workdir}")
             return
+        seed = self._seed(task, body)
+        if seed is None:
+            self._fail(400, f"seed must be non-null and under {MAX_SEED_CHARS} characters")
+            return
+
+        if task.get("exec"):
+            self._dispatch_task(task, workdir, seed)
+            return
+
+        prompt = f"{task['command']} {seed}" if seed else task["command"]
         try:
             run_id = launch_iterm(workdir, prompt, task_id=task["id"])
         except subprocess.CalledProcessError as e:
@@ -990,6 +1076,20 @@ class Handler(BaseHTTPRequestHandler):
             return
         invalidate_runs()
         self._json(200, {"ok": True, "runId": run_id, "message": f"launched {task['id']}"})
+
+    def _dispatch_task(self, task: dict, workdir: str, seed: str) -> None:
+        """A Dispatch starts no Run, so it returns no runId — the client's
+        optimistic row is skipped and the toast is all the feedback there is."""
+        if task.get("input", "none") != "none" and not seed:
+            self._fail(400, f"{task['id']} needs a seed")
+            return
+        log = task.get("log")
+        try:
+            dispatch(workdir, task["exec"], seed, os.path.join(workdir, log) if log else None)
+        except OSError as e:
+            self._fail(500, f"dispatch failed: {e}")
+            return
+        self._json(200, {"ok": True, "message": f"dispatched {task['id']}"})
 
     def _handle_resume(self, body: dict) -> None:
         session_id = self._str(body, "sessionId")

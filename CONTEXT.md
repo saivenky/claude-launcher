@@ -54,7 +54,18 @@ A named, preset **Run** definition in `tasks.py` — fixed workdir plus an
 initial `/slash-command`, surfaced as a one-tap button. A convenience over
 the generic "type a dir" launch; it still starts an ordinary Run on a new
 **Session** (tagged `user.cl_task` so the list can label it).
-_Avoid_: job, action, command (overloaded)
+_Avoid_: job, action, command (overloaded); **Dispatch** (that starts no Run)
+
+**Dispatch**:
+A named, preset *command* in `tasks.py` (an `exec` argv), run **detached**:
+no `claude`, no **Session**, no **Run**, no pane. It shares only the
+one-tap button with a **Task**. The **Launcher** spawns it and forgets it —
+there is nothing to **observe**, nothing to close, and no `sessionId` to
+**resume**. Its own output is its trace, wherever it chooses to leave it.
+Exists for fire-and-forget agents a phone should be able to trigger without
+opening a session to babysit.
+_Avoid_: task, run (a Dispatch is neither); job, background task (each
+suggests something the Launcher tracks — it does not)
 
 **Launcher transport**:
 The path by which a phone reaches the **Launcher** endpoint (today: a
@@ -88,6 +99,11 @@ _Avoid_: access, availability
   the **Launcher transport**; driving rides the bridge
 - A **Launcher transport** choice is bounded by the required
   **Reachability scope**
+- A **Dispatch** produces no **Run** and no **Session**, so none of the
+  Launcher's other verbs apply to it: it cannot be **observed**, closed, or
+  **resumed**. Spawning it is the whole interaction
+- A **Task** and a **Dispatch** are told apart by one field — `command`
+  starts a **Run**, `exec` starts a Dispatch. Never both
 
 ## Example dialogue
 
