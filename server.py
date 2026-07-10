@@ -638,7 +638,7 @@ textarea.input{min-height:5.5rem;resize:vertical;line-height:1.5;white-space:pre
   <section class="sessions" id="runs"></section>
 </main>
 <div id="toast" hidden></div>
-<script src="/app.js"></script>
+<script src="app.js"></script>
 </body></html>
 """
 
@@ -765,7 +765,7 @@ async function poll() {
   inflight = true;
   try {
     const headers = lastEtag ? {"If-None-Match": lastEtag} : {};
-    const r = await fetch("/api/runs", {headers: headers});
+    const r = await fetch("api/runs", {headers: headers});
     if (r.status === 304) { refreshAges(); return; }
     if (!r.ok) return;
     lastEtag = r.headers.get("ETag");
@@ -833,24 +833,24 @@ function afterLaunch(res, seedInput) {
 }
 
 async function launchDir() {
-  afterLaunch(await api("/api/launch", {dir: $("dir").value.trim()}), null);
+  afterLaunch(await api("api/launch", {dir: $("dir").value.trim()}), null);
 }
 
 async function launchTask(button) {
   const seed = button.parentElement.querySelector("input, textarea");
   const body = {task: button.dataset.task};
   if (seed) body.input = seed.value.trim();
-  afterLaunch(await api("/api/launch", body), seed);
+  afterLaunch(await api("api/launch", body), seed);
 }
 
 async function resumeSession() {
   const box = $("sid");
-  const res = await api("/api/resume", {sessionId: box.value.trim()});
+  const res = await api("api/resume", {sessionId: box.value.trim()});
   afterLaunch(res, box);
 }
 
 async function closeRun(runId) {
-  const res = await api("/api/close", {runId: runId});
+  const res = await api("api/close", {runId: runId});
   toast(res.message, !!res.ok);
   await poll();      // closing a pane is synchronous; no burst needed
   schedule();
