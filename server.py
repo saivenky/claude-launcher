@@ -634,11 +634,12 @@ INDEX_HTML = """<!doctype html>
 <html><head><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>cl</title>
 <style>
-:root{--bg:#0e0f12;--fg:#d6d6d6;--dim:#6b7280;--prompt:#7fcd9b;--accent:#e8b65a;--input:#1a1c20;
-  --err:#e06c6c}
+:root{--bg:#0e0f12;--fg:#d6d6d6;--dim:#7c8595;--prompt:#7fcd9b;--accent:#e8b65a;--input:#1a1c20;
+  --err:#e06c6c;--line:#1f2227}
 *{box-sizing:border-box}
 body{margin:0;padding:2rem 1rem;font:15px/1.5 "SF Mono","Menlo","Consolas",ui-monospace,monospace;
-  background:var(--bg);color:var(--fg);min-height:100vh}
+  background:var(--bg);color:var(--fg);min-height:100vh;-webkit-text-size-adjust:100%}
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 main{max-width:520px;margin:0 auto}
 .label{color:var(--dim);margin-bottom:1.25rem}
 .label b{color:var(--fg);font-weight:600}
@@ -647,8 +648,12 @@ main{max-width:520px;margin:0 auto}
 .input{flex:1 1 12ch;min-width:8ch;background:var(--input);color:var(--accent);
   border:0;border-bottom:1px dashed var(--dim);font:inherit;padding:.15rem .4rem;outline:0;
   caret-color:var(--accent)}
-.input::placeholder{color:#4b5563}
+/* The subdir sits inside a one-line command, so it stays compact and lets
+   `&& cl` follow right after instead of being shoved to the screen edge. */
+#dir{flex:0 1 14ch;min-width:8ch}
+.input::placeholder{color:#5a6472}
 .input:focus{border-bottom-color:var(--accent)}
+.input:focus-visible{outline:2px solid var(--accent);outline-offset:1px;border-bottom-color:transparent}
 .task{display:flex;align-items:stretch;gap:.5rem;margin-bottom:.75rem}
 .task .input{flex:1 1 auto;min-width:8ch;padding:.4rem .6rem}
 .task .go{margin-top:0}
@@ -661,8 +666,9 @@ textarea.input{min-height:5.5rem;resize:vertical;line-height:1.5;white-space:pre
   border:1px solid #262a30;border-bottom:1px dashed var(--dim);border-radius:2px}
 .orsep{color:var(--dim);font-size:12px;margin:1.5rem 0 1.1rem;padding-top:1.2rem;
   border-top:1px solid #1f2227;letter-spacing:.05em}
-.go{margin-top:1.5rem;background:transparent;border:1px solid var(--fg);color:var(--fg);
-  font:inherit;padding:.5rem 1.5rem;cursor:pointer;letter-spacing:.05em}
+.go{margin-top:1.5rem;min-height:2.6rem;background:transparent;border:1px solid var(--fg);
+  color:var(--fg);font:inherit;padding:.5rem 1.5rem;cursor:pointer;letter-spacing:.05em;
+  -webkit-tap-highlight-color:transparent;transition:background .12s,color .12s}
 .go:hover,.go:active{background:var(--fg);color:var(--bg)}
 .go:disabled{opacity:.5;cursor:default}
 .hint{color:var(--dim);margin-top:1rem;font-size:13px}
@@ -670,43 +676,51 @@ textarea.input{min-height:5.5rem;resize:vertical;line-height:1.5;white-space:pre
 .sessions{margin-top:2.5rem}
 .shead{color:var(--dim);font-size:13px;margin-bottom:.5rem;letter-spacing:.05em}
 .empty{color:var(--dim);font-size:13px;margin-top:2.5rem}
-.srow{display:flex;align-items:flex-start;gap:.6rem;padding:.5rem 0;border-top:1px solid #1f2227}
-.x{background:transparent;border:1px solid var(--dim);color:var(--dim);font:inherit;
-  line-height:1;padding:.15rem .55rem;cursor:pointer;border-radius:2px}
+.srow{display:flex;align-items:flex-start;gap:.6rem;padding:.6rem 0 .6rem .6rem;
+  border-top:1px solid var(--line);box-shadow:inset 2px 0 0 transparent}
+/* Flag the one state that wants a human: a Run waiting for input. */
+.row-waiting{box-shadow:inset 2px 0 0 var(--accent)}
+.x{flex:0 0 auto;display:flex;align-items:center;justify-content:center;
+  min-width:2.4rem;min-height:2.4rem;background:transparent;border:1px solid var(--dim);
+  color:var(--dim);font:inherit;font-size:17px;line-height:1;cursor:pointer;border-radius:3px;
+  -webkit-tap-highlight-color:transparent;transition:border-color .12s,color .12s}
 .x:hover,.x:active{border-color:var(--err);color:var(--err)}
 .x:disabled{opacity:.4;cursor:default}
-.smeta{min-width:0;flex:1}
-.sname{color:var(--fg);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.sdir{color:var(--dim);font-size:12px;margin-top:.15rem}
-.ssnip{color:var(--dim);font-size:12px;margin-top:.3rem;opacity:.8;
+.smeta{min-width:0;flex:1;padding-top:.15rem}
+.sname{color:var(--fg);display:flex;align-items:center;gap:.45rem;min-width:0}
+.stitle{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.sdir{color:var(--dim);font-size:12px;margin-top:.2rem}
+.ssnip{color:var(--dim);font-size:12px;margin-top:.35rem;
   display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
-.pending .sname{color:var(--dim)}
+.pending .stitle{color:var(--dim)}
 .sage{color:var(--prompt)}
+.st::before{content:"●";margin-right:.35rem;font-size:.6em;vertical-align:.12em}
 .st-busy{color:var(--prompt)}
 .st-waiting{color:var(--accent)}
 .st-idle{color:var(--dim)}
-.rc{color:var(--prompt);font-size:11px;border:1px solid #2a2d33;border-radius:2px;
-  padding:0 .35rem;margin-left:.5rem;vertical-align:middle}
+.rc{flex:0 0 auto;color:var(--prompt);font-size:11px;border:1px solid #2f3a33;border-radius:3px;
+  padding:.05rem .35rem;letter-spacing:.03em}
 #toast{position:fixed;left:1rem;right:1rem;bottom:1rem;max-width:520px;margin:0 auto;
   padding:.7rem .9rem;font-size:13px;border-radius:3px;cursor:pointer;
   background:var(--input);border:1px solid var(--dim);color:var(--fg)}
 #toast.err{border-color:var(--err);color:var(--err)}
 #toast[hidden]{display:none}
+@media (prefers-reduced-motion:reduce){*{transition-duration:0s!important;animation-duration:0s!important}}
 </style></head>
 <body>
 <main>
   <div class="label"><b>claude-launcher</b> &middot; launch &amp; manage runs</div>
   <noscript><div class="empty">this page needs JavaScript &mdash; it drives a JSON API.</div></noscript>
   {tasks}
-  <div class="cmd"><span class="prompt">$ </span>cd {projects_root}/<input class="input" id="dir" autocomplete="off" placeholder="subdir"> &amp;&amp; cl</div>
+  <div class="cmd"><span class="prompt">$ </span>cd {projects_root}/<input class="input" id="dir" autocomplete="off" placeholder="subdir" aria-label="project subdirectory under {projects_root}"> &amp;&amp; cl</div>
   <button class="go" id="launch" type="button">launch</button>
   <div class="hint">blank &rarr; <code>{default_dir}</code></div>
-  <div class="cmd" style="margin-top:1.5rem"><span class="prompt">$ </span>cl --resume <input class="input" id="sid" autocomplete="off" placeholder="sessionId"></div>
+  <div class="cmd" style="margin-top:1.5rem"><span class="prompt">$ </span>cl --resume <input class="input" id="sid" autocomplete="off" placeholder="sessionId" aria-label="session id to resume"></div>
   <button class="go" id="resume" type="button">resume</button>
   <div class="hint">a closed session's id &mdash; from the Claude app</div>
   <section class="sessions" id="runs"></section>
 </main>
-<div id="toast" hidden></div>
+<div id="toast" role="status" aria-live="polite" hidden></div>
 <script src="app.js"></script>
 </body></html>
 """
@@ -768,11 +782,15 @@ function rowNode(r) {
   // Run we launched but the server cannot see yet, `starting` is one it sees
   // but Claude Code has not registered. Both are "starting…".
   const starting = r.pending || r.starting;
-  const row = el("div", starting ? "srow pending" : "srow");
+  let cls = "srow";
+  if (starting) cls += " pending";
+  if (r.status) cls += " row-" + r.status;   // status is server-whitelisted
+  const row = el("div", cls);
 
   const x = el("button", "x", "×");
   x.type = "button";
   x.title = "close";
+  x.setAttribute("aria-label", "close run");
   // A pending Run has no pane the server will admit to yet, so /api/close
   // would 400. Once it lists the pane, closing works even while starting.
   if (r.pending) x.disabled = true;
@@ -781,7 +799,7 @@ function rowNode(r) {
 
   const meta = el("div", "smeta");
   const name = el("div", "sname");
-  name.appendChild(document.createTextNode(starting ? "starting…" : (r.title || "claude")));
+  name.appendChild(el("span", "stitle", starting ? "starting…" : (r.title || "claude")));
   if (r.remote) name.appendChild(el("span", "rc", "remote"));
   meta.appendChild(name);
 
@@ -956,9 +974,10 @@ def _render_tasks() -> str:
         out.append(f'<div class="task{" multiline" if multiline else ""}">')
         if multiline:
             out.append(f'<textarea class="input" rows="4" autocomplete="off" '
-                       f'placeholder="{placeholder}"></textarea>')
+                       f'placeholder="{placeholder}" aria-label="{placeholder}"></textarea>')
         elif kind == "text":
-            out.append(f'<input class="input" autocomplete="off" placeholder="{placeholder}">')
+            out.append(f'<input class="input" autocomplete="off" '
+                       f'placeholder="{placeholder}" aria-label="{placeholder}">')
         btns = "".join(
             f'<button class="go" type="button" data-task="{html.escape(b["id"])}">'
             f'{html.escape(b["label"])}</button>'
