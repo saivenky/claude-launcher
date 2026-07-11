@@ -654,6 +654,21 @@ body{margin:0;padding:2rem 1rem;font:15px/1.5 "SF Mono","Menlo","Consolas",ui-mo
 main{max-width:520px;margin:0 auto}
 .label{color:var(--dim);margin-bottom:1.25rem}
 .label b{color:var(--fg);font-weight:600}
+/* Intake (the one-tap jot/log dispatch) is the main use, so it stays visible.
+   Everything else — starting a dir/resume session, and the Run list itself —
+   folds behind a disclosure row, keeping the default view to just intake plus
+   two taps. Each row carries a caret that rotates open; the runs row also shows
+   a live count so you know what's running without expanding it. */
+.disc{display:flex;align-items:center;gap:.55rem;width:100%;background:transparent;border:0;
+  border-top:1px solid var(--line);color:var(--dim);font:inherit;font-size:13px;letter-spacing:.05em;
+  padding:1.1rem 0 .55rem;margin-top:1.1rem;cursor:pointer;text-align:left;
+  -webkit-tap-highlight-color:transparent}
+.disc:hover,.disc:focus-visible{color:var(--fg)}
+.disc .caret{color:var(--dim);display:inline-block;transition:transform .12s}
+.disc[aria-expanded="true"] .caret{transform:rotate(90deg)}
+.disc[aria-expanded="true"]{color:var(--fg)}
+.rwait{color:var(--accent)}
+.launcher[hidden],.sessions[hidden]{display:none}
 .cmd{display:flex;flex-wrap:wrap;align-items:baseline;column-gap:0;row-gap:.25rem;white-space:pre}
 .prompt{color:var(--prompt)}
 .input{flex:1 1 12ch;min-width:8ch;background:var(--input);color:var(--accent);
@@ -684,7 +699,7 @@ textarea.input{min-height:4.25rem;resize:vertical;line-height:1.5;white-space:pr
 .go:disabled{opacity:.5;cursor:default}
 .hint{color:var(--dim);margin-top:1rem;font-size:13px}
 .hint code{color:var(--fg)}
-.sessions{margin-top:2rem;padding-top:1.6rem;border-top:1px solid var(--line)}
+.sessions{margin-top:.5rem}
 .shead{color:var(--dim);font-size:13px;margin-bottom:.6rem;letter-spacing:.05em}
 .shead b{color:var(--fg);font-weight:600}
 .empty{color:var(--dim);font-size:13px;margin-top:2.5rem}
@@ -727,9 +742,11 @@ a.rc:hover,a.rc:active,a.rc:focus-visible{background:var(--prompt);color:var(--b
 </style></head>
 <body>
 <main>
-  <h1 class="label"><b>claude-launcher</b> &middot; launch &amp; manage runs</h1>
+  <h1 class="label"><b>claude-launcher</b></h1>
   <noscript><div class="empty">this page needs JavaScript &mdash; it drives a JSON API.</div></noscript>
   {tasks}
+  <button class="disc" id="newsession" type="button" aria-expanded="false" aria-controls="launcher"><span class="caret">&#9656;</span> new session</button>
+  <section class="launcher" id="launcher" hidden>
   <div class="cmd"><span class="prompt">$ </span>cd {projects_root}/<input class="input" id="dir" autocomplete="off" placeholder="subdir" aria-label="project subdirectory under {projects_root}"> &amp;&amp; cl</div>
   <button class="go" id="launch" type="button">launch</button>
   <div class="hint">blank &rarr; <code>{default_dir}</code></div>
@@ -737,7 +754,9 @@ a.rc:hover,a.rc:active,a.rc:focus-visible{background:var(--prompt);color:var(--b
   <div class="cmd"><span class="prompt">$ </span>cl --resume <input class="input" id="sid" autocomplete="off" placeholder="sessionId" aria-label="session id to resume"></div>
   <button class="go" id="resume" type="button">resume</button>
   <div class="hint">a closed session's id &mdash; from the Claude app</div>
-  <section class="sessions" id="runs"><div class="empty">checking runs&hellip;</div></section>
+  </section>
+  <button class="disc" id="runstoggle" type="button" aria-expanded="false" aria-controls="runs"><span class="caret">&#9656;</span> <span id="runcount">open runs</span></button>
+  <section class="sessions" id="runs" hidden><div class="empty">checking runs&hellip;</div></section>
 </main>
 <div id="toast" role="status" aria-live="polite" hidden></div>
 <script src="app.js"></script>
@@ -867,15 +886,19 @@ function render(runs) {
   for (const id of pending.keys()) {
     if (!live.has(id)) shown.unshift({id: id, title: "starting…", pending: true});
   }
+  // Feed the collapsed toggle a live count and a "needs me" waiting tally, so the
+  // Run list can stay folded without hiding how many runs there are or whether one
+  // is waiting on you.
+  const waiting = shown.filter((r) => r.status === "waiting").length;
+  const label = $("runcount");
+  label.replaceChildren(document.createTextNode("open runs (" + shown.length + ")"));
+  if (waiting) label.appendChild(el("span", "rwait", " · " + waiting + " waiting"));
   host.replaceChildren();
   if (!shown.length) {
     host.appendChild(el("div", "empty", "no live runs"));
     return;
   }
-  const head = el("h2", "shead");
-  head.appendChild(el("b", null, "open runs (" + shown.length + ")"));
-  head.appendChild(document.createTextNode(" · tap × to close"));
-  host.appendChild(head);
+  host.appendChild(el("div", "shead", "tap × to close"));
   shown.forEach((r) => host.appendChild(rowNode(r)));
 }
 
@@ -952,10 +975,19 @@ function watch(runId) {
   schedule();
 }
 
+// The dir/resume launcher is a disclosure: collapsed, intake stays on top and
+// the Run list sits close below. Opening reveals it; a launch re-collapses it so
+// you land back on the list and watch the new Run appear.
+function setLauncher(open) {
+  $("launcher").hidden = !open;
+  $("newsession").setAttribute("aria-expanded", open ? "true" : "false");
+}
+
 function afterLaunch(res, seedInput) {
   toast(res.message, !!res.ok);
-  if (!res.ok) return;                 // keep the seed text so it can be fixed
+  if (!res.ok) return;                 // keep the seed text (and panel) so it can be fixed
   if (seedInput) seedInput.value = "";
+  setLauncher(false);                  // done launching -> back to the Run list
   watch(res.runId);
 }
 
@@ -983,6 +1015,13 @@ async function closeRun(runId) {
   schedule();
 }
 
+$("newsession").addEventListener("click", () => setLauncher($("launcher").hidden));
+$("runstoggle").addEventListener("click", () => {
+  const s = $("runs");
+  const open = s.hidden;
+  s.hidden = !open;
+  $("runstoggle").setAttribute("aria-expanded", open ? "true" : "false");
+});
 $("launch").addEventListener("click", launchDir);
 $("resume").addEventListener("click", resumeSession);
 $("toast").addEventListener("click", () => { $("toast").hidden = true; });
@@ -1000,8 +1039,8 @@ tick();
 
 def _render_tasks() -> str:
     """One-tap task buttons (and inline seed boxes) from tasks.py, or '' if no
-    tasks are configured. Ends with a divider setting them off from the generic
-    launcher below."""
+    tasks are configured. These are the always-visible intake buttons; the
+    generic dir/resume launcher lives in the collapsible panel below them."""
     refresh_tasks()   # pick up any tasks.py edit since the last page load
     if not TASKS:
         return ""
@@ -1027,7 +1066,6 @@ def _render_tasks() -> str:
         # finds the input by walking up to the enclosing .task.
         out.append(f'<div class="btnrow">{btns}</div>' if len(buttons) > 1 else btns)
         out.append("</div>")
-    out.append('<div class="orsep">or launch a dir</div>')
     return "".join(out)
 
 

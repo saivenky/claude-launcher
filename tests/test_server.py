@@ -183,6 +183,23 @@ class HttpEndpointTests(_HttpCase):
         self.assertIn('<script src="app.js"></script>', body)
         self.assertIn("<noscript>", body)
 
+    def test_launch_and_runs_fold_behind_disclosures_leaving_intake(self):
+        # Intake is the main use, so it stays on the page. New-session (dir + resume)
+        # and the Run list each fold into their own `hidden` disclosure, so the
+        # default view is just intake plus two collapsed rows.
+        _, body, _ = self._raw("GET", "/")
+        self.assertIn('<section class="launcher" id="launcher" hidden>', body)
+        self.assertIn('<section class="sessions" id="runs" hidden>', body)
+        self.assertIn('id="newsession"', body)
+        self.assertIn('aria-controls="launcher"', body)
+        self.assertIn('id="runstoggle"', body)
+        self.assertIn('aria-controls="runs"', body)
+        self.assertLess(body.index('id="launcher"'), body.index('id="dir"'))       # dir inside
+        self.assertLess(body.index('id="launcher"'), body.index('id="sid"'))       # resume inside
+        self.assertLess(body.index('id="runstoggle"'), body.index('id="runs"'))    # toggle before list
+        _, js, _ = self._raw("GET", "/app.js")
+        self.assertIn("setLauncher", js)
+
     def test_app_js_is_served_and_never_assigns_innerhtml(self):
         status, body, headers = self._raw("GET", "/app.js")
         self.assertEqual(status, 200)
@@ -636,7 +653,10 @@ class RenderTasksTests(unittest.TestCase):
         out = server._render_tasks()
         self.assertIn('data-task="cap"', out)
         self.assertNotIn("<form", out)                  # forms are gone; JS posts JSON
-        self.assertIn("or launch a dir", out)           # divider before generic launcher
+        # intake buttons only: the dir/resume launcher (and its dividers) now live
+        # in the collapsible panel in the page template, not in _render_tasks.
+        self.assertNotIn("or launch a dir", out)
+        self.assertNotIn('id="launcher"', out)
         self.assertEqual(out.count("<input"), 1)        # only the text task gets a seed box
 
     def test_a_button_group_shares_one_seed_box(self):
