@@ -58,7 +58,7 @@ async function sendRespond(f, payload, force) {
   if (force) body.force = true;
   let r;
   try {
-    r = await fetch("/api/respond", {
+    r = await fetch("api/respond", {
       method: "POST",
       headers: {"Content-Type": "application/json"},
       body: JSON.stringify(body),
@@ -104,7 +104,7 @@ async function sendClear(f) {
   if (!token) { toast("no token — clear cancelled"); return; }
   let r;
   try {
-    r = await fetch("/api/clear", {
+    r = await fetch("api/clear", {
       method: "POST", headers: {"Content-Type": "application/json"},
       body: JSON.stringify({runId: f.runId, token}),
     });
@@ -186,7 +186,7 @@ function focusCard(f, nextSid) {
   const nextLevel = {1: "high", 0: "low", 2: "normal"};   // cycle normal→high→low→normal
   pri.addEventListener("click", () => {
     const lvl = nextLevel[f.pri === 0 || f.pri === 2 ? f.pri : 1];
-    postState("/api/priority", {sessionId: f.sessionId, level: lvl}, "priority: " + lvl);
+    postState("api/priority", {sessionId: f.sessionId, level: lvl}, "priority: " + lvl);
   });
   actions.append(pri, el("span", "grow"));
   if (f.pinned) {
@@ -197,7 +197,7 @@ function focusCard(f, nextSid) {
   const snooze = el("button", "ghost", "snooze ▾");
   snooze.addEventListener("click", () => {
     const h = parseFloat(window.prompt("Snooze how many hours? (0 to un-snooze)", "1"));
-    if (!isNaN(h)) postState("/api/snooze", {sessionId: f.sessionId, minutes: Math.round(h * 60)},
+    if (!isNaN(h)) postState("api/snooze", {sessionId: f.sessionId, minutes: Math.round(h * 60)},
       h > 0 ? "snoozed " + h + "h" : "un-snoozed");
   });
   const skip = el("button", "ghost", "skip →");
@@ -259,7 +259,7 @@ let timer = null;
 let pinned = null;   // a tapped row becomes the sticky focus until cleared
 
 function boardUrl() {
-  return "/api/board" + (pinned ? "?focus=" + encodeURIComponent(pinned) : "");
+  return "api/board" + (pinned ? "?focus=" + encodeURIComponent(pinned) : "");
 }
 
 function setPinned(sid) {
