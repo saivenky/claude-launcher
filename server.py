@@ -1432,6 +1432,31 @@ def _parse_selector(text: str) -> dict:
     return {"options": options, "cursor": cursor} if len(options) >= 2 else {}
 
 
+_RULE_CHARS = set("─—-═")
+
+
+def _pane_input(text: str) -> str:
+    """Whatever is currently typed in the Run's input box, or ''.
+
+    Claude Code frames the input between two horizontal rules, just above the
+    `📁 …` status line. Reading it lets Respond refuse to blind-append onto a
+    reply already sitting there (a half-typed message, or a prior stuck send)
+    instead of silently submitting more than the caller meant.
+    """
+    lines = text.split("\n")
+    rules = [i for i, l in enumerate(lines) if l.strip() and set(l.strip()) <= _RULE_CHARS]
+    if len(rules) < 2:
+        return ""
+    box = lines[rules[-2] + 1:rules[-1]]
+    out = []
+    for l in box:
+        s = l.strip()
+        if s[:1] in ("❯", "›", ">"):
+            s = s[1:].strip()          # drop the prompt glyph on the first line
+        out.append(s)
+    return "\n".join(out).strip()
+
+
 def _board(focus_sid: str = "") -> dict:
     now = time.time() * 1000
     items = []
@@ -1691,6 +1716,15 @@ class Handler(BaseHTTPRequestHandler):
         if len(text) > MAX_RESPOND_CHARS or "\x00" in text:
             self._fail(400, "text too long")
             return
+        # Don't blind-append: if the box already holds unsent text (a half-typed
+        # message, or a prior stuck send), refuse and hand it back so the caller
+        # sees exactly what would be sent. `force` sends anyway (appends).
+        if text and not bool(body.get("force")):
+            existing = _pane_input(_pane_contents(run_id))
+            if existing:
+                self._json(409, {"ok": False, "message": "input box already has unsent text",
+                                 "existing": existing[:500]})
+                return
         if not respond_run(run_id, text, keys):
             self._fail(400, "respond failed: not a live run, or nothing to send")
             return

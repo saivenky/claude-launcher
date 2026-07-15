@@ -51,19 +51,29 @@ function getToken() {
   return t;
 }
 
-async function sendRespond(f, payload) {
+async function sendRespond(f, payload, force) {
   const token = getToken();
   if (!token) { toast("no token — respond cancelled"); return; }
+  const body = Object.assign({runId: f.runId, token}, payload);
+  if (force) body.force = true;
   let r;
   try {
     r = await fetch("/api/respond", {
       method: "POST",
       headers: {"Content-Type": "application/json"},
-      body: JSON.stringify(Object.assign({runId: f.runId, token}, payload)),
+      body: JSON.stringify(body),
     });
   } catch (e) { toast("respond unreachable"); return; }
   const data = await r.json().catch(() => ({}));
   if (r.status === 401) { localStorage.removeItem("cl_token"); toast("token rejected — re-enter"); return; }
+  if (r.status === 409) {   // the box already has unsent text — never blind-append
+    if (window.confirm("This session already has unsent text:\n\n" + (data.existing || "") +
+        "\n\nSend your reply anyway? It will be added below the above.")) {
+      return sendRespond(f, payload, true);
+    }
+    toast("cancelled — clear the box on the Mac first");
+    return;
+  }
   if (!r.ok) { toast(data.message || ("respond failed (" + r.status + ")")); return; }
   toast("✓ sent — " + (f.title || "session") + " is now working");
   // Stay on this session (don't let rotation swap it away) so you watch it go
