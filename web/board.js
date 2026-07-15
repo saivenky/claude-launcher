@@ -76,10 +76,11 @@ async function sendRespond(f, payload, force) {
   }
   if (!r.ok) { toast(data.message || ("respond failed (" + r.status + ")")); return; }
   toast("✓ sent — " + (f.title || "session") + " is now working");
-  // Stay on this session (don't let rotation swap it away) so you watch it go
-  // busy and see the reply — otherwise a successful respond just looks like the
-  // card jumped to someone else.
+  // Pin this session so rotation can't swap it away before you see your reply
+  // land — but only until it flips to working. render() watches for that flip
+  // and hands the focus to the next card automatically (no rotate click).
   pinned = f.sessionId;
+  rotateWhenBusy = f.sessionId;
   etag = null;
   poll();
   setTimeout(() => { etag = null; poll(); }, 1500);   // catch the busy flip promptly
@@ -241,6 +242,15 @@ function render(data) {
     b(c.watching || 0), document.createTextNode(" watching · "),
     b(c.dormant || 0), document.createTextNode(" dormant"));
 
+  // Auto-rotate: after a respond the session stays pinned just long enough to
+  // see it go busy, then we release the pin so the next card takes focus.
+  if (rotateWhenBusy && data.focus &&
+      data.focus.sessionId === rotateWhenBusy && data.focus.lane === "working") {
+    const sid = rotateWhenBusy;
+    rotateWhenBusy = null;
+    setTimeout(() => { if (pinned === sid) setPinned(null); }, 1200);
+  }
+
   if (data.focus) {
     app.append(focusCard(data.focus, (data.upnext[0] || {}).sessionId));
   } else {
@@ -257,6 +267,7 @@ function render(data) {
 let etag = null;
 let timer = null;
 let pinned = null;   // a tapped row becomes the sticky focus until cleared
+let rotateWhenBusy = null;   // a just-responded session: release the pin once it goes busy
 
 function boardUrl() {
   return "api/board" + (pinned ? "?focus=" + encodeURIComponent(pinned) : "");
@@ -264,6 +275,7 @@ function boardUrl() {
 
 function setPinned(sid) {
   pinned = sid;
+  rotateWhenBusy = null;   // any manual pin/unpin cancels a pending auto-rotate
   etag = null;   // the focus param changes the payload — force a fresh fetch
   poll();
 }
