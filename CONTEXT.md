@@ -1,8 +1,10 @@
 # claude-launcher
 
-A tool to spawn and manage local Claude Code sessions on a Mac from a
-phone. It owns *lifecycle* only; the running session's I/O is owned
-elsewhere. This glossary fixes the language so the two are never
+A tool to spawn, observe, and respond to local Claude Code sessions on a
+Mac from a phone. It owns *lifecycle* (spawn / close / **resume**) and now
+**observes** and **responds** to live Runs over its own transport; the
+Claude app's **Remote Control bridge** stays the rich single-session
+channel. This glossary fixes the language so the channels are never
 conflated.
 
 The word "session" is dangerously overloaded — Claude Code alone uses it
@@ -42,12 +44,43 @@ _Avoid_: reopen, restore, continue (overloaded by `claude --continue`)
 
 **Observe**:
 Read a live **Run**'s externally visible state — which **Session** it is
-executing, its working directory, whether it is busy/waiting/idle, when it
-was last active, its most recent message — without driving it. The
-Launcher's only read capability. Observing is strictly one-way: it never
-types, answers, or approves. Those belong to the **Remote Control
-bridge**.
+executing, its working directory, its status, its most recent message, and
+its **rendered pane** (the on-screen TUI, where a **Blocked** Run's actual
+prompt lives even when it never reaches the transcript) — without driving
+it. Strictly one-way. Typing, answering, and approving are **Respond**'s
+job (over the Launcher transport) or the **Remote Control bridge**'s (over
+the cloud) — never Observe's.
 _Avoid_: monitor, watch, view, read (each also suggests two-way)
+
+**Respond**:
+Inject input into a live **Run** over the **Launcher transport** — free
+text, a selector choice (arrow / enter), or a permission approval — by
+writing to the Run's iTerm pane. The two-way sibling of **Observe** and the
+Launcher's own driving channel, distinct from the **Remote Control bridge**
+(Anthropic's cloud, one session, the Claude app). When the Run is busy,
+Claude Code's native input queue absorbs the response until the next turn.
+Because it can *approve* tool calls, Respond removes the human-in-the-loop
+backstop — so it, unlike the read-only verbs, is gated by a shared secret.
+_Avoid_: drive (the channel-agnostic *capability*, not this one channel);
+type / answer / approve (each names only one shape); remote control
+
+**Board**:
+The single screen that aggregates every live **Run**, surfaces **Blocked**
+ones first with their concrete blocker, and lets you **Respond** inline —
+the launcher page grown from a run list into a management surface. Its UI
+is served from disk and hot-reloads (ship new HTML, no relaunch); the
+Launcher's `/api/*` capability surface behind it is the stable contract.
+_Avoid_: dashboard, list (it is more than a list now), inbox, feed
+
+**Blocked**:
+A **Run** paused awaiting a *specific required input from you*: an
+**approval** (a permission prompt or plan approval) or a **question**
+(AskUserQuestion). Distinct from **idle** ("your move" — the turn ended but
+nothing is required) and from Claude Code's `status: waiting` flag, which is
+only a lossy proxy for it. The **Board**'s top priority. Read from the
+transcript tail plus the **rendered pane**, never from the status flag
+alone.
+_Avoid_: waiting (Claude Code's status flag, not this), stuck, needs-input
 
 **Task**:
 A named, preset **Run** definition in `tasks.py` — fixed workdir plus an
