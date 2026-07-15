@@ -99,6 +99,23 @@ async function postState(path, body, note) {
   poll();
 }
 
+async function sendClear(f) {
+  const token = getToken();
+  if (!token) { toast("no token — clear cancelled"); return; }
+  let r;
+  try {
+    r = await fetch("/api/clear", {
+      method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({runId: f.runId, token}),
+    });
+  } catch (e) { toast("clear unreachable"); return; }
+  if (r.status === 401) { localStorage.removeItem("cl_token"); toast("token rejected — re-enter"); return; }
+  if (!r.ok) { const d = await r.json().catch(() => ({})); toast(d.message || "clear failed"); return; }
+  toast("box cleared");
+  pinned = f.sessionId; etag = null; poll();
+  setTimeout(() => { etag = null; poll(); }, 1200);
+}
+
 function focusCard(f, nextSid) {
   const cls = f.lane === "question" ? "focus bq" : f.lane === "approval" ? "focus bp" : "focus";
   const card = el("div", cls);
@@ -130,6 +147,9 @@ function focusCard(f, nextSid) {
     const warn = el("div", "pending");
     warn.append(el("div", "plbl", "⚠ unsent text already in this session's input box — your reply would go below it"));
     warn.append(el("div", "ptext", f.pendingInput));
+    const clr = el("button", "ghost", "clear the box");
+    clr.addEventListener("click", () => sendClear(f));
+    warn.append(clr);
     card.append(warn);
   }
 

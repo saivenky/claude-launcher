@@ -716,6 +716,29 @@ def respond_run(run_id: str, text: str = "", keys: list | None = None) -> bool:
     return ok
 
 
+def clear_input(run_id: str) -> bool:
+    """Empty a live Run's input box by deleting exactly what is typed in it.
+
+    Reads the current box content (a half-composed message, or a prior stuck
+    send) and sends that many backspaces plus a small margin. Deterministic —
+    it does not rely on any clear-line keybinding working — and safe: a
+    backspace at the start of the input is a no-op, so an over-count can never
+    reach the prompt or the scrollback above it.
+    """
+    if not _UUID_RE.match(run_id) or run_id not in {r["id"] for r in cached_runs()}:
+        return False
+    content = _pane_input(_pane_contents(run_id))
+    n = min(len(content) + 16, MAX_RESPOND_CHARS + 32)
+    dels = " & ".join(["(ASCII character 127)"] * n)   # n DEL (backspace) bytes
+    try:
+        ok = _osascript(_RESPOND_SCRIPT % (run_id, f"write text ({dels}) newline no")).strip() == "ok"
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return False
+    if ok:
+        invalidate_runs()
+    return ok
+
+
 # --- page ---------------------------------------------------------------------
 
 CSP = ("default-src 'none'; script-src 'self'; connect-src 'self'; "
@@ -1531,7 +1554,7 @@ _WEB_FILES = {"board.html": "text/html; charset=utf-8",
 
 MAX_BODY_BYTES = 4096
 _API_POSTS = ("/api/launch", "/api/resume", "/api/close", "/api/respond",
-              "/api/priority", "/api/snooze")
+              "/api/clear", "/api/priority", "/api/snooze")
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -1670,6 +1693,8 @@ class Handler(BaseHTTPRequestHandler):
             self._handle_resume(body)
         elif path == "/api/respond":
             self._handle_respond(body)
+        elif path == "/api/clear":
+            self._handle_clear(body)
         elif path == "/api/priority":
             self._handle_priority(body)
         elif path == "/api/snooze":
@@ -1729,6 +1754,19 @@ class Handler(BaseHTTPRequestHandler):
                 return
         if not respond_run(run_id, text, keys):
             self._fail(400, "respond failed: not a live run, or nothing to send")
+            return
+        self._json(200, {"ok": True})
+
+    def _handle_clear(self, body: dict) -> None:
+        # Modifies a live Run's input, so it is token-gated like Respond.
+        if not TOKEN:
+            self._fail(403, "respond disabled: set CLAUDE_LAUNCHER_TOKEN")
+            return
+        if not hmac.compare_digest(self._str(body, "token"), TOKEN):
+            self._fail(401, "bad token")
+            return
+        if not clear_input(self._str(body, "runId")):
+            self._fail(400, "clear failed: not a live run")
             return
         self._json(200, {"ok": True})
 
