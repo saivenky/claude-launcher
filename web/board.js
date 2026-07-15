@@ -100,11 +100,14 @@ function focusCard(f) {
   const respond = el("div", "respond");
   if (f.options && f.options.length) {
     const opts = el("div", "opts");
-    // Selecting option i drives the TUI selector: i downs, then enter.
+    // Selecting option i: step the selector cursor from where it actually sits
+    // (f.cursor, read off the rendered menu) to i, then enter.
+    const cur = f.cursor || 0;
     f.options.forEach((o, i) => {
       const b = el("button", "opt", o);
-      b.addEventListener("click", () =>
-        sendRespond(f.runId, {keys: Array(i).fill("down").concat("enter")}));
+      const d = i - cur;
+      const keys = Array(Math.abs(d)).fill(d >= 0 ? "down" : "up").concat("enter");
+      b.addEventListener("click", () => sendRespond(f.runId, {keys}));
       opts.append(b);
     });
     respond.append(opts);

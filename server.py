@@ -1331,6 +1331,54 @@ def _lane_of(run: dict) -> str:
     return "yourmove"
 
 
+# A permission prompt is a live TUI dialog that often never reaches the
+# transcript — so for that lane the concrete blocker is read from the *rendered
+# pane* instead. This is Observe reading the screen (see CONTEXT.md); it costs
+# one AppleScript walk, so it runs only for the focus, and only when Blocked.
+_PANE_SCRIPT = """
+if application "iTerm" is running then
+  tell application "iTerm"
+    repeat with w in windows
+      repeat with t in tabs of w
+        repeat with s in sessions of t
+          if (id of s) is "%s" then return (contents of s)
+        end repeat
+      end repeat
+    end repeat
+  end tell
+end if
+return ""
+"""
+
+# A rendered selector line: an optional cursor glyph, an optional "N." / "N)"
+# index, then the label. Claude Code marks the current option with a cursor
+# glyph; permission menus and the trust prompt are numbered.
+_OPT_RE = re.compile(r"^\s*([❯›>])?\s*\d+[.)]\s+(\S.*?)\s*$")
+
+
+def _pane_contents(run_id: str) -> str:
+    if not _UUID_RE.match(run_id):
+        return ""
+    try:
+        return _osascript(_PANE_SCRIPT % run_id)
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return ""
+
+
+def _parse_selector(text: str) -> dict:
+    """Options + cursor index parsed from a rendered numbered selector, or {}.
+    Grounds Respond: option i is reached by stepping the cursor from where it
+    actually sits, not by assuming it starts at the top."""
+    options, cursor = [], 0
+    for ln in text.split("\n"):
+        m = _OPT_RE.match(ln)
+        if m:
+            if m.group(1):
+                cursor = len(options)
+            options.append(m.group(2).strip()[:80])
+    return {"options": options, "cursor": cursor} if len(options) >= 2 else {}
+
+
 def _board(focus_sid: str = "") -> dict:
     now = time.time() * 1000
     items = []
@@ -1375,8 +1423,14 @@ def _board(focus_sid: str = "") -> dict:
     snoozed = [it for it in snoozed if it is not focus]
     if focus:
         text, ask, options = _full_context(focus["sessionId"])
+        cursor = 0
+        if focus["lane"] == "approval":   # read the real on-screen permission menu
+            sel = _parse_selector(_pane_contents(focus["runId"]))
+            if sel:
+                options, cursor = sel["options"], sel["cursor"]
         focus = dict(focus, aiTitle=_ai_title(focus["sessionId"]),
-                     contextHtml=_md_to_html(text), ask=ask, options=options, pinned=pinned)
+                     contextHtml=_md_to_html(text), ask=ask, options=options,
+                     cursor=cursor, pinned=pinned)
     return {"focus": focus, "upnext": other, "watching": working,
             "snoozed": snoozed, "dormant": dormant,
             "counts": {"needYou": len(order), "watching": len(working),
