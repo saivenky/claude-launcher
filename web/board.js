@@ -126,6 +126,13 @@ function focusCard(f, nextSid) {
   ask.append(el("div", "qtext", f.ask || "(no explicit question — your move)"));
   card.append(ask);
 
+  if (f.pendingInput) {   // there's already unsent text in this session's box
+    const warn = el("div", "pending");
+    warn.append(el("div", "plbl", "⚠ unsent text already in this session's input box — your reply would go below it"));
+    warn.append(el("div", "ptext", f.pendingInput));
+    card.append(warn);
+  }
+
   const respond = el("div", "respond");
   if (f.options && f.options.length) {
     const opts = el("div", "opts");

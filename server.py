@@ -1502,13 +1502,15 @@ def _board(focus_sid: str = "") -> dict:
     if focus:
         text, ask, options = _full_context(focus["sessionId"])
         cursor = 0
-        if focus["lane"] == "approval":   # read the real on-screen permission menu
-            sel = _parse_selector(_pane_contents(focus["runId"]))
+        pane = _pane_contents(focus["runId"])   # one read: input box + any selector
+        pending = _pane_input(pane)             # unsent text sitting in the box
+        if focus["lane"] == "approval":         # read the real on-screen permission menu
+            sel = _parse_selector(pane)
             if sel:
                 options, cursor = sel["options"], sel["cursor"]
         focus = dict(focus, aiTitle=_ai_title(focus["sessionId"]),
                      contextHtml=_md_to_html(text), ask=ask, options=options,
-                     cursor=cursor, pinned=pinned)
+                     cursor=cursor, pendingInput=pending, pinned=pinned)
     return {"focus": focus, "upnext": other, "watching": working,
             "snoozed": snoozed, "dormant": dormant,
             "counts": {"needYou": len(order), "watching": len(working),
