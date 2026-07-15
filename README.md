@@ -5,10 +5,11 @@ a phone over Tailscale. Opens a new iTerm2 tab running `claude` with
 Remote Control enabled — so you can drive the session from the Claude
 app — and lists what's running, each with a tap-to-close button.
 
-The launcher owns *lifecycle* (spawn, list, close); the Claude app owns
-everything *inside* a session (typing tasks, approvals, output).
-Spawning a new local session is the one thing the app can't do — that's
-the gap this fills.
+The launcher owns *lifecycle* (spawn, list, close) — the one thing the
+Claude app can't do. It now also **manages and responds** to running
+sessions from a phone, on its [session board](#session-board): one screen
+that surfaces whichever live session needs you and lets you answer it in
+place.
 
 Two words, used precisely throughout (see [CONTEXT.md](CONTEXT.md)):
 
@@ -49,6 +50,37 @@ is visible and pauses when it isn't. A freshly launched run shows as
 **The page requires JavaScript.** It's a small client over a JSON API
 (`GET /api/runs`, `POST /api/launch|resume|close`) — see
 [ADR 0003](docs/adr/0003-launcher-page-runs-javascript.md).
+
+## Session board
+
+`/board` is a phone-first screen for *managing and responding to* every
+live session, not just spawning them. It shows **one session at a time** —
+the one that most needs you — with the rest queued behind it as a curated
+round-robin, and resurfaces a session automatically when it next needs
+attention, so none is forgotten. Long-idle sessions park as *dormant*;
+working ones sit in *watching* until they block again.
+
+Each focus card carries the session's summary, its recent run-up context
+(rendered from the transcript), and what it's blocked on — a question, a
+permission prompt, or just "your move" — with inline controls to
+**respond**: type a reply or pick an option, injected straight into the
+run. A permission menu is read off the rendered pane so its options are the
+real ones. You can also set a per-session **priority**, **snooze** a
+session, or **skip** to the next; those persist across restarts.
+
+Respond types into a live session — and can approve a permission — so it is
+gated by a shared secret: set `CLAUDE_LAUNCHER_TOKEN` and enter it once in
+the browser. Without a token the board is read-only. Before typing, it
+refuses to append onto a box that already holds unsent text, showing you
+what's there with a one-tap clear.
+
+The board's UI is served from files on disk (`web/board.html`,
+`web/board.js`) and re-read per request, so it ships without a launcher
+restart; the `/api/*` surface behind it is the stable contract. See ADRs
+[0005](docs/adr/0005-ui-hot-served-from-disk.md) (hot-served UI),
+[0006](docs/adr/0006-board-context-rendered-server-side.md) (context
+rendering), and [0007](docs/adr/0007-respond-requires-auth.md) (Respond +
+auth).
 
 ## Named tasks (optional)
 
@@ -125,12 +157,17 @@ off the Claude app. Notes:
 | `CLAUDE_LAUNCHER_PROJECTS_ROOT` | `~/projects` | Allowed parent for `dir`. Anything outside is rejected. |
 | `CLAUDE_LAUNCHER_COMMAND` | `cl` | Command run after `cd`. Use `claude` if you don't have a `cl` alias. |
 | `CLAUDE_LAUNCHER_REMOTE` | `1` | Append `--remote-control` so the Claude app can drive the session. Set `0` to disable. |
+| `CLAUDE_LAUNCHER_TOKEN` | *(unset)* | Shared secret for the board's **Respond**. Unset disables Respond; the board stays read-only. |
 
 ## Security model
 
-**Trusted networks only** — Tailscale, or LAN behind a firewall. There
-is no authentication; anyone who can reach the port can trigger a
-session.
+**Trusted networks only** — Tailscale, or LAN behind a firewall. Lifecycle
+(spawn / resume / close) has no authentication; anyone who can reach the
+port can trigger a session, and the board serves session context over the
+network. The board's **Respond** is the exception: because it types into a
+live session and can approve a permission, it requires `CLAUDE_LAUNCHER_TOKEN`
+(checked with `hmac.compare_digest`) and is disabled until one is set. See
+[ADR 0007](docs/adr/0007-respond-requires-auth.md).
 
 What the server does enforce:
 
