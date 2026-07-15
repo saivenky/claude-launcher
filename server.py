@@ -1167,14 +1167,64 @@ def _runs_payload() -> tuple[bytes, str]:
 _BOARD_DORMANT_MS = 36 * 3600 * 1000     # idle longer than this parks as Dormant
 _TAIL_WINDOW = 262144
 
-# Per-session state — a set-endpoint wires each later; the read-path uses the
-# empty defaults today (all normal priority, nothing snoozed).
+# Per-session state you set from the Board — priority reorders the rotation and
+# stretches the Dormant clock; snooze hides a Session until its wake time. Both
+# are keyed by sessionId and persisted to disk so they survive a restart. These
+# are benign (they reorder a view, they cannot drive a Run), so they ride the
+# same-origin + JSON CSRF defense but are NOT token-gated like Respond.
 _PRIORITY: dict[str, int] = {}           # sessionId -> 0 high / 1 normal / 2 low
 _SNOOZE: dict[str, float] = {}           # sessionId -> wake epoch ms
+_STATE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".board-state.json")
+_STATE_LOCK = threading.Lock()
 
 
 def _pri(session_id: str) -> int:
     return _PRIORITY.get(session_id, 1)
+
+
+def _load_state() -> None:
+    global _PRIORITY, _SNOOZE
+    try:
+        with open(_STATE_FILE) as fh:
+            d = json.load(fh)
+    except (OSError, ValueError):
+        return
+    _PRIORITY = {k: int(v) for k, v in (d.get("priority") or {}).items() if int(v) in (0, 1, 2)}
+    now = time.time() * 1000
+    _SNOOZE = {k: float(v) for k, v in (d.get("snooze") or {}).items() if float(v) > now}
+
+
+def _save_state() -> None:
+    with _STATE_LOCK:
+        try:
+            tmp = _STATE_FILE + ".tmp"
+            with open(tmp, "w") as fh:
+                json.dump({"priority": _PRIORITY, "snooze": _SNOOZE}, fh)
+            os.replace(tmp, _STATE_FILE)   # atomic, never a half-written file
+        except OSError as exc:
+            sys.stderr.write(f"board state save failed: {exc}\n")
+
+
+def set_priority(session_id: str, level: int) -> bool:
+    if not _UUID_RE.match(session_id) or level not in (0, 1, 2):
+        return False
+    if level == 1:
+        _PRIORITY.pop(session_id, None)   # normal is the default; don't store it
+    else:
+        _PRIORITY[session_id] = level
+    _save_state()
+    return True
+
+
+def set_snooze(session_id: str, minutes: float) -> bool:
+    if not _UUID_RE.match(session_id):
+        return False
+    if minutes <= 0:
+        _SNOOZE.pop(session_id, None)     # 0 (or less) un-snoozes
+    else:
+        _SNOOZE[session_id] = time.time() * 1000 + minutes * 60000
+    _save_state()
+    return True
 
 
 def _tail_rows(session_id: str) -> list:
@@ -1450,7 +1500,8 @@ _WEB_FILES = {"board.html": "text/html; charset=utf-8",
 
 
 MAX_BODY_BYTES = 4096
-_API_POSTS = ("/api/launch", "/api/resume", "/api/close", "/api/respond")
+_API_POSTS = ("/api/launch", "/api/resume", "/api/close", "/api/respond",
+              "/api/priority", "/api/snooze")
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -1589,6 +1640,10 @@ class Handler(BaseHTTPRequestHandler):
             self._handle_resume(body)
         elif path == "/api/respond":
             self._handle_respond(body)
+        elif path == "/api/priority":
+            self._handle_priority(body)
+        elif path == "/api/snooze":
+            self._handle_snooze(body)
         else:
             self._handle_launch(body)
 
@@ -1635,6 +1690,27 @@ class Handler(BaseHTTPRequestHandler):
             return
         if not respond_run(run_id, text, keys):
             self._fail(400, "respond failed: not a live run, or nothing to send")
+            return
+        self._json(200, {"ok": True})
+
+    def _handle_priority(self, body: dict) -> None:
+        levels = {"high": 0, "normal": 1, "low": 2}
+        level = levels.get(self._str(body, "level"))
+        if level is None:
+            self._fail(400, "level must be high|normal|low")
+            return
+        if not set_priority(self._str(body, "sessionId"), level):
+            self._fail(400, "bad sessionId")
+            return
+        self._json(200, {"ok": True})
+
+    def _handle_snooze(self, body: dict) -> None:
+        minutes = body.get("minutes", 0)
+        if not isinstance(minutes, (int, float)) or isinstance(minutes, bool) or not 0 <= minutes <= 525600:
+            self._fail(400, "minutes must be a number in [0, 525600]")
+            return
+        if not set_snooze(self._str(body, "sessionId"), minutes):
+            self._fail(400, "bad sessionId")
             return
         self._json(200, {"ok": True})
 
@@ -1726,6 +1802,7 @@ class Handler(BaseHTTPRequestHandler):
 def main() -> None:
     if sys.platform != "darwin":
         sys.exit("claude-launcher: macOS only (uses AppleScript + iTerm2)")
+    _load_state()   # restore per-session priority + snooze from the last run
     server = ThreadingHTTPServer((HOST, PORT), Handler)
     print(f"claude-launcher listening on {HOST}:{PORT}", file=sys.stderr)
     try:

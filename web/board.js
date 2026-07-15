@@ -70,7 +70,21 @@ async function sendRespond(runId, payload) {
   poll();
 }
 
-function focusCard(f) {
+// Priority + snooze reorder a view (no Run is driven), so they are not
+// token-gated — just the same-origin + JSON POST every mutation uses.
+async function postState(path, body, note) {
+  try {
+    const r = await fetch(path, {
+      method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body),
+    });
+    if (!r.ok) { toast("failed (" + r.status + ")"); return; }
+  } catch (e) { toast("unreachable"); return; }
+  if (note) toast(note);
+  etag = null;
+  poll();
+}
+
+function focusCard(f, nextSid) {
   const cls = f.lane === "question" ? "focus bq" : f.lane === "approval" ? "focus bp" : "focus";
   const card = el("div", cls);
 
@@ -127,13 +141,26 @@ function focusCard(f) {
   pri.append(document.createTextNode("⚑ priority "));
   pri.append(el("b", null, f.pri === 0 ? "high" : f.pri === 2 ? "low" : "normal"));
   pri.append(document.createTextNode(" ▾"));
+  const nextLevel = {1: "high", 0: "low", 2: "normal"};   // cycle normal→high→low→normal
+  pri.addEventListener("click", () => {
+    const lvl = nextLevel[f.pri === 0 || f.pri === 2 ? f.pri : 1];
+    postState("/api/priority", {sessionId: f.sessionId, level: lvl}, "priority: " + lvl);
+  });
   actions.append(pri, el("span", "grow"));
   if (f.pinned) {
     const back = el("button", "ghost", "↩ rotation");
     back.addEventListener("click", () => setPinned(null));
     actions.append(back);
   }
-  actions.append(el("button", "ghost", "snooze ▾"), el("button", "ghost", "skip →"));
+  const snooze = el("button", "ghost", "snooze ▾");
+  snooze.addEventListener("click", () => {
+    const h = parseFloat(window.prompt("Snooze how many hours? (0 to un-snooze)", "1"));
+    if (!isNaN(h)) postState("/api/snooze", {sessionId: f.sessionId, minutes: Math.round(h * 60)},
+      h > 0 ? "snoozed " + h + "h" : "un-snoozed");
+  });
+  const skip = el("button", "ghost", "skip →");
+  skip.addEventListener("click", () => nextSid ? setPinned(nextSid) : toast("nothing up next"));
+  actions.append(snooze, skip);
   respond.append(actions);
 
   card.append(respond);
@@ -173,7 +200,7 @@ function render(data) {
     b(c.dormant || 0), document.createTextNode(" dormant"));
 
   if (data.focus) {
-    app.append(focusCard(data.focus));
+    app.append(focusCard(data.focus, (data.upnext[0] || {}).sessionId));
   } else {
     const e = el("div", "empty", "All clear — nothing needs you right now.");
     app.append(e);
