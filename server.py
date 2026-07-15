@@ -682,32 +682,35 @@ return "notfound"
 """
 
 
-def _respond_actions(text: str, keys: list) -> str:
-    """AppleScript `write text` lines: the reply (submitted) then any keys."""
-    lines = []
-    if text:
-        lines.append(f"write text {applescript_quote(text)}")   # trailing return submits it
-    for k in keys:
-        expr = _RESPOND_KEYS.get(k)
-        if expr:
-            lines.append(f"write text {expr} newline no")
-    return "\n              ".join(lines)
-
-
 def respond_run(run_id: str, text: str = "", keys: list | None = None) -> bool:
     """Inject a reply and/or keys into a live Run's pane. Acts only on a
-    currently-live claude Run (mirrors close_run); a stale or bogus id no-ops."""
-    if not _UUID_RE.match(run_id):
+    currently-live claude Run (mirrors close_run); a stale or bogus id no-ops.
+
+    Text is typed WITHOUT a trailing newline, then submitted by a *separate*
+    Enter keystroke after a short pause. A combined `write text` appends its
+    return inside iTerm's bracketed paste, where Claude Code's input treats it
+    as a literal newline and the reply sticks unsent in the box; a standalone
+    CR always registers as submit. Keys pass straight through.
+    """
+    keys = keys or []
+    if not _UUID_RE.match(run_id) or run_id not in {r["id"] for r in cached_runs()}:
         return False
-    if run_id not in {r["id"] for r in cached_runs()}:
-        return False
-    actions = _respond_actions(text, keys or [])
-    if not actions:
-        return False
-    try:
-        ok = _osascript(_RESPOND_SCRIPT % (run_id, actions)).strip() == "ok"
-    except (subprocess.CalledProcessError, FileNotFoundError):
-        return False
+
+    def send(action: str) -> bool:
+        try:
+            return _osascript(_RESPOND_SCRIPT % (run_id, action)).strip() == "ok"
+        except (subprocess.CalledProcessError, FileNotFoundError):
+            return False
+
+    ok = False
+    if text:
+        if send(f"write text {applescript_quote(text)} newline no"):
+            time.sleep(0.15)   # let the TUI ingest the paste before the submit
+            send("write text (ASCII character 13) newline no")
+            ok = True
+    for k in keys:
+        if k in _RESPOND_KEYS and send(f"write text {_RESPOND_KEYS[k]} newline no"):
+            ok = True
     if ok:
         invalidate_runs()   # the Run is now busy; reflect it on the next poll
     return ok

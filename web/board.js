@@ -51,7 +51,7 @@ function getToken() {
   return t;
 }
 
-async function sendRespond(runId, payload) {
+async function sendRespond(f, payload) {
   const token = getToken();
   if (!token) { toast("no token — respond cancelled"); return; }
   let r;
@@ -59,15 +59,20 @@ async function sendRespond(runId, payload) {
     r = await fetch("/api/respond", {
       method: "POST",
       headers: {"Content-Type": "application/json"},
-      body: JSON.stringify(Object.assign({runId, token}, payload)),
+      body: JSON.stringify(Object.assign({runId: f.runId, token}, payload)),
     });
   } catch (e) { toast("respond unreachable"); return; }
   const data = await r.json().catch(() => ({}));
   if (r.status === 401) { localStorage.removeItem("cl_token"); toast("token rejected — re-enter"); return; }
   if (!r.ok) { toast(data.message || ("respond failed (" + r.status + ")")); return; }
-  toast("sent →");
-  etag = null;   // the Run just went busy; refetch now
+  toast("✓ sent — " + (f.title || "session") + " is now working");
+  // Stay on this session (don't let rotation swap it away) so you watch it go
+  // busy and see the reply — otherwise a successful respond just looks like the
+  // card jumped to someone else.
+  pinned = f.sessionId;
+  etag = null;
   poll();
+  setTimeout(() => { etag = null; poll(); }, 1500);   // catch the busy flip promptly
 }
 
 // Priority + snooze reorder a view (no Run is driven), so they are not
@@ -121,7 +126,7 @@ function focusCard(f, nextSid) {
       const b = el("button", "opt", o);
       const d = i - cur;
       const keys = Array(Math.abs(d)).fill(d >= 0 ? "down" : "up").concat("enter");
-      b.addEventListener("click", () => sendRespond(f.runId, {keys}));
+      b.addEventListener("click", () => sendRespond(f, {keys}));
       opts.append(b);
     });
     respond.append(opts);
@@ -130,7 +135,7 @@ function focusCard(f, nextSid) {
   const ti = el("input", "ti");
   ti.placeholder = "type your reply…";
   const send = el("button", "send", "respond →");
-  const fire = () => { const v = ti.value.trim(); if (v) sendRespond(f.runId, {text: v}); };
+  const fire = () => { const v = ti.value.trim(); if (v) sendRespond(f, {text: v}); };
   send.addEventListener("click", fire);
   ti.addEventListener("keydown", (e) => { if (e.key === "Enter") fire(); });
   row.append(ti, send);
