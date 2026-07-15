@@ -25,9 +25,10 @@ launcher (and resume)."""
 
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import urlparse, parse_qs
 import glob
 import hashlib
+import hmac
 import html
 import importlib
 import json
@@ -46,6 +47,13 @@ COMMAND = os.environ.get("CLAUDE_LAUNCHER_COMMAND", "cl")
 REMOTE = os.environ.get("CLAUDE_LAUNCHER_REMOTE", "1").strip().lower() not in (
     "0", "false", "no", "off", "",
 )
+
+# Respond (typing into a live Run, incl. approving a permission) removes the
+# human-in-the-loop backstop, so it is gated by a shared secret — checked with
+# hmac.compare_digest, sent by the client in the JSON body. Unset => Respond is
+# disabled entirely; the read-only Board still works. See ADR 0007.
+TOKEN = os.environ.get("CLAUDE_LAUNCHER_TOKEN", "")
+MAX_RESPOND_CHARS = 2000
 
 # A seed is typed on a phone, not piped. Anything longer is a paste accident, and
 # a NUL cannot cross an argv boundary at all.
@@ -635,6 +643,76 @@ def close_run(run_id: str) -> bool:
     return ok
 
 
+# --- Respond: inject input into a live Run's pane --------------------------
+# The Launcher's own driving channel, over the Launcher transport (local
+# AppleScript into the pane), independent of the Remote Control bridge. iTerm
+# won't address `session id "X"` directly, so the script iterates panes and
+# matches by id — the same walk `close` uses. Keys come from a fixed map, so a
+# client can drive a selector (a permission menu, an AskUserQuestion) without
+# ever supplying a raw escape sequence.
+_RESPOND_KEYS = {
+    "enter": "(ASCII character 13)",
+    "esc": "(ASCII character 27)",
+    "up": '((ASCII character 27) & "[A")',
+    "down": '((ASCII character 27) & "[B")',
+    "right": '((ASCII character 27) & "[C")',
+    "left": '((ASCII character 27) & "[D")',
+    "tab": "(ASCII character 9)",
+    "space": '" "',
+}
+
+_RESPOND_SCRIPT = """
+if application "iTerm" is running then
+  tell application "iTerm"
+    repeat with w in windows
+      repeat with t in tabs of w
+        repeat with s in sessions of t
+          if (id of s) is "%s" then
+            tell s
+              %s
+            end tell
+            return "ok"
+          end if
+        end repeat
+      end repeat
+    end repeat
+  end tell
+end if
+return "notfound"
+"""
+
+
+def _respond_actions(text: str, keys: list) -> str:
+    """AppleScript `write text` lines: the reply (submitted) then any keys."""
+    lines = []
+    if text:
+        lines.append(f"write text {applescript_quote(text)}")   # trailing return submits it
+    for k in keys:
+        expr = _RESPOND_KEYS.get(k)
+        if expr:
+            lines.append(f"write text {expr} newline no")
+    return "\n              ".join(lines)
+
+
+def respond_run(run_id: str, text: str = "", keys: list | None = None) -> bool:
+    """Inject a reply and/or keys into a live Run's pane. Acts only on a
+    currently-live claude Run (mirrors close_run); a stale or bogus id no-ops."""
+    if not _UUID_RE.match(run_id):
+        return False
+    if run_id not in {r["id"] for r in cached_runs()}:
+        return False
+    actions = _respond_actions(text, keys or [])
+    if not actions:
+        return False
+    try:
+        ok = _osascript(_RESPOND_SCRIPT % (run_id, actions)).strip() == "ok"
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return False
+    if ok:
+        invalidate_runs()   # the Run is now busy; reflect it on the next poll
+    return ok
+
+
 # --- page ---------------------------------------------------------------------
 
 CSP = ("default-src 'none'; script-src 'self'; connect-src 'self'; "
@@ -1079,8 +1157,246 @@ def _runs_payload() -> tuple[bytes, str]:
     return body, '"' + hashlib.sha256(body).hexdigest()[:16] + '"'
 
 
+# --- Board: the rotation read-path -----------------------------------------
+# The Board classifies live Runs into lanes, orders them as a curated
+# round-robin — (tier, per-session priority, waiting-since) — and enriches the
+# focus Run with its run-up context. Blocked always outranks your-move; within
+# a tier high priority floats up; Blocked breaks ties oldest-first (urgency),
+# your-move freshest-first (staleness ≈ done). Idle past the Dormant horizon
+# parks out of rotation. See docs/adr/0005 (hot-served UI) and 0006 (context).
+_BOARD_DORMANT_MS = 36 * 3600 * 1000     # idle longer than this parks as Dormant
+_TAIL_WINDOW = 262144
+
+# Per-session state — a set-endpoint wires each later; the read-path uses the
+# empty defaults today (all normal priority, nothing snoozed).
+_PRIORITY: dict[str, int] = {}           # sessionId -> 0 high / 1 normal / 2 low
+_SNOOZE: dict[str, float] = {}           # sessionId -> wake epoch ms
+
+
+def _pri(session_id: str) -> int:
+    return _PRIORITY.get(session_id, 1)
+
+
+def _tail_rows(session_id: str) -> list:
+    """Parsed JSON lines from the tail of a Session's transcript."""
+    path = _transcript_path(session_id)
+    if not path:
+        return []
+    try:
+        size = os.path.getsize(path)
+        with open(path, "rb") as fh:
+            if size > _TAIL_WINDOW:
+                fh.seek(size - _TAIL_WINDOW)
+                fh.readline()
+            raw = fh.read().decode("utf-8", "replace").splitlines()
+    except OSError:
+        return []
+    rows = []
+    for line in raw:
+        try:
+            rows.append(json.loads(line))
+        except ValueError:
+            pass
+    return rows
+
+
+def _blocks(o: dict) -> list:
+    c = (o.get("message") or {}).get("content")
+    return [b for b in c if isinstance(b, dict)] if isinstance(c, list) else []
+
+
+def _last_assistant(rows: list):
+    for o in reversed(rows):
+        if o.get("type") == "assistant" and _blocks(o):
+            return o
+    return None
+
+
+def _pending_tool_use(rows: list):
+    """A tool_use in the last assistant turn with no matching tool_result yet."""
+    done = set()
+    for o in rows:
+        if o.get("type") == "user":
+            for b in _blocks(o):
+                if b.get("type") == "tool_result" and b.get("tool_use_id"):
+                    done.add(b["tool_use_id"])
+    la = _last_assistant(rows)
+    if not la:
+        return None
+    for b in _blocks(la):
+        if b.get("type") == "tool_use" and b.get("id") not in done:
+            return b
+    return None
+
+
+def _ai_title(session_id: str) -> str:
+    """Claude Code's own one-line session summary, else the opening prompt."""
+    path = _transcript_path(session_id)
+    title = ""
+    if path:
+        try:
+            with open(path) as fh:
+                for line in fh:
+                    if '"aiTitle"' in line:
+                        try:
+                            o = json.loads(line)
+                        except ValueError:
+                            continue
+                        if o.get("type") == "ai-title" and o.get("aiTitle"):
+                            title = o["aiTitle"]
+        except OSError:
+            pass
+    return title or _first_user_msg(session_id)
+
+
+# Escape-first markdown. The focus context is transcript prose we do not own,
+# so every text run is html.escaped BEFORE any markup is emitted and only a
+# fixed tag set is produced. The client innerHTMLs the result — a bounded,
+# deliberate exception to the no-innerHTML rule of ADR 0003, made safe here by
+# escape-first. See ADR 0006.
+def _md_inline(s: str) -> str:
+    s = html.escape(s)
+    s = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", s)
+    s = re.sub(r"`([^`]+)`", r"<code>\1</code>", s)
+    return s
+
+
+def _md_to_html(text: str) -> str:
+    lines = text.replace("\r", "").split("\n")
+    out, i = [], 0
+    while i < len(lines):
+        ln = lines[i]
+        if not ln.strip():
+            i += 1
+            continue
+        m = re.match(r"^(#{1,4})\s+(.*)", ln)
+        if m:
+            lvl = min(len(m.group(1)) + 2, 6)
+            out.append(f"<h{lvl}>{_md_inline(m.group(2))}</h{lvl}>")
+            i += 1
+            continue
+        if "|" in ln and i + 1 < len(lines) and re.match(r"^\s*\|?[\s:|-]+\|", lines[i + 1]):
+            head = [c.strip() for c in ln.strip().strip("|").split("|")]
+            i += 2
+            body = []
+            while i < len(lines) and "|" in lines[i]:
+                body.append([c.strip() for c in lines[i].strip().strip("|").split("|")])
+                i += 1
+            th = "".join(f"<th>{_md_inline(c)}</th>" for c in head)
+            tr = "".join("<tr>" + "".join(f"<td>{_md_inline(c)}</td>" for c in r) + "</tr>" for r in body)
+            out.append(f"<table><thead><tr>{th}</tr></thead><tbody>{tr}</tbody></table>")
+            continue
+        if re.match(r"^\s*([-*]|\d+\.)\s+", ln):
+            items = []
+            while i < len(lines) and re.match(r"^\s*([-*]|\d+\.)\s+", lines[i]):
+                items.append(re.sub(r"^\s*([-*]|\d+\.)\s+", "", lines[i]))
+                i += 1
+            out.append("<ul>" + "".join(f"<li>{_md_inline(it)}</li>" for it in items) + "</ul>")
+            continue
+        buf = [ln]
+        i += 1
+        while i < len(lines) and lines[i].strip() and not re.match(r"^(#{1,4}\s|\s*([-*]|\d+\.)\s)", lines[i]):
+            buf.append(lines[i])
+            i += 1
+        out.append(f"<p>{_md_inline(' '.join(buf))}</p>")
+    return "\n".join(out)
+
+
+def _full_context(session_id: str) -> tuple:
+    """(context_text, ask, options) from the Session's last assistant turn."""
+    rows = _tail_rows(session_id)
+    la = _last_assistant(rows)
+    if not la:
+        return "", "", []
+    text = "\n".join(b.get("text", "") for b in _blocks(la) if b.get("type") == "text").strip()
+    qs = re.findall(r"[^\n?]*\?", text)
+    ask = qs[-1].strip()[-200:] if qs else ""
+    options = []
+    tu = _pending_tool_use(rows)
+    if tu and tu.get("name") == "AskUserQuestion":
+        for q in (tu.get("input") or {}).get("questions", []):
+            for o in q.get("options", []):
+                if o.get("label"):
+                    options.append(o["label"])
+    return text, ask, options
+
+
+def _lane_of(run: dict) -> str:
+    """Coarse lane from status; 'waiting' is refined against the transcript."""
+    if run.get("starting") or run.get("status") == "busy":
+        return "working"
+    if run.get("status") == "waiting":
+        tu = _pending_tool_use(_tail_rows(run.get("sessionId", "")))
+        return "question" if (tu and tu.get("name") == "AskUserQuestion") else "approval"
+    return "yourmove"
+
+
+def _board(focus_sid: str = "") -> dict:
+    now = time.time() * 1000
+    items = []
+    for r in cached_runs():
+        sid = r.get("sessionId", "")
+        snoozed = sid and _SNOOZE.get(sid, 0) > now
+        lane = "snoozed" if snoozed else _lane_of(r)
+        one = r.get("snippet", "")
+        if lane in ("question", "approval"):
+            _, ask, _ = _full_context(sid)
+            one = ask or one
+        proj = (r.get("dir") or "").rstrip("/").split("/")[-1]
+        items.append({"runId": r.get("id"), "sessionId": sid, "title": proj or r.get("title", ""),
+                      "dir": r.get("dir", ""), "status": r.get("status", ""),
+                      "updatedAt": r.get("updatedAt"), "lane": lane, "pri": _pri(sid), "one": one})
+
+    blocked = [it for it in items if it["lane"] in ("question", "approval")]
+    working = [it for it in items if it["lane"] == "working"]
+    snoozed = [it for it in items if it["lane"] == "snoozed"]
+    dormant, recent = [], []
+    for it in (it for it in items if it["lane"] == "yourmove"):
+        old = it["updatedAt"] and now - it["updatedAt"] >= _BOARD_DORMANT_MS
+        (dormant if old and it["pri"] != 0 else recent).append(it)   # high priority never dorms
+
+    blocked.sort(key=lambda it: (it["pri"], it["updatedAt"] or 0))        # oldest-first (urgency)
+    recent.sort(key=lambda it: (it["pri"], -(it["updatedAt"] or 0)))      # freshest-first
+    working.sort(key=lambda it: -(it["updatedAt"] or 0))
+    dormant.sort(key=lambda it: -(it["updatedAt"] or 0))
+    snoozed.sort(key=lambda it: _SNOOZE.get(it["sessionId"], 0))
+
+    order = blocked + recent
+    # Sticky focus: the client can pin any listed Session (a row tap). A pin
+    # wins over the rotation head and survives polls until cleared. An unknown
+    # or vanished id silently falls back to the rotation head.
+    focus = next((it for it in items if it["sessionId"] == focus_sid), None) if focus_sid else None
+    pinned = focus is not None
+    if focus is None:
+        focus = order[0] if order else None
+    other = [it for it in order if it is not focus]
+    working = [it for it in working if it is not focus]
+    dormant = [it for it in dormant if it is not focus]
+    snoozed = [it for it in snoozed if it is not focus]
+    if focus:
+        text, ask, options = _full_context(focus["sessionId"])
+        focus = dict(focus, aiTitle=_ai_title(focus["sessionId"]),
+                     contextHtml=_md_to_html(text), ask=ask, options=options, pinned=pinned)
+    return {"focus": focus, "upnext": other, "watching": working,
+            "snoozed": snoozed, "dormant": dormant,
+            "counts": {"needYou": len(order), "watching": len(working),
+                       "dormant": len(dormant), "snoozed": len(snoozed)}}
+
+
+def _board_payload(focus_sid: str = "") -> tuple[bytes, str]:
+    """Board JSON + ETag. No wall-clock in the body — the client formats ages
+    from raw `updatedAt`, so an unchanged board yields a stable ETag/304."""
+    body = json.dumps(_board(focus_sid), separators=(",", ":")).encode("utf-8")
+    return body, '"' + hashlib.sha256(body).hexdigest()[:16] + '"'
+
+
+WEB_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web")
+_WEB_FILES = {"board.html": "text/html; charset=utf-8",
+              "board.js": "text/javascript; charset=utf-8"}
+
+
 MAX_BODY_BYTES = 4096
-_API_POSTS = ("/api/launch", "/api/resume", "/api/close")
+_API_POSTS = ("/api/launch", "/api/resume", "/api/close", "/api/respond")
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -1106,6 +1422,21 @@ class Handler(BaseHTTPRequestHandler):
         self._send(code, json.dumps(obj).encode("utf-8"),
                    "application/json; charset=utf-8", extra)
 
+    def _serve_web(self, name: str) -> None:
+        """Serve a UI file fresh from disk — edit it, refresh, no relaunch.
+        The name set is a fixed whitelist, so there is no path to traverse."""
+        ctype = _WEB_FILES.get(name)
+        if not ctype:
+            self._fail(404, "not found")
+            return
+        try:
+            with open(os.path.join(WEB_DIR, name), "rb") as fh:
+                data = fh.read()
+        except OSError:
+            self._fail(404, f"{name} not found (create web/{name})")
+            return
+        self._send(200, data, ctype)
+
     def _fail(self, code: int, message: str) -> None:
         self._json(code, {"ok": False, "message": message})
 
@@ -1130,6 +1461,20 @@ class Handler(BaseHTTPRequestHandler):
             return
         if path == "/app.js":
             self._send(200, APP_JS.encode("utf-8"), "text/javascript; charset=utf-8")
+            return
+        if path == "/board":
+            self._serve_web("board.html")
+            return
+        if path == "/board.js":
+            self._serve_web("board.js")
+            return
+        if path == "/api/board":
+            focus_sid = (parse_qs(urlparse(self.path).query).get("focus") or [""])[0]
+            body, etag = _board_payload(focus_sid if _UUID_RE.match(focus_sid) else "")
+            if self.headers.get("If-None-Match") == etag:
+                self._send(304, b"", "application/json; charset=utf-8", {"ETag": etag})
+                return
+            self._send(200, body, "application/json; charset=utf-8", {"ETag": etag})
             return
         if path == "/api/runs":
             body, etag = _runs_payload()
@@ -1188,6 +1533,8 @@ class Handler(BaseHTTPRequestHandler):
             self._handle_close(body)
         elif path == "/api/resume":
             self._handle_resume(body)
+        elif path == "/api/respond":
+            self._handle_respond(body)
         else:
             self._handle_launch(body)
 
@@ -1214,6 +1561,28 @@ class Handler(BaseHTTPRequestHandler):
         invalidate_runs()
         self._json(200, {"ok": True, "runId": run_id,
                          "message": f"launched in {_display_path(workdir)}"})
+
+    def _handle_respond(self, body: dict) -> None:
+        # Auth gate first: no token configured => Respond is off entirely.
+        if not TOKEN:
+            self._fail(403, "respond disabled: set CLAUDE_LAUNCHER_TOKEN")
+            return
+        if not hmac.compare_digest(self._str(body, "token"), TOKEN):
+            self._fail(401, "bad token")
+            return
+        run_id = self._str(body, "runId")
+        text = self._str(body, "text")
+        keys = body.get("keys") or []
+        if not isinstance(keys, list) or not all(isinstance(k, str) for k in keys):
+            self._fail(400, "keys must be a list of strings")
+            return
+        if len(text) > MAX_RESPOND_CHARS or "\x00" in text:
+            self._fail(400, "text too long")
+            return
+        if not respond_run(run_id, text, keys):
+            self._fail(400, "respond failed: not a live run, or nothing to send")
+            return
+        self._json(200, {"ok": True})
 
     def _seed(self, task: dict, body: dict) -> str | None:
         """The seed for a task that takes one, or None when it is unusable."""
