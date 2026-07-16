@@ -8,6 +8,18 @@
 // Since ADR 0008 the Board is the Launcher's only page, so it also carries
 // intake (dir-launch, resume, task/dispatch buttons — the bottom compose dock),
 // the per-run close (×) and deep-link (↗), and the optimistic launch card.
+//
+// Rotation is consent-based (CONTEXT.md: Focus, Rotation). Two rules carry it,
+// and between them nothing the Board does can cost you a half-typed reply or
+// your place in the context:
+//   1. You hold the Focus. It is adopted the first time the server hands one
+//      over and pinned from then on, so urgency orders the *queue* and never
+//      the card in front of you. It moves when you move it — or when it
+//      resolves out from under you (advance-on-resolve, in render).
+//   2. The Focus card is never rebuilt unless its own data moved, and a rebuild
+//      carries the reply box and the context scroll across (renderFocus). One
+//      ETag covers the whole board, so any other Run's churn redraws this page;
+//      that redraw must not reach the card.
 
 const app = document.getElementById("app");
 const summary = document.getElementById("summary");
@@ -22,6 +34,13 @@ const dplusEl = document.getElementById("dplus");
 const dockexpEl = document.getElementById("dockexp");
 const tasksEl = document.getElementById("tasks");
 const taskslblEl = document.getElementById("taskslbl");
+
+// #app is split in two, once, up front: the Focus card gets its own container so
+// redrawing the queue below can never touch it. That redraw is what used to eat
+// a half-typed reply — see renderFocus().
+const focusWrap = el("div");
+const zonesWrap = el("div");
+app.append(focusWrap, zonesWrap);
 
 const LANE_LABEL = {question: "blocked · question", approval: "blocked · approval",
                     yourmove: "your move", working: "working", snoozed: "snoozed"};
@@ -65,9 +84,11 @@ function getToken() {
   return t;
 }
 
+// Resolves true only when the text actually reached the pane — the caller clears
+// the box on that, and only that.
 async function sendRespond(f, payload, force) {
   const token = getToken();
-  if (!token) { toast("no token — respond cancelled"); return; }
+  if (!token) { toast("no token — respond cancelled"); return false; }
   const body = Object.assign({runId: f.runId, token}, payload);
   if (force) body.force = true;
   let r;
@@ -77,27 +98,25 @@ async function sendRespond(f, payload, force) {
       headers: {"Content-Type": "application/json"},
       body: JSON.stringify(body),
     });
-  } catch (e) { toast("respond unreachable"); return; }
+  } catch (e) { toast("respond unreachable"); return false; }
   const data = await r.json().catch(() => ({}));
-  if (r.status === 401) { localStorage.removeItem("cl_token"); toast("token rejected — re-enter"); return; }
+  if (r.status === 401) { localStorage.removeItem("cl_token"); toast("token rejected — re-enter"); return false; }
   if (r.status === 409) {   // the box already has unsent text — never blind-append
     if (window.confirm("This session already has unsent text:\n\n" + (data.existing || "") +
         "\n\nSend your reply anyway? It will be added below the above.")) {
       return sendRespond(f, payload, true);
     }
     toast("cancelled — clear the box on the Mac first");
-    return;
+    return false;
   }
-  if (!r.ok) { toast(data.message || ("respond failed (" + r.status + ")")); return; }
+  if (!r.ok) { toast(data.message || ("respond failed (" + r.status + ")")); return false; }
   toast("✓ sent — " + (f.title || "session") + " is now working");
-  // Pin this session so rotation can't swap it away before you see your reply
-  // land — but only until it flips to working. render() watches for that flip
-  // and hands the focus to the next card automatically (no rotate click).
-  pinned = f.sessionId;
-  rotateWhenBusy = f.sessionId;
+  // You already hold this Focus — there is nothing to pin. render()'s
+  // advance-on-resolve hands it on once it actually flips to working.
   etag = null;
   poll();
   setTimeout(() => { etag = null; poll(); }, 1500);   // catch the busy flip promptly
+  return true;
 }
 
 // Priority + snooze reorder a view (no Run is driven), so they are not
@@ -291,7 +310,7 @@ async function loadTasks() {
   }
 }
 
-function focusCard(f, nextSid) {
+function focusCard(f) {
   const cls = f.lane === "question" ? "focus bq" : f.lane === "approval" ? "focus bp" : "focus";
   const card = el("div", cls);
 
@@ -347,9 +366,18 @@ function focusCard(f, nextSid) {
   const ti = el("input", "ti");
   ti.placeholder = "type your reply…";
   const send = el("button", "send", "respond →");
-  const fire = () => { const v = ti.value.trim(); if (v) sendRespond(f, {text: v}); };
+  // Clear only once the text is actually sent. The box now survives rebuilds,
+  // so clearing optimistically (or not at all) would carry a stale value back
+  // in and make a sent reply look unsent.
+  const fire = async () => {
+    const v = ti.value.trim();
+    if (v && await sendRespond(f, {text: v})) ti.value = "";
+  };
   send.addEventListener("click", fire);
   ti.addEventListener("keydown", (e) => { if (e.key === "Enter") fire(); });
+  // Letting go of the box is the moment a deferred advance becomes safe; the
+  // re-poll re-runs render()'s check.
+  ti.addEventListener("blur", () => { if (advanceWhenFree) { etag = null; poll(); } });
   row.append(ti, send);
   respond.append(row);
 
@@ -364,11 +392,9 @@ function focusCard(f, nextSid) {
     postState("api/priority", {sessionId: f.sessionId, level: lvl}, "priority: " + lvl);
   });
   actions.append(pri, el("span", "grow"));
-  if (f.pinned) {
-    const back = el("button", "ghost", "↩ rotation");
-    back.addEventListener("click", () => setPinned(null));
-    actions.append(back);
-  }
+  // No "↩ rotation" button any more: you always hold the Focus, so there is no
+  // rotation to hand back to. `skip →` already goes to the most urgent card
+  // that isn't this one, which is what that button was reached for.
   const snooze = el("button", "ghost", "snooze ▾");
   snooze.addEventListener("click", () => {
     const h = parseFloat(window.prompt("Snooze how many hours? (0 to un-snooze)", "1"));
@@ -376,7 +402,10 @@ function focusCard(f, nextSid) {
       h > 0 ? "snoozed " + h + "h" : "un-snoozed");
   });
   const skip = el("button", "ghost", "skip →");
-  skip.addEventListener("click", () => nextSid ? setPinned(nextSid) : toast("nothing up next"));
+  // Reads the queue head at click time, not at build time — baking it in would
+  // make every change of head rebuild this card (and snatch back the keyboard)
+  // for a button you may never press.
+  skip.addEventListener("click", () => nextUp ? setPinned(nextUp) : toast("nothing up next"));
   actions.append(snooze, skip);
   // Per-run deep-link + close, mirroring the queued rows.
   const link = deepLink(f.bridge);
@@ -416,15 +445,77 @@ function zone(label, items, count, dimmed) {
   const h = el("div", "qhead");
   h.append(document.createTextNode(label));
   h.append(el("span", "ct", String(count != null ? count : items.length)));
-  app.append(h);
+  zonesWrap.append(h);
   const box = el("div", dimmed ? "dim" : null);
   items.forEach((it) => box.append(qrow(it)));
-  app.append(box);
+  zonesWrap.append(box);
+}
+
+// --- The Focus card: the one piece of DOM holding state you would miss -------
+// Everything else on the page is derived from the payload and cheap to redraw.
+// The Focus card is not: it holds a half-typed reply and a scroll position in
+// the context. So it is never rebuilt on spec — only when its own data actually
+// moved, and even then the two stateful bits are carried across.
+let focusSig = null;   // signature of the payload the live card was built from
+let focusSid = null;   // its Session — a different one earns a clean card
+let nextUp = null;     // the queue head, for `skip →`. Kept out of the card.
+
+function sigOf(f) {
+  if (!f) return "";
+  // `pinned` is true forever once adopted and drives no UI; leaving it in the
+  // signature would rebuild the card for nothing on the very first adopt.
+  const {pinned: _p, ...rest} = f;
+  return JSON.stringify(rest);
+}
+
+function renderFocus(f) {
+  const sig = sigOf(f);
+  if (sig === focusSig) return;   // nothing about the Focus moved — hands off it
+  const old = focusWrap.querySelector(".focus");
+  const keep = (old && f && focusSid === f.sessionId) ? grab(old) : null;
+  focusSig = sig;
+  focusSid = f ? f.sessionId : null;
+  focusWrap.textContent = "";
+  if (!f) {
+    focusWrap.append(el("div", "empty", "All clear — nothing needs you right now."));
+    return;
+  }
+  const card = focusCard(f);
+  focusWrap.append(card);
+  if (keep) restore(card, keep);
+}
+
+// What a rebuild would otherwise cost you: the reply text, the caret, whether
+// the keyboard is up, and where you had scrolled the context.
+function grab(card) {
+  const ti = card.querySelector(".ti");
+  const ctx = card.querySelector(".ctx");
+  return {text: ti ? ti.value : "", start: ti ? ti.selectionStart : 0,
+          end: ti ? ti.selectionEnd : 0, active: !!ti && ti === document.activeElement,
+          scroll: ctx ? ctx.scrollTop : 0};
+}
+
+function restore(card, k) {
+  const ctx = card.querySelector(".ctx");
+  if (ctx) ctx.scrollTop = k.scroll;
+  const ti = card.querySelector(".ti");
+  if (!ti) return;
+  ti.value = k.text;
+  if (k.active) {   // it had the keyboard up — give it straight back
+    ti.focus();
+    try { ti.setSelectionRange(k.start, k.end); } catch (e) {}
+  }
+}
+
+// Are you mid-reply on the Focus? Text in the box counts even without the caret:
+// you may have tapped away to read the context before sending.
+function replyEngaged() {
+  const ti = focusWrap.querySelector(".ti");
+  return !!ti && (ti === document.activeElement || ti.value.trim() !== "");
 }
 
 function render(data) {
   reconcile(data);   // clear any optimistic card whose real Run has surfaced
-  app.textContent = "";
   const c = data.counts || {};
   summary.textContent = "";
   const b = (n) => { const s = el("b", null, String(n)); return s; };
@@ -432,21 +523,38 @@ function render(data) {
     b(c.watching || 0), document.createTextNode(" watching · "),
     b(c.dormant || 0), document.createTextNode(" dormant"));
 
-  // Auto-rotate: after a respond the session stays pinned just long enough to
-  // see it go busy, then we release the pin so the next card takes focus.
-  if (rotateWhenBusy && data.focus &&
-      data.focus.sessionId === rotateWhenBusy && data.focus.lane === "working") {
-    const sid = rotateWhenBusy;
-    rotateWhenBusy = null;
-    setTimeout(() => { if (pinned === sid) setPinned(null); }, 1200);
+  const f = data.focus;
+  nextUp = ((data.upnext || [])[0] || {}).sessionId || null;
+
+  // --- Focus discipline: rotation is consent-based ---------------------------
+  // Adopt. The server only picks a head while we hold nothing; the moment it
+  // hands us one we make it ours, and every poll from here carries ?focus=. So
+  // the head can never re-pick under you: a Run that blocks now joins the queue
+  // instead of taking the card out from under what you are reading or typing.
+  // A Focus that vanished is the same path — the server fell back to the head,
+  // we adopt that, no special case.
+  if (!f) { pinned = null; heldLane = null; }
+  else if (pinned !== f.sessionId) { pinned = f.sessionId; heldLane = null; }
+
+  // Advance-on-resolve: the one automatic move. The Focus you were holding went
+  // working — you responded, or it was answered on the Mac — so it no longer
+  // needs you; hand it on. Only a *transition* counts: tapping an already-working
+  // row out of `watching` is a choice, not a resolve, so a fresh Focus records
+  // its lane as a baseline (heldLane = null above) and never trips this.
+  if (f && heldLane && heldLane !== "working" && f.lane === "working") advanceWhenFree = f.sessionId;
+  if (f) heldLane = f.lane;
+  // Deferred while you are mid-reply: a busy Run still takes input (Claude Code
+  // queues it until the next turn), so advancing would eat the very text this
+  // whole discipline exists to protect. The box's blur re-polls and lands here.
+  if (advanceWhenFree && !replyEngaged()) {
+    const sid = advanceWhenFree;
+    advanceWhenFree = null;
+    clearTimeout(advanceT);
+    advanceT = setTimeout(() => { if (pinned === sid) setPinned(null); }, 1200);
   }
 
-  if (data.focus) {
-    app.append(focusCard(data.focus, (data.upnext[0] || {}).sessionId));
-  } else {
-    const e = el("div", "empty", "All clear — nothing needs you right now.");
-    app.append(e);
-  }
+  renderFocus(f);
+  zonesWrap.textContent = "";
   zone("up next · curated round-robin", data.upnext, data.upnext.length);
   zone("snoozed", data.snoozed, data.snoozed.length, true);
   zone("watching · resurfaces when it needs you", data.watching, data.watching.length, true);
@@ -456,16 +564,23 @@ function render(data) {
 // --- polling: chained setTimeout, ETag revalidate, paused when hidden -------
 let etag = null;
 let timer = null;
-let pinned = null;   // a tapped row becomes the sticky focus until cleared
-let rotateWhenBusy = null;   // a just-responded session: release the pin once it goes busy
+let pinned = null;   // the Focus you hold. Adopted on first sight and sent as
+                     // ?focus= on every poll after — the server picks a head
+                     // only while this is null (see render).
+let heldLane = null;        // its lane as of last render — to spot the resolve
+let advanceWhenFree = null; // a resolved Focus, waiting on you to stop typing
+let advanceT = null;
 
 function boardUrl() {
   return "api/board" + (pinned ? "?focus=" + encodeURIComponent(pinned) : "");
 }
 
+// Choosing a card (a row tap, `skip →`, or the advance handing one on).
 function setPinned(sid) {
   pinned = sid;
-  rotateWhenBusy = null;   // any manual pin/unpin cancels a pending auto-rotate
+  heldLane = null;          // whatever lane it is in is a baseline, not a resolve
+  advanceWhenFree = null;   // choosing cancels a pending advance
+  clearTimeout(advanceT);
   etag = null;   // the focus param changes the payload — force a fresh fetch
   poll();
 }

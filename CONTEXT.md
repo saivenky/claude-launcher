@@ -66,8 +66,9 @@ type / answer / approve (each names only one shape); remote control
 
 **Board**:
 The single screen — the Launcher's only page — that aggregates every live
-**Run**, surfaces **Blocked** ones first with their concrete blocker, lets
-you **Respond** inline, and carries the full **intake** and lifecycle
+**Run**, holds one at a time as the **Focus** while the rest queue by
+urgency (**Blocked** first, with its concrete blocker), lets you **Respond**
+to the Focus inline, and carries the full **intake** and lifecycle
 surface: launch, **resume**, close, the one-tap **Task** / **Dispatch**
 buttons, and the deep-link handoff to the **Remote Control bridge**. It
 supersedes the legacy inline launcher page (once served at `/` alongside
@@ -77,6 +78,24 @@ new HTML, no relaunch); the Launcher's `/api/*` capability surface behind
 it — including `/api/tasks`, the task definitions the static page can no
 longer inline server-side — is the stable contract.
 _Avoid_: dashboard, list (it is more than a list now), inbox, feed
+
+**Focus**:
+The single **Run** the **Board** shows in full — its run-up context, the
+ask, the reply box — as opposed to the queued rows. At most one. *You* choose
+it: a row tap, or the first actionable Run when you hold none. It stays yours
+until you move it or it resolves. Urgency orders the queue, never the Focus —
+a newly-**Blocked** Run joins the queue; it does not take the Focus from you.
+_Avoid_: card (the Focus's rendering, not the concept), selection, current,
+active, top
+
+**Rotation**:
+How the **Focus** advances through the queue — consent-based. It moves only
+when you act (tap a row, skip) or when the Focus you hold *resolves*: goes
+**working** because you **Respond**, is closed, or stops being **Blocked**.
+Nothing else moves it. The "curated round-robin" names this queue's order,
+not a clock — you walk it at your pace.
+_Avoid_: round-robin (the queue's order, not the advance rule), auto-advance,
+cycle, refresh
 
 **Intake**:
 Starting new work from the **Board** — a generic dir **launch**, a
@@ -150,6 +169,12 @@ _Avoid_: access, availability
   **resumed**. Spawning it is the whole interaction
 - A **Task** and a **Dispatch** are told apart by one field — `command`
   starts a **Run**, `exec` starts a Dispatch. Never both
+- A **Board** holds exactly one **Focus**; every other actionable **Run**
+  queues behind it by urgency. A **Blocked** Run outranks the queue, not the
+  Focus
+- **Rotation** advances the **Focus** only on your action or when the Focus
+  resolves. New work surfaces as a count on the queue — never by replacing
+  what you are reading or typing in
 
 ## Example dialogue
 
