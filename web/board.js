@@ -4,10 +4,24 @@
 // data) — the ONE exception is the focus context, which the server renders as
 // escape-first markdown HTML (see ADR 0006). That single field is greppable
 // below as `.innerHTML =`.
+//
+// Since ADR 0008 the Board is the Launcher's only page, so it also carries
+// intake (dir-launch, resume, task/dispatch buttons — the bottom compose dock),
+// the per-run close (×) and deep-link (↗), and the optimistic launch card.
 
 const app = document.getElementById("app");
 const summary = document.getElementById("summary");
 const toastEl = document.getElementById("toast");
+const pendingEl = document.getElementById("pending");
+const dirEl = document.getElementById("dir");
+const sidEl = document.getElementById("sid");
+const dirRootEl = document.getElementById("dirroot");
+const launchEl = document.getElementById("launch");
+const resumeEl = document.getElementById("resume");
+const dplusEl = document.getElementById("dplus");
+const dockexpEl = document.getElementById("dockexp");
+const tasksEl = document.getElementById("tasks");
+const taskslblEl = document.getElementById("taskslbl");
 
 const LANE_LABEL = {question: "blocked · question", approval: "blocked · approval",
                     yourmove: "your move", working: "working", snoozed: "snoozed"};
@@ -117,6 +131,166 @@ async function sendClear(f) {
   setTimeout(() => { etag = null; poll(); }, 1200);
 }
 
+// --- Intake mutations: launch / resume / close ride the same same-origin +
+// JSON POST as the rest, but are NOT token-gated (they keep close/launch/resume's
+// network-trust-only posture — see ADR 0007). Returns the parsed body with an
+// `ok` reflecting the server's own field (present on success and failure).
+async function postJSON(path, body) {
+  try {
+    const r = await fetch(path, {
+      method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body),
+    });
+    const data = await r.json().catch(() => ({}));
+    return Object.assign({ok: r.ok, status: r.status}, data);
+  } catch (e) { return {ok: false, message: "unreachable"}; }
+}
+
+// The deep-link into the Claude app. The bridge id is server-whitelisted to
+// session_<alnum>; re-check here before it ever becomes an href, exactly as the
+// old inline page did.
+function deepLink(bridge) {
+  return (bridge && /^session_[A-Za-z0-9]+$/.test(bridge))
+    ? "https://claude.ai/code/" + bridge : "";
+}
+
+async function closeRun(item) {
+  if (!item.runId) { toast("nothing to close"); return; }
+  // A mis-tap on a dense list would end a Run; confirm first. Closing ends the
+  // Run, never the Session — resume it later — so this is a guard, not a wall.
+  if (!window.confirm("Close this run?\n\nThe session stays on disk — resume it later.")) return;
+  const res = await postJSON("api/close", {runId: item.runId});
+  toast(res.ok ? "closed" : (res.message || "close failed"));
+  etag = null; poll();
+}
+
+// The ↗ (deep-link) and × (close) that sit on every row and the focus card.
+function rowActions(item) {
+  const wrap = el("div", "rowact");
+  const link = deepLink(item.bridge);
+  if (link) {
+    const a = el("a", "iconbtn", "↗");
+    a.href = link; a.target = "_blank"; a.rel = "noopener";
+    a.title = "open in the Claude app";
+    a.addEventListener("click", (e) => e.stopPropagation());
+    wrap.append(a);
+  }
+  const x = el("button", "iconbtn x", "×");
+  x.title = "close run";
+  x.setAttribute("aria-label", "close run");
+  x.addEventListener("click", (e) => { e.stopPropagation(); closeRun(item); });
+  wrap.append(x);
+  return wrap;
+}
+
+// --- Intake: compose dock + optimistic launch card -------------------------
+// A launched Run is invisible until `claude` reaches `ps` (1-3s). The launch
+// hands back a runId; key an optimistic "starting…" card by it, burst-poll, and
+// reconcile it away when the real Run surfaces (ADR 0003 invariant 4, adapted
+// from the old flat list to the Board's lanes). A Dispatch returns no runId, so
+// it paints no card — the toast is the whole feedback (ADR 0004).
+const pendingRuns = new Map();   // runId -> {label}
+const START_DEADLINE = 10000;
+
+function watch(runId, label) {
+  if (!runId) return;
+  pendingRuns.set(runId, {label});
+  renderPending();
+  setTimeout(() => {
+    if (pendingRuns.delete(runId)) { renderPending(); toast("run failed to start"); }
+  }, START_DEADLINE);
+  etag = null; schedule();   // burst until it materialises
+}
+
+function renderPending() {
+  pendingEl.textContent = "";
+  for (const {label} of pendingRuns.values()) {
+    const c = el("div", "startcard");
+    c.append(el("span", "spin"));
+    c.append(el("span", null, "starting… " + (label || "")));
+    pendingEl.append(c);
+  }
+}
+
+function reconcile(data) {
+  if (!pendingRuns.size) return;
+  const live = new Set();
+  for (const it of [data.focus].concat(data.upnext || [], data.watching || [],
+                    data.snoozed || [], data.dormant || [])) {
+    if (it && it.runId) live.add(it.runId);
+  }
+  let changed = false;
+  for (const id of [...pendingRuns.keys()]) {
+    if (live.has(id)) { pendingRuns.delete(id); changed = true; }
+  }
+  if (changed) renderPending();
+}
+
+function setDock(open) {
+  dockexpEl.hidden = !open;
+  dplusEl.setAttribute("aria-expanded", open ? "true" : "false");
+}
+
+async function launchDir() {
+  const dir = dirEl.value.trim();
+  const res = await postJSON("api/launch", {dir});
+  toast(res.message || (res.ok ? "launched" : "launch failed"));
+  if (res.ok) { dirEl.value = ""; setDock(false); watch(res.runId, dir || "default"); }
+}
+
+async function resumeSession() {
+  const sessionId = sidEl.value.trim();
+  const res = await postJSON("api/resume", {sessionId});
+  toast(res.message || (res.ok ? "resumed" : "resume failed"));
+  if (res.ok) { sidEl.value = ""; setDock(false); watch(res.runId, "resume"); }
+}
+
+async function launchTask(btn) {
+  const t = btn._task;
+  const body = {task: t.id};
+  if (t.seedEl) body.input = t.seedEl.value.trim();
+  const res = await postJSON("api/launch", body);
+  toast(res.message || (res.ok ? "launched" : "launch failed"));
+  if (res.ok) { if (t.seedEl) t.seedEl.value = ""; setDock(false); watch(res.runId, t.label); }
+}
+
+// Task defs are data now (ADR 0008): fetch and build the buttons client-side,
+// textContent only. Re-fetched on load and on visibility regain to catch a
+// tasks.py edit; ETag-revalidated so an unchanged file is a 304.
+let tasksEtag = null;
+async function loadTasks() {
+  let data;
+  try {
+    const r = await fetch("api/tasks", tasksEtag ? {headers: {"If-None-Match": tasksEtag}} : {});
+    if (r.status === 304) return;
+    tasksEtag = r.headers.get("ETag");
+    data = await r.json();
+  } catch (e) { return; }
+  if (data.root) dirRootEl.textContent = data.root.replace(/\/?$/, "/");
+  const groups = data.tasks || [];
+  tasksEl.textContent = "";
+  taskslblEl.hidden = groups.length === 0;
+  for (const g of groups) {
+    const box = el("div", "taskgroup");
+    let seedEl = null;
+    if (g.input === "textarea") {
+      seedEl = el("textarea", "tseed"); seedEl.rows = 2; seedEl.placeholder = g.placeholder;
+      box.append(seedEl);
+    } else if (g.input === "text") {
+      seedEl = el("input", "tseed"); seedEl.placeholder = g.placeholder;
+      box.append(seedEl);
+    }
+    const btnrow = el("div", "tbtns");
+    for (const b of g.buttons) {
+      const btn = el("button", "dgo", b.label);
+      btn._task = {id: b.id, label: b.label, seedEl};
+      btn.addEventListener("click", () => launchTask(btn));
+      btnrow.append(btn);
+    }
+    box.append(btnrow);
+    tasksEl.append(box);
+  }
+}
+
 function focusCard(f, nextSid) {
   const cls = f.lane === "question" ? "focus bq" : f.lane === "approval" ? "focus bp" : "focus";
   const card = el("div", cls);
@@ -204,6 +378,16 @@ function focusCard(f, nextSid) {
   const skip = el("button", "ghost", "skip →");
   skip.addEventListener("click", () => nextSid ? setPinned(nextSid) : toast("nothing up next"));
   actions.append(snooze, skip);
+  // Per-run deep-link + close, mirroring the queued rows.
+  const link = deepLink(f.bridge);
+  if (link) {
+    const open = el("a", "ghost", "open ↗");
+    open.href = link; open.target = "_blank"; open.rel = "noopener";
+    actions.append(open);
+  }
+  const close = el("button", "ghost", "× close");
+  close.addEventListener("click", () => closeRun(f));
+  actions.append(close);
   respond.append(actions);
 
   card.append(respond);
@@ -211,15 +395,20 @@ function focusCard(f, nextSid) {
 }
 
 function qrow(item) {
-  const btn = el("button", "qrow " + (ROW_CLS[item.lane] || "lane-w"));
-  btn.append(el("span", "qbadge", ROW_BADGE[item.lane] || ""));
+  // The row was one big <button>; it is now a div with a tap-to-focus body plus
+  // separate action buttons (a button can't nest the × / ↗ buttons — ADR 0008).
+  const row = el("div", "qrow " + (ROW_CLS[item.lane] || "lane-w"));
+  const body = el("button", "qbody");
+  body.append(el("span", "qbadge", ROW_BADGE[item.lane] || ""));
   const dir = el("span", "qdir");
   if (item.pri === 0) { dir.append(el("span", "flag", "⚑ ")); }
   dir.append(document.createTextNode(item.title || item.dir || "claude"));
-  btn.append(dir);
-  btn.append(el("span", "qone", item.one || ""));
-  btn.addEventListener("click", () => setPinned(item.sessionId));
-  return btn;
+  body.append(dir);
+  body.append(el("span", "qone", item.one || ""));
+  body.addEventListener("click", () => setPinned(item.sessionId));
+  row.append(body);
+  row.append(rowActions(item));
+  return row;
 }
 
 function zone(label, items, count, dimmed) {
@@ -234,6 +423,7 @@ function zone(label, items, count, dimmed) {
 }
 
 function render(data) {
+  reconcile(data);   // clear any optimistic card whose real Run has surfaced
   app.textContent = "";
   const c = data.counts || {};
   summary.textContent = "";
@@ -295,12 +485,20 @@ async function poll() {
 
 function schedule() {
   clearTimeout(timer);
-  if (!document.hidden) timer = setTimeout(poll, 4000);
+  // Burst while a just-launched Run has not surfaced yet; steady otherwise.
+  if (!document.hidden) timer = setTimeout(poll, pendingRuns.size ? 500 : 4000);
 }
+
+dplusEl.addEventListener("click", () => setDock(dockexpEl.hidden));
+launchEl.addEventListener("click", launchDir);
+resumeEl.addEventListener("click", resumeSession);
+dirEl.addEventListener("keydown", (e) => { if (e.key === "Enter") launchDir(); });
+sidEl.addEventListener("keydown", (e) => { if (e.key === "Enter") resumeSession(); });
 
 document.addEventListener("visibilitychange", () => {
   if (document.hidden) clearTimeout(timer);
-  else poll();
+  else { poll(); loadTasks(); }
 });
 
+loadTasks();
 poll();

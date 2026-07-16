@@ -65,12 +65,25 @@ _Avoid_: drive (the channel-agnostic *capability*, not this one channel);
 type / answer / approve (each names only one shape); remote control
 
 **Board**:
-The single screen that aggregates every live **Run**, surfaces **Blocked**
-ones first with their concrete blocker, and lets you **Respond** inline —
-the launcher page grown from a run list into a management surface. Its UI
-is served from disk and hot-reloads (ship new HTML, no relaunch); the
-Launcher's `/api/*` capability surface behind it is the stable contract.
+The single screen — the Launcher's only page — that aggregates every live
+**Run**, surfaces **Blocked** ones first with their concrete blocker, lets
+you **Respond** inline, and carries the full **intake** and lifecycle
+surface: launch, **resume**, close, the one-tap **Task** / **Dispatch**
+buttons, and the deep-link handoff to the **Remote Control bridge**. It
+supersedes the legacy inline launcher page (once served at `/` alongside
+it): the Board *is* the launcher page now, grown from a run list into the
+whole management surface. Its UI is served from disk and hot-reloads (ship
+new HTML, no relaunch); the Launcher's `/api/*` capability surface behind
+it — including `/api/tasks`, the task definitions the static page can no
+longer inline server-side — is the stable contract.
 _Avoid_: dashboard, list (it is more than a list now), inbox, feed
+
+**Intake**:
+Starting new work from the **Board** — a generic dir **launch**, a
+**resume** by `sessionId`, or a one-tap **Task** / **Dispatch**. The
+*create* side of the Board, as opposed to the *triage* side (**Observe** /
+**Respond**) that acts on work already running.
+_Avoid_: launch (only one of intake's shapes), compose, new session
 
 **Blocked**:
 A **Run** paused awaiting a *specific required input from you*: an

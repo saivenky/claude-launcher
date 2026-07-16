@@ -7,7 +7,7 @@
 *{box-sizing:border-box}
 body{margin:0;background:var(--bg);color:var(--fg);
 font:14px/1.6 ui-monospace,SFMono-Regular,Menlo,monospace}
-.wrap{max-width:640px;margin:0 auto;padding:14px 14px 40px}
+.wrap{max-width:640px;margin:0 auto;padding:14px 14px 96px}
 header{display:flex;align-items:baseline;gap:10px;padding-bottom:12px}
 h1{font-size:14px;margin:0;letter-spacing:.5px}
 .sub{color:var(--dim);font-size:12px;margin-left:auto}
@@ -66,7 +66,7 @@ font-size:11px;letter-spacing:1px;text-transform:uppercase;color:var(--dim)}
 .qhead .ct{background:var(--line);border-radius:9px;padding:0 7px}
 .qrow{display:flex;align-items:center;gap:9px;width:100%;text-align:left;background:var(--panel);
 border:1px solid var(--line);border-left:3px solid var(--w);border-radius:8px;
-padding:9px 11px;margin-bottom:6px;color:var(--fg);font:inherit;cursor:pointer}
+padding:9px 11px;margin-bottom:6px;color:var(--fg);font:inherit}
 .qrow:hover{border-color:var(--dim)}
 .qrow.lane-q{border-left-color:var(--q)} .qrow.lane-p{border-left-color:var(--p)} .qrow.lane-m{border-left-color:var(--m)}
 .qbadge{font-size:9.5px;text-transform:uppercase;letter-spacing:.5px;color:var(--dim);min-width:58px}
@@ -76,14 +76,72 @@ padding:9px 11px;margin-bottom:6px;color:var(--fg);font:inherit;cursor:pointer}
 .flag{color:var(--accent)}
 .dim{opacity:.5}
 .note{color:var(--dim);font-size:11px;margin-top:22px;border-top:1px solid var(--line);padding-top:10px}
-#toast{position:fixed;left:50%;bottom:20px;transform:translateX(-50%);background:var(--panel);
-border:1px solid var(--line);color:var(--fg);padding:8px 14px;border-radius:8px;font-size:12px}
+#toast{position:fixed;left:50%;bottom:82px;transform:translateX(-50%);background:var(--panel);
+border:1px solid var(--line);color:var(--fg);padding:8px 14px;border-radius:8px;font-size:12px;z-index:40}
+
+/* --- intake dock + per-run actions + optimistic card (ADR 0008) --- */
+.dock{position:fixed;left:0;right:0;bottom:0;z-index:30;
+padding:10px 14px calc(10px + env(safe-area-inset-bottom,0px));
+background:linear-gradient(180deg,transparent,var(--bg) 26%)}
+.dock>*{max-width:640px;margin:0 auto}
+.dockbar{display:flex;align-items:center;gap:8px;background:var(--panel);border:1px solid var(--line);
+border-radius:10px;padding:7px 9px;box-shadow:0 6px 22px rgba(0,0,0,.45)}
+.dplus{flex:0 0 auto;width:32px;height:32px;background:var(--panel2);border:1px solid var(--line);
+color:var(--fg);border-radius:7px;font-size:17px;line-height:1;cursor:pointer;padding:0}
+.dplus[aria-expanded=true]{border-color:var(--accent);color:var(--accent)}
+.dprompt{color:var(--dim);font-size:12.5px;white-space:nowrap}
+.dinp{flex:1;min-width:6ch;background:var(--panel2);color:var(--accent);border:0;
+border-bottom:1px dashed var(--dim);font:inherit;font-size:13px;padding:5px 6px;outline:0}
+.dinp:focus{border-bottom-color:var(--accent)}
+.dgo{flex:0 0 auto;background:transparent;border:1px solid var(--fg);color:var(--fg);border-radius:7px;
+padding:6px 13px;font:inherit;font-size:12.5px;cursor:pointer}
+.dgo:active{background:var(--fg);color:var(--bg)}
+.dockexp{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:11px 12px;
+margin-bottom:8px;box-shadow:0 6px 22px rgba(0,0,0,.45)}
+.dockexp[hidden]{display:none}
+.dlbl{display:block;color:var(--dim);font-size:9.5px;letter-spacing:1px;text-transform:uppercase;margin:0 0 6px}
+.dlbl[hidden]{display:none}
+.drow{display:flex;align-items:center;gap:8px;margin-bottom:12px}
+.taskgroup{margin-bottom:8px}.taskgroup:last-child{margin-bottom:0}
+.tseed{width:100%;background:var(--panel2);color:var(--fg);border:1px solid var(--line);border-radius:7px;
+padding:7px 9px;font:inherit;font-size:13px;margin-bottom:6px;resize:vertical}
+.tbtns{display:flex;gap:6px;flex-wrap:wrap}
+.startcard{display:flex;align-items:center;gap:10px;background:var(--panel);border:1px solid var(--line);
+border-top:2px solid var(--dim);border-radius:10px;padding:12px 14px;margin-bottom:8px;color:var(--dim)}
+.spin{flex:0 0 auto;width:11px;height:11px;border:2px solid var(--line);border-top-color:var(--accent);
+border-radius:50%;animation:spin 1s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+@media(prefers-reduced-motion:reduce){.spin{animation:none}}
+.qbody{flex:1;min-width:0;display:flex;align-items:center;gap:9px;background:transparent;border:0;
+color:inherit;font:inherit;text-align:left;padding:0;cursor:pointer}
+.rowact{flex:0 0 auto;display:flex;gap:6px;margin-left:4px}
+.iconbtn{background:transparent;border:1px solid var(--line);color:var(--dim);border-radius:6px;
+min-width:30px;height:28px;font:inherit;font-size:12px;cursor:pointer;padding:0 7px}
+a.iconbtn{display:inline-flex;align-items:center;justify-content:center;text-decoration:none}
+.iconbtn:hover{border-color:var(--dim);color:var(--fg)}
+.iconbtn.x:hover{border-color:var(--red);color:var(--red)}
+a.ghost{text-decoration:none;display:inline-block}
 </style></head>
 <body><div class=wrap>
 <header><h1>◆ claude board</h1><span class=sub id=summary>loading…</span></header>
+<div id=pending></div>
 <div id=app></div>
 <div class=note>curated round-robin · one card at a time, rest queued · resurfaces when it needs you.</div>
 <noscript>This board needs JavaScript to reach the live session API.</noscript>
+</div>
+<div class=dock>
+  <div class=dockexp id=dockexp hidden>
+    <label class=dlbl>resume a session</label>
+    <div class=drow><span class=dprompt>$ cl --resume </span><input class=dinp id=sid placeholder=sessionId autocomplete=off aria-label="session id to resume"><button class=dgo id=resume>resume</button></div>
+    <label class=dlbl id=taskslbl hidden>tasks</label>
+    <div id=tasks></div>
+  </div>
+  <div class=dockbar>
+    <button class=dplus id=dplus aria-label="more intake" aria-expanded=false>＋</button>
+    <span class=dprompt id=dirroot>~/projects/</span>
+    <input class=dinp id=dir placeholder=subdir autocomplete=off aria-label="project subdir under the projects root">
+    <button class=dgo id=launch>launch</button>
+  </div>
 </div>
 <div id=toast role=status aria-live=polite hidden></div>
 <script src="board.js"></script>

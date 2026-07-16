@@ -173,39 +173,35 @@ class HttpEndpointTests(_HttpCase):
                 self.assertEqual(status, 405)
                 self.assertEqual(headers.get("Allow"), "POST")
 
-    def test_index_serves_csp_and_no_inline_script(self):
+    def test_root_serves_the_board_under_csp(self):
+        # The Board is the only page now (ADR 0008): `/` serves board.html.
         status, body, headers = self._raw("GET", "/")
         self.assertEqual(status, 200)
         csp = headers["Content-Security-Policy"]
         self.assertIn("script-src 'self'", csp)
         self.assertIn("connect-src 'self'", csp)
         self.assertNotIn("unsafe-inline", csp.split("style-src")[0])
-        self.assertIn('<script src="app.js"></script>', body)
+        self.assertIn('<script src="board.js"></script>', body)
+        self.assertIn("claude board", body)
         self.assertIn("<noscript>", body)
 
-    def test_launch_and_runs_fold_behind_disclosures_leaving_intake(self):
-        # Intake is the main use, so it stays on the page. New-session (dir + resume)
-        # and the Run list each fold into their own `hidden` disclosure, so the
-        # default view is just intake plus two collapsed rows.
-        _, body, _ = self._raw("GET", "/")
-        self.assertIn('<section class="launcher" id="launcher" hidden>', body)
-        self.assertIn('<section class="sessions" id="runs" hidden>', body)
-        self.assertIn('id="newsession"', body)
-        self.assertIn('aria-controls="launcher"', body)
-        self.assertIn('id="runstoggle"', body)
-        self.assertIn('aria-controls="runs"', body)
-        self.assertLess(body.index('id="launcher"'), body.index('id="dir"'))       # dir inside
-        self.assertLess(body.index('id="launcher"'), body.index('id="sid"'))       # resume inside
-        self.assertLess(body.index('id="runstoggle"'), body.index('id="runs"'))    # toggle before list
-        _, js, _ = self._raw("GET", "/app.js")
-        self.assertIn("setLauncher", js)
-
-    def test_app_js_is_served_and_never_assigns_innerhtml(self):
-        status, body, headers = self._raw("GET", "/app.js")
+    def test_board_js_is_served_and_innerhtml_is_the_lone_exception(self):
+        status, body, headers = self._raw("GET", "/board.js")
         self.assertEqual(status, 200)
         self.assertIn("javascript", headers["Content-Type"])
-        # the invariant that replaces per-field escaping
-        self.assertNotIn("innerHTML", body)
+        # ADR 0006: exactly one innerHTML *assignment* (the server-escaped
+        # context markdown); every other field stays textContent.
+        self.assertIn("ctx.innerHTML = f.contextHtml", body)
+        assigns = [ln for ln in body.splitlines()
+                   if ".innerHTML" in ln and "=" in ln and not ln.strip().startswith("//")]
+        self.assertEqual(len(assigns), 1)
+
+    def test_retired_inline_page_routes_are_gone(self):
+        # The inline launcher, its script, and the old /board alias are removed.
+        for path in ("/app.js", "/board", "/api/runs"):
+            with self.subTest(path=path):
+                status, _, _ = self._raw("GET", path)
+                self.assertEqual(status, 404)
 
 
 class ListRunsTests(unittest.TestCase):
@@ -267,18 +263,22 @@ class ListRunsTests(unittest.TestCase):
         self.assertEqual(rows["R1"]["dir"], "~/projects/x")
 
 
-class RunsApiTests(_HttpCase):
-    ROWS = [{
-        "id": _RUN, "sessionId": _GOOD, "title": "fix the bug",
-        "dir": "~/projects/x", "status": "busy", "remote": True,
-        "updatedAt": 1783610128878, "snippet": "done, all green",
-        "starting": False,
-    }]
+class TasksApiTests(_HttpCase):
+    """Intake config reaches the static Board as data via GET /api/tasks
+    (ADR 0008), not as server-rendered markup."""
 
     @classmethod
     def setUpClass(cls):
-        cls._saved = server.list_runs
-        server.list_runs = lambda: [dict(r) for r in cls.ROWS]
+        cls._saved = (server.TASKS, server._tasks_mtime)
+        server._tasks_mtime = lambda: server._TASKS_MTIME   # freeze the reload
+        server.TASKS = [
+            {"id": "cap", "label": "capture", "workdir": "~", "command": "/capture-task",
+             "input": "text", "placeholder": "a thought"},
+            {"id": "jot", "workdir": "~", "exec": ["/bin/sh"], "input": "textarea",
+             "buttons": [{"id": "jot", "label": "jot"}, {"id": "jot-log", "label": "log"}]},
+            {"id": "sched", "label": "schedule", "workdir": "~", "command": "/scheduling",
+             "input": "none"},
+        ]
         cls.httpd = ThreadingHTTPServer(("127.0.0.1", 0), server.Handler)
         cls.port = cls.httpd.server_address[1]
         cls.thread = threading.Thread(target=cls.httpd.serve_forever, daemon=True)
@@ -288,53 +288,222 @@ class RunsApiTests(_HttpCase):
     def tearDownClass(cls):
         cls.httpd.shutdown()
         cls.thread.join(timeout=2)
-        server.list_runs = cls._saved
+        server.TASKS, server._tasks_mtime = cls._saved
 
-    def setUp(self):
-        server.invalidate_runs()
-
-    def test_runs_payload_shape(self):
-        status, body, headers = self._raw("GET", "/api/runs")
+    def test_tasks_payload_shape(self):
+        status, body, headers = self._raw("GET", "/api/tasks")
         self.assertEqual(status, 200)
-        run = json.loads(body)["runs"][0]
-        self.assertEqual(run["id"], _RUN)
-        self.assertEqual(run["sessionId"], _GOOD)
-        self.assertEqual(run["updatedAt"], 1783610128878)   # raw epoch ms
+        data = json.loads(body)
         self.assertTrue(headers["ETag"])
+        self.assertIn("root", data)                          # compose-bar label
+        groups = data["tasks"]
+        self.assertEqual(groups[0]["input"], "text")
+        self.assertEqual(groups[0]["placeholder"], "a thought")
+        self.assertEqual([b["id"] for b in groups[0]["buttons"]], ["cap"])
+        # a button group shares one seed box but lists both buttons
+        self.assertEqual(groups[1]["input"], "textarea")
+        self.assertEqual([b["label"] for b in groups[1]["buttons"]], ["jot", "log"])
+        self.assertEqual(groups[2]["input"], "none")
 
-    def test_no_formatted_relative_time_on_the_wire(self):
-        _, body, _ = self._raw("GET", "/api/runs")
-        self.assertNotIn("active", body)
-        self.assertNotIn("_updated", body)
-
-    def test_etag_is_stable_as_wall_clock_advances(self):
-        # The regression test for the trap: formatting updatedAt into "47m"
-        # server-side made an idle Run's payload change every minute, which
-        # silently defeats both the ETag and the client's skip-render check.
-        _, etag_a = server._runs_payload()
-        real_time = time.time
-        time.time = lambda: real_time() + 3600
+    def test_a_markup_placeholder_is_carried_verbatim_as_data(self):
+        # Escaping moved from the server to the client (textContent / the
+        # .placeholder property), so the payload carries the raw string.
+        saved = server.TASKS
+        server.TASKS = [{"id": "x", "label": "x", "workdir": "~", "exec": ["/usr/bin/true"],
+                         "input": "textarea", "placeholder": "<script>alert(1)</script>"}]
         try:
-            server.invalidate_runs()
-            _, etag_b = server._runs_payload()
+            _, body, _ = self._raw("GET", "/api/tasks")
+            g = json.loads(body)["tasks"][0]
+            self.assertEqual(g["placeholder"], "<script>alert(1)</script>")
         finally:
-            time.time = real_time
-        self.assertEqual(etag_a, etag_b)
+            server.TASKS = saved
 
     def test_if_none_match_returns_304_without_body(self):
-        _, _, headers = self._raw("GET", "/api/runs")
+        _, _, headers = self._raw("GET", "/api/tasks")
         etag = headers["ETag"]
         status, body, headers2 = self._raw(
-            "GET", "/api/runs", headers={"If-None-Match": etag})
+            "GET", "/api/tasks", headers={"If-None-Match": etag})
         self.assertEqual(status, 304)
         self.assertEqual(body, "")
         self.assertEqual(headers2["ETag"], etag)
 
     def test_stale_etag_returns_200(self):
         status, body, _ = self._raw(
-            "GET", "/api/runs", headers={"If-None-Match": '"deadbeefdeadbeef"'})
+            "GET", "/api/tasks", headers={"If-None-Match": '"deadbeefdeadbeef"'})
         self.assertEqual(status, 200)
-        self.assertIn("runs", json.loads(body))
+        self.assertIn("tasks", json.loads(body))
+
+
+# A real AskUserQuestion widget as iTerm renders it: numbered options in a left
+# column, the highlighted option's description in a box-drawn side panel on the
+# SAME rows, a checkbox header, and the notes affordance. The whole thing is
+# framed by horizontal rules — which is exactly why the naive input-box reader
+# used to mistake it for unsent text.
+# Blank lines sit between the header, the question, and the options — the exact
+# gaps that a naive upward walk from the first option trips over.
+_ASK_FRAME = [
+    "─" * 60,
+    " ☐ New-work signal  ",
+    "",
+    "When new Blocked work arrives while you're holding a card, how much should it signal? ",
+    "",
+    "❯ 1. Passive count only           ┌" + "─" * 30 + "┐ ",
+    "  2. Passive + subtle mark        │ Run Y blocks → summary '2 need you'        │ ",
+    "  3. Gentle toast                 │   'up next' count +1. No move.               │ ",
+    "                                  └" + "─" * 30 + "┘ ",
+    "                                  Notes: press n to add notes ",
+    "─" * 60,
+    "Enter to select · ↑/↓ to navigate · n to add notes · Esc to cancel ",
+]
+_ASK_PANE = "\n".join(_ASK_FRAME)
+
+# `contents of session` returns scrollback: a widget that re-rendered shows up
+# twice. Only the last (live) frame counts — here the cursor has moved to opt 2.
+_ASK_PANE_DUP = "\n".join(_ASK_FRAME + [
+    "some intervening assistant output ",
+    "─" * 60,
+    " ☐ New-work signal  ",
+    "",
+    "When new Blocked work arrives while you're holding a card, how much should it signal? ",
+    "",
+    "  1. Passive count only           ",
+    "❯ 2. Passive + subtle mark        ",
+    "  3. Gentle toast                 ",
+    "─" * 60,
+    "Enter to select · ↑/↓ to navigate · n to add notes · Esc to cancel ",
+])
+
+# A permission prompt: a numbered menu with no side panel and no notes line.
+_PERMISSION_PANE = "\n".join([
+    "─" * 60,
+    "Bash(rm -rf build) ",
+    "❯ 1. Yes ",
+    "  2. Yes, and don't ask again ",
+    "  3. No, and tell Claude what to do differently ",
+    "─" * 60,
+])
+
+# A plain input box with a half-typed reply between the rules.
+_INPUT_PANE = "\n".join([
+    "─" * 60,
+    "❯ draft a reply but do not send ",
+    "─" * 60,
+    "\U0001f4c1 ~/projects/x ",
+])
+
+
+class PaneParsingTests(unittest.TestCase):
+    """The rendered pane is parsed three ways — a numbered selector, the
+    AskUserQuestion prompt, and a free-text input box — and they must not bleed
+    into one another (the mangled-card bug, ADR 0009)."""
+
+    def test_option_labels_drop_the_box_art_side_panel(self):
+        sel = server._parse_selector(_ASK_PANE)
+        self.assertEqual(sel["options"],
+                         ["Passive count only", "Passive + subtle mark", "Gentle toast"])
+
+    def test_cursor_tracks_the_highlight_glyph(self):
+        self.assertEqual(server._parse_selector(_ASK_PANE)["cursor"], 0)
+
+    def test_stale_scrollback_frame_is_ignored(self):
+        # Only the live frame counts: 3 options, cursor on the moved highlight.
+        sel = server._parse_selector(_ASK_PANE_DUP)
+        self.assertEqual(sel["options"],
+                         ["Passive count only", "Passive + subtle mark", "Gentle toast"])
+        self.assertEqual(sel["cursor"], 1)
+
+    def test_pane_question_survives_a_duplicated_frame(self):
+        self.assertEqual(
+            server._pane_question(_ASK_PANE_DUP),
+            "When new Blocked work arrives while you're holding a card, how much should it signal?")
+
+    def test_permission_menu_parses_cleanly(self):
+        sel = server._parse_selector(_PERMISSION_PANE)
+        self.assertEqual(sel["options"],
+                         ["Yes", "Yes, and don't ask again", "No, and tell Claude what to do differently"])
+
+    def test_widget_is_recognised_by_its_notes_affordance(self):
+        self.assertTrue(server._is_question_widget(_ASK_PANE))
+        self.assertFalse(server._is_question_widget(_PERMISSION_PANE))
+        self.assertFalse(server._is_question_widget(_INPUT_PANE))
+
+    def test_pane_question_reads_the_prompt_not_the_header(self):
+        self.assertEqual(
+            server._pane_question(_ASK_PANE),
+            "When new Blocked work arrives while you're holding a card, how much should it signal?")
+
+    def test_input_box_reads_a_real_draft(self):
+        self.assertEqual(server._pane_input(_INPUT_PANE), "draft a reply but do not send")
+
+
+class BlockedFocusTests(unittest.TestCase):
+    """A pending AskUserQuestion never reaches the transcript, so its focus card
+    is enriched entirely from the rendered pane. Regression guard for the card
+    that showed 'approval', box-art options, an empty ask, and a false ⚠ pending
+    (ADR 0009)."""
+
+    def setUp(self):
+        self._saved = {n: getattr(server, n) for n in
+                       ("cached_runs", "_transcript_path", "_pane_contents", "_ai_title")}
+        server._transcript_path = lambda *a, **k: ""     # empty tail → nothing flushed
+        server._ai_title = lambda sid: "fix the cards"
+        server._pane_contents = lambda rid: _ASK_PANE
+        server.cached_runs = lambda: [{
+            "id": _RUN, "sessionId": _GOOD, "title": "x", "dir": "~/projects/x",
+            "status": "waiting", "bridge": "", "updatedAt": 5000, "snippet": "",
+        }]
+
+    def tearDown(self):
+        for n, v in self._saved.items():
+            setattr(server, n, v)
+
+    def test_unflushed_question_is_a_question_not_an_approval(self):
+        self.assertEqual(server._board()["focus"]["lane"], "question")
+
+    def test_options_are_clean_and_the_ask_is_present(self):
+        focus = server._board()["focus"]
+        self.assertEqual(focus["options"],
+                         ["Passive count only", "Passive + subtle mark", "Gentle toast"])
+        self.assertTrue(focus["ask"].startswith("When new Blocked work arrives"))
+
+    def test_the_widget_is_not_reported_as_unsent_input(self):
+        self.assertEqual(server._board()["focus"]["pendingInput"], "")
+
+
+class BoardPayloadTests(unittest.TestCase):
+    """The Board's item dict now carries `bridge` so the client can build the
+    deep-link into the Claude app (ADR 0008)."""
+
+    def setUp(self):
+        self._saved = server.cached_runs
+
+    def tearDown(self):
+        server.cached_runs = self._saved
+
+    def test_items_carry_the_bridge_for_the_deep_link(self):
+        server.cached_runs = lambda: [{
+            "id": _RUN, "sessionId": _GOOD, "title": "x", "dir": "~/projects/x",
+            "status": "busy", "bridge": "session_abc", "updatedAt": 5000, "snippet": "",
+        }]
+        board = server._board()
+        self.assertIsNone(board["focus"])                    # a working Run is not a focus
+        self.assertEqual(board["watching"][0]["bridge"], "session_abc")
+
+    def test_no_wall_clock_time_on_the_wire(self):
+        # The client formats ages from raw updatedAt, so an idle board yields a
+        # stable ETag/304 — the same invariant the old /api/runs guarded.
+        server.cached_runs = lambda: [{
+            "id": _RUN, "sessionId": _GOOD, "title": "x", "dir": "~/p/x",
+            "status": "busy", "bridge": "", "updatedAt": 5000, "snippet": "",
+        }]
+        _, etag_a = server._board_payload()
+        real_time = time.time
+        time.time = lambda: real_time() + 3600
+        try:
+            _, etag_b = server._board_payload()
+        finally:
+            time.time = real_time
+        self.assertEqual(etag_a, etag_b)
 
 
 class IdConfusionTests(_HttpCase):
@@ -634,43 +803,53 @@ class LaunchItermTests(unittest.TestCase):
         self.assertIn("return id", seen[0])
 
 
-class RenderTasksTests(unittest.TestCase):
+class TasksDataTests(unittest.TestCase):
+    """_tasks_data serializes the buttons the old _render_tasks used to draw
+    (ADR 0008): input kind, placeholder, and each button's id + label."""
+
     def setUp(self):
-        self._saved = server.TASKS
+        self._saved = (server.TASKS, server._tasks_mtime)
+        server._tasks_mtime = lambda: server._TASKS_MTIME   # freeze the reload
 
     def tearDown(self):
-        server.TASKS = self._saved
+        server.TASKS, server._tasks_mtime = self._saved
 
-    def test_no_tasks_renders_blank(self):
+    def test_no_tasks_is_empty(self):
         server.TASKS = []
-        self.assertEqual(server._render_tasks(), "")
+        self.assertEqual(server._tasks_data(), [])
 
-    def test_tasks_render_buttons_and_seed_box(self):
+    def test_tasks_expose_input_kind_and_buttons(self):
         server.TASKS = [
             {"id": "cap", "label": "cap", "workdir": "~", "command": "/c", "input": "text"},
             {"id": "s", "label": "s", "workdir": "~", "command": "/s", "input": "none"},
         ]
-        out = server._render_tasks()
-        self.assertIn('data-task="cap"', out)
-        self.assertNotIn("<form", out)                  # forms are gone; JS posts JSON
-        # intake buttons only: the dir/resume launcher (and its dividers) now live
-        # in the collapsible panel in the page template, not in _render_tasks.
-        self.assertNotIn("or launch a dir", out)
-        self.assertNotIn('id="launcher"', out)
-        self.assertEqual(out.count("<input"), 1)        # only the text task gets a seed box
+        data = server._tasks_data()
+        self.assertEqual(data[0]["input"], "text")
+        self.assertEqual([b["id"] for b in data[0]["buttons"]], ["cap"])
+        self.assertEqual(data[1]["input"], "none")
 
-    def test_a_button_group_shares_one_seed_box(self):
+    def test_a_button_group_shares_one_seed_and_lists_both_buttons(self):
         server.TASKS = [{
             "id": "jot", "workdir": "~", "exec": ["/bin/sh"], "input": "textarea",
             "buttons": [{"id": "jot", "label": "jot"},
                         {"id": "jot-log", "label": "log", "args": ["--log"]}],
         }]
-        out = server._render_tasks()
-        self.assertEqual(out.count("<textarea"), 1)     # one shared box, not two
-        self.assertIn('data-task="jot"', out)
-        self.assertIn('data-task="jot-log"', out)
-        self.assertIn('class="btnrow"', out)            # buttons grouped in a row
+        g = server._tasks_data()[0]
+        self.assertEqual(g["input"], "textarea")        # one shared seed box
+        self.assertEqual([b["id"] for b in g["buttons"]], ["jot", "jot-log"])
 
+    def test_placeholder_defaults_to_the_label(self):
+        server.TASKS = [{"id": "cap", "label": "Capture", "workdir": "~",
+                         "command": "/c", "input": "text"}]
+        self.assertEqual(server._tasks_data()[0]["placeholder"], "Capture…")
+
+    def test_unknown_input_kind_falls_back_to_none(self):
+        server.TASKS = [{"id": "x", "label": "x", "workdir": "~",
+                         "command": "/c", "input": "weird"}]
+        self.assertEqual(server._tasks_data()[0]["input"], "none")
+
+
+class GroupFlattenTests(unittest.TestCase):
     def test_a_group_flattens_each_button_to_its_own_dispatch(self):
         t = {"id": "jot", "workdir": "~", "exec": ["/bin/sh", "run.sh"],
              "log": "l.log", "input": "textarea",
@@ -947,28 +1126,19 @@ class TaskConfigTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             server._validate_tasks([{"id": "x", "exec": ["/usr/bin/true"], "command": "/c"}])
 
-    def test_a_textarea_task_renders_a_textarea_and_a_button(self):
-        saved = server.TASKS
+    def test_a_textarea_task_exposes_a_textarea_seed_and_a_button(self):
+        saved = (server.TASKS, server._tasks_mtime)
+        server._tasks_mtime = lambda: server._TASKS_MTIME
         server.TASKS = [{"id": "jot", "label": "jot", "workdir": "~",
                          "exec": ["/usr/bin/true"], "input": "textarea",
                          "placeholder": "a thought"}]
         try:
-            html_out = server._render_tasks()
-            self.assertIn('<textarea class="input"', html_out)
-            self.assertIn('placeholder="a thought"', html_out)
-            self.assertIn('class="task multiline"', html_out)
-            self.assertIn('data-task="jot"', html_out)
+            g = server._tasks_data()[0]
+            self.assertEqual(g["input"], "textarea")
+            self.assertEqual(g["placeholder"], "a thought")
+            self.assertEqual([b["id"] for b in g["buttons"]], ["jot"])
         finally:
-            server.TASKS = saved
-
-    def test_a_placeholder_cannot_inject_markup(self):
-        saved = server.TASKS
-        server.TASKS = [{"id": "x", "label": "x", "workdir": "~", "exec": ["/usr/bin/true"],
-                         "input": "textarea", "placeholder": '"><script>alert(1)</script>'}]
-        try:
-            self.assertNotIn("<script>", server._render_tasks())
-        finally:
-            server.TASKS = saved
+            server.TASKS, server._tasks_mtime = saved
 
 
 class DispatchSpawnTests(unittest.TestCase):
