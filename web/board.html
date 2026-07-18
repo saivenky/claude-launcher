@@ -99,6 +99,13 @@ padding:6px 13px;font:inherit;font-size:12.5px;cursor:pointer}
 .dockexp{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:11px 12px;
 margin-bottom:8px;box-shadow:0 6px 22px rgba(0,0,0,.45)}
 .dockexp[hidden]{display:none}
+.dirpop{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:6px;
+margin-bottom:8px;box-shadow:0 6px 22px rgba(0,0,0,.45);max-height:44vh;overflow-y:auto}
+.dirpop[hidden]{display:none}
+.diritem{display:block;width:100%;text-align:left;background:transparent;border:0;color:var(--fg);
+font:inherit;font-size:13px;padding:9px 10px;border-radius:7px;cursor:pointer}
+.diritem:hover{background:var(--panel2)}
+.diritem:active{background:var(--panel2);color:var(--accent)}
 .dlbl{display:block;color:var(--dim);font-size:9.5px;letter-spacing:1px;text-transform:uppercase;margin:0 0 6px}
 .dlbl[hidden]{display:none}
 .drow{display:flex;align-items:center;gap:8px;margin-bottom:12px}
@@ -136,11 +143,11 @@ a.ghost{text-decoration:none;display:inline-block}
     <label class=dlbl id=taskslbl hidden>tasks</label>
     <div id=tasks></div>
   </div>
+  <div class=dirpop id=dirpop role=listbox hidden></div>
   <div class=dockbar>
     <button class=dplus id=dplus aria-label="more intake" aria-expanded=false>＋</button>
     <span class=dprompt id=dirroot>~/projects/</span>
-    <input class=dinp id=dir placeholder=subdir autocomplete=off list=dirlist aria-label="project subdir under the projects root">
-    <datalist id=dirlist></datalist>
+    <input class=dinp id=dir placeholder=subdir autocomplete=off role=combobox aria-autocomplete=list aria-controls=dirpop aria-expanded=false aria-label="project subdir under the projects root">
     <button class=dgo id=launch>launch</button>
   </div>
 </div>

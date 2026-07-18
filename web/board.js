@@ -26,7 +26,7 @@ const summary = document.getElementById("summary");
 const toastEl = document.getElementById("toast");
 const pendingEl = document.getElementById("pending");
 const dirEl = document.getElementById("dir");
-const dirlistEl = document.getElementById("dirlist");
+const dirpopEl = document.getElementById("dirpop");
 const sidEl = document.getElementById("sid");
 const dirRootEl = document.getElementById("dirroot");
 const launchEl = document.getElementById("launch");
@@ -250,17 +250,48 @@ function setDock(open) {
   dplusEl.setAttribute("aria-expanded", open ? "true" : "false");
 }
 
-// The launch input's quick-pick: the folders you have recently run Claude in,
-// as subdir strings under the projects root (server-derived; ADR 0006). Recent
-// dirs change as you work, so fetch fresh on focus — point of use, not on load.
+// The launch input's quick-pick: the folders you've recently run Claude in
+// (server-derived; ADR 0006). A native <datalist> is unreliable here — it
+// won't open when its options arrive after focus (our fetch is async) and iOS
+// Safari barely renders it — so we drive our own dropup popover with the same
+// combobox semantics: free-text stays, we just show suggestions and fill on
+// tap. Recent dirs change as you work, so we refetch on each focus.
+let dirCache = [];
+
+function hidePop() {
+  dirpopEl.hidden = true;
+  dirEl.setAttribute("aria-expanded", "false");
+}
+
+function renderPop(filter) {
+  const f = (filter || "").trim().toLowerCase();
+  const items = dirCache.filter((d) => d.toLowerCase().includes(f));
+  dirpopEl.textContent = "";
+  if (!items.length) { hidePop(); return; }
+  for (const d of items) {
+    const row = el("button", "diritem", d);
+    row.type = "button";
+    row.setAttribute("role", "option");
+    // pointerdown fires before the input's blur; preventDefault keeps the input
+    // focused so the tap fills the value instead of racing the blur-hide.
+    row.addEventListener("pointerdown", (e) => {
+      e.preventDefault();
+      dirEl.value = d;
+      hidePop();
+    });
+    dirpopEl.append(row);
+  }
+  dirpopEl.hidden = false;
+  dirEl.setAttribute("aria-expanded", "true");
+}
+
 async function loadDirs() {
+  renderPop(dirEl.value);              // paint the cache at once if we have one
   let data;
   try { data = await (await fetch("api/dirs")).json(); }
   catch (e) { return; }
-  dirlistEl.textContent = "";
-  for (const d of data.dirs || []) {
-    const o = el("option"); o.value = d; dirlistEl.append(o);
-  }
+  dirCache = data.dirs || [];
+  if (document.activeElement === dirEl) renderPop(dirEl.value);
 }
 
 async function launchDir() {
@@ -268,6 +299,7 @@ async function launchDir() {
   const res = await postJSON("api/launch", {dir});
   toast(res.message || (res.ok ? "launched" : "launch failed"));
   if (res.ok) { dirEl.value = ""; setDock(false); watch(res.runId, dir || "default"); }
+  hidePop();
 }
 
 async function resumeSession() {
@@ -621,8 +653,15 @@ function schedule() {
 dplusEl.addEventListener("click", () => setDock(dockexpEl.hidden));
 launchEl.addEventListener("click", launchDir);
 resumeEl.addEventListener("click", resumeSession);
-dirEl.addEventListener("keydown", (e) => { if (e.key === "Enter") launchDir(); });
+dirEl.addEventListener("keydown", (e) => {
+  if (e.key === "Enter") launchDir();
+  else if (e.key === "Escape") hidePop();
+});
 dirEl.addEventListener("focus", loadDirs);
+dirEl.addEventListener("input", () => renderPop(dirEl.value));
+// A tap on a suggestion keeps focus (pointerdown preventDefault), so this blur
+// only fires when you leave the field; the delay lets a pending tap land first.
+dirEl.addEventListener("blur", () => setTimeout(hidePop, 120));
 sidEl.addEventListener("keydown", (e) => { if (e.key === "Enter") resumeSession(); });
 
 document.addEventListener("visibilitychange", () => {
