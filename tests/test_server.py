@@ -514,6 +514,155 @@ class BlockedFocusTests(unittest.TestCase):
         self.assertEqual(server._board()["focus"]["pendingInput"], "")
 
 
+# The exact command from the live incident (session d4440820, obsidian Run
+# blocked on a Bash permission prompt). Unlike an AskUserQuestion, a command
+# approval's tool_use IS flushed to the transcript — the concrete blocker is on
+# disk, the card just never reads it.
+_APPROVAL_CMD = (
+    'for f in Notes/2026-07-1[2-7]*.md; do echo "=== $f ==="; '
+    'wc -w "$f" | awk \'{print $1" words"}\'; done'
+)
+_APPROVAL_ROWS = [
+    {"type": "user", "message": {"content": [
+        {"type": "text", "text": "look at my recent dated notes over the past 5 "
+                                 "days. see if there's anything that looks like it "
+                                 "should be consolidated."}]}},
+    # last assistant turn is a bare Bash tool_use — no prose, so _full_context's
+    # text/ask both come back empty. The tool_use has no matching tool_result, so
+    # it is the pending (flushed) blocker.
+    {"type": "assistant", "message": {"content": [
+        {"type": "tool_use", "id": "toolu_bash1", "name": "Bash",
+         "input": {"command": _APPROVAL_CMD,
+                   "description": "Word counts for recent notes"}}]}},
+]
+# The Bash approval as the pane renders it — a numbered menu, no widget/side panel.
+_BASH_APPROVAL_PANE = "\n".join([
+    "─" * 60,
+    " Bash command ",
+    "   " + _APPROVAL_CMD,
+    "   Word counts for recent notes ",
+    " Do you want to proceed? ",
+    "❯ 1. Yes ",
+    "  2. No ",
+    "─" * 60,
+])
+
+
+class ApprovalFocusTests(unittest.TestCase):
+    """A command-approval (Bash/Edit/…) leaves a FLUSHED pending tool_use, but the
+    focus card only pulls a prompt out of a pending tool_use when it is
+    AskUserQuestion — so a Bash approval renders an empty ask, and the card never
+    says WHAT is being approved (just Yes/No).
+
+    Captured live: session d4440820, blocked on `_APPROVAL_CMD`, returned lane
+    'approval' with ask='' and contextHtml=''. Pre-existing board gap, not the
+    tmux swap (`_full_context` reads the transcript, not the pane).
+
+    Ticket: .scratch/approval-card-detail/issues/01-approval-cards-show-command.md
+    """
+
+    def setUp(self):
+        self._saved = {n: getattr(server, n) for n in
+                       ("cached_runs", "_tail_rows", "_transcript_path",
+                        "_pane_contents", "_ai_title", "_tmux_server_down")}
+        server._tmux_server_down = lambda: False
+        server._transcript_path = lambda *a, **k: ""
+        server._tail_rows = lambda sid: _APPROVAL_ROWS
+        server._pane_contents = lambda rid: _BASH_APPROVAL_PANE
+        server._ai_title = lambda sid: "Consolidate recent dated notes"
+        server.cached_runs = lambda: [{
+            "id": _RUN, "sessionId": _GOOD, "title": "obsidian", "dir": "~/obsidian",
+            "status": "waiting", "bridge": "", "updatedAt": 5000, "snippet": "",
+        }]
+
+    def tearDown(self):
+        for n, v in self._saved.items():
+            setattr(server, n, v)
+
+    def test_the_repro_really_is_an_approval(self):
+        # Sanity (passes today): a pending non-AskUserQuestion tool_use → approval.
+        self.assertEqual(server._board()["focus"]["lane"], "approval")
+
+    def test_approval_card_shows_the_command_being_approved(self):
+        # Was RED until ticket 01: today ask carries the flushed Bash command, so
+        # the card says WHAT is being approved instead of a bare Yes/No.
+        focus = server._board()["focus"]
+        shown = f"{focus.get('ask', '')} {focus.get('contextHtml', '')}"
+        self.assertIn("wc -w", shown,
+                      "approval card must surface the command being approved")
+
+    def test_bash_command_rides_the_plaintext_ask_field(self):
+        # The command is untrusted transcript text; it goes in `ask` (textContent,
+        # never innerHTML), so contextHtml carries no approval `input`.
+        focus = server._board()["focus"]
+        self.assertIn("wc -w", focus["ask"])
+        self.assertNotIn("wc -w", focus["contextHtml"])
+        self.assertEqual(focus["lane"], "approval")          # badge unchanged
+        self.assertEqual(focus["options"], ["Yes", "No"])    # Yes/No preserved
+
+
+# Approval tool_uses other than Bash. Each leaves a FLUSHED pending tool_use
+# (ADR 0009); the card reads its `input`, not the pane. _lane_of + _full_context
+# are exercised directly with a stubbed transcript tail.
+class ApprovalDetailTests(unittest.TestCase):
+    def setUp(self):
+        self._saved = server._tail_rows
+
+    def tearDown(self):
+        server._tail_rows = self._saved
+
+    def _rows_for(self, tool):
+        return [
+            {"type": "user", "message": {"content": [
+                {"type": "text", "text": "go ahead and make the change"}]}},
+            {"type": "assistant", "message": {"content": [
+                {"type": "tool_use", "id": "toolu_x", "name": tool["name"],
+                 "input": tool["input"]}]}},
+        ]
+
+    def _ask_for(self, tool):
+        server._tail_rows = lambda sid: self._rows_for(tool)
+        _, ask, _ = server._full_context(_GOOD)
+        return ask
+
+    def test_edit_shows_the_target_file_and_a_change_summary(self):
+        ask = self._ask_for({"name": "Edit", "input": {
+            "file_path": "/Users/x/obsidian/Notes/2026-07-17.md",
+            "old_string": "todo: draft", "new_string": "done: drafted the note"}})
+        self.assertIn("Notes/2026-07-17.md", ask)
+        self.assertIn("done: drafted the note", ask)         # concise change summary
+
+    def test_write_shows_the_target_file(self):
+        ask = self._ask_for({"name": "Write", "input": {
+            "file_path": "/Users/x/projects/app/config.py", "content": "PORT = 8080"}})
+        self.assertIn("Write", ask)
+        self.assertIn("projects/app/config.py", ask)
+
+    def test_exitplanmode_shows_the_plan(self):
+        ask = self._ask_for({"name": "ExitPlanMode", "input": {
+            "plan": "## Plan\n1. Add the endpoint\n2. Wire the button"}})
+        self.assertIn("Add the endpoint", ask)
+
+    def test_a_long_command_is_clipped_with_an_ellipsis(self):
+        long_cmd = "echo " + "x" * 2000
+        ask = self._ask_for({"name": "Bash", "input": {"command": long_cmd}})
+        self.assertLessEqual(len(ask), server._ASK_MAX + 1)  # +1 for the ellipsis
+        self.assertTrue(ask.endswith("…"))
+        self.assertNotIn("x" * 2000, ask)
+
+    def test_context_prose_above_the_command_is_clipped(self):
+        long_prose = "we were " + "y" * 3000
+        rows = [{"type": "assistant", "message": {"content": [
+            {"type": "text", "text": long_prose},
+            {"type": "tool_use", "id": "toolu_x", "name": "Bash",
+             "input": {"command": "ls"}}]}}]
+        server._tail_rows = lambda sid: rows
+        text, ask, _ = server._full_context(_GOOD)
+        self.assertEqual(ask, "ls")
+        self.assertLessEqual(len(text), server._CTX_MAX + 1)
+        self.assertTrue(text.endswith("…"))
+
+
 class BoardPayloadTests(unittest.TestCase):
     """The Board's item dict now carries `bridge` so the client can build the
     deep-link into the Claude app (ADR 0008)."""

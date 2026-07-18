@@ -979,8 +979,52 @@ def _md_to_html(text: str) -> str:
     return "\n".join(out)
 
 
+# Truncation budgets keep the focus card readable on a phone. A command / file /
+# plan under approval, and the run-up prose above it, are all transcript text we
+# do not own; an over-long one is clipped with an ellipsis.
+_ASK_MAX = 600     # the command / file / plan being approved
+_CTX_MAX = 1200    # the recent conversation context shown above it
+
+
+def _clip(s: str, n: int) -> str:
+    s = (s or "").strip()
+    return s if len(s) <= n else s[:n].rstrip() + "…"
+
+
+def _approval_detail(tu: dict) -> str:
+    """What a flushed approval tool_use is asking you to approve, as plain text:
+    the Bash command, the Edit/Write target (+ a concise change summary when the
+    diff is present), or the ExitPlanMode plan. Per ADR 0009 an approval always
+    leaves a flushed pending tool_use, so this reads structured transcript data,
+    not the rendered pane. The result is carried in the card's plain-text `ask`
+    field (rendered with textContent, never innerHTML — ADR 0003/0006), so this
+    untrusted `input` text is inert and cannot inject."""
+    name = tu.get("name") or ""
+    inp = tu.get("input") if isinstance(tu.get("input"), dict) else {}
+    if name == "Bash":
+        return _clip(str(inp.get("command") or ""), _ASK_MAX)
+    if name in ("Edit", "MultiEdit"):
+        lead = f"Edit {str(inp.get('file_path') or '')}".strip()
+        summary = str(inp.get("new_string") or "").strip().splitlines()
+        if summary:                       # concise change summary, when available
+            lead = f"{lead} — {summary[0].strip()}"
+        return _clip(lead, _ASK_MAX)
+    if name == "Write":
+        return _clip(f"Write {str(inp.get('file_path') or '')}".strip(), _ASK_MAX)
+    if name == "NotebookEdit":
+        return _clip(f"Edit {str(inp.get('notebook_path') or '')}".strip(), _ASK_MAX)
+    if name == "ExitPlanMode":
+        return _clip(str(inp.get("plan") or ""), _ASK_MAX)
+    return name        # any other tool put up for approval — name it, never blank
+
+
 def _full_context(session_id: str) -> tuple:
-    """(context_text, ask, options) from the Session's last assistant turn."""
+    """(context_text, ask, options) from the Session's last assistant turn.
+
+    For an approval the `ask` describes the flushed pending tool_use (the Bash
+    command, the Edit/Write target, or the ExitPlanMode plan) — what you're being
+    asked to approve — and the run-up prose above it is clipped. See ADR 0009 and
+    `_approval_detail` for why this is structured data, not a pane scrape."""
     rows = _tail_rows(session_id)
     la = _last_assistant(rows)
     if not la:
@@ -1000,6 +1044,12 @@ def _full_context(session_id: str) -> tuple:
         # lives in the tool input, not necessarily in the assistant's text.
         if questions and questions[0].get("question"):
             ask = questions[0]["question"].strip()[:200]
+    elif tu:
+        # An approval (any non-AskUserQuestion pending tool_use — Bash / Edit /
+        # Write / ExitPlanMode …): surface the concrete blocker as the ask, and
+        # clip the run-up context that renders above it.
+        ask = _approval_detail(tu) or ask
+        text = _clip(text, _CTX_MAX)
     return text, ask, options
 
 
