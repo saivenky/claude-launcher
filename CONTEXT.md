@@ -29,12 +29,13 @@ _Avoid_: conversation, transcript (the file on disk, not the living
 thread), history, thread
 
 **Run**:
-One `claude` process executing a **Session** — concretely, an iTerm pane
-running `claude`. This is the only thing the Launcher creates and
-destroys. A Run embodies exactly one Session; ending a Run leaves its
-Session intact. At most one live Run per Session.
-_Avoid_: session (that's the durable thread here), tab, terminal,
-process, instance
+One `claude` process executing a **Session** — concretely, a tmux window
+(one pane) running `claude` (see ADR 0010; formerly an iTerm pane). This is
+the only thing the Launcher creates and destroys. A Run embodies exactly one
+Session; ending a Run leaves its Session intact. At most one live Run per
+Session.
+_Avoid_: session (that's the durable thread here — and tmux's own container,
+see *Flagged ambiguities*), window, tab, terminal, process, instance
 
 **Resume**:
 Start a new **Run** on an existing **Session** (via
@@ -55,7 +56,7 @@ _Avoid_: monitor, watch, view, read (each also suggests two-way)
 **Respond**:
 Inject input into a live **Run** over the **Launcher transport** — free
 text, a selector choice (arrow / enter), or a permission approval — by
-writing to the Run's iTerm pane. The two-way sibling of **Observe** and the
+writing to the Run's pane (`tmux send-keys`; ADR 0010). The two-way sibling of **Observe** and the
 Launcher's own driving channel, distinct from the **Remote Control bridge**
 (Anthropic's cloud, one session, the Claude app). When the Run is busy,
 Claude Code's native input queue absorbs the response until the next turn.
@@ -190,15 +191,20 @@ _Avoid_: access, availability
 
 ## Flagged ambiguities
 
-- "session" names four different things in Claude Code itself — resolved
-  in favour of the identifier a human actually handles:
+- "session" names five different things across Claude Code and its
+  substrate — resolved in favour of the identifier a human actually handles:
   - `~/.claude/sessions/<pid>.json` — a live process. Here: a **Run**.
   - `sessionId` — the durable thread. Here: a **Session**. *This one wins
     the word*, because it is the only one the user ever sees or types.
   - `bridgeSessionId` — the **Remote Control bridge**'s channel. Here: a
     *bridge channel*, never a Session.
-  - iTerm's `sessions of tabs` — a terminal pane. Here: a **Run**'s pane,
-    an implementation detail.
+  - tmux's top-level container, a `tmux session` — the most dangerous
+    claimant, because it is a word in the Launcher's own CLI. Resolved by
+    topology: the Launcher runs *one* tmux session (`claude-launcher`) and a
+    Run is a **window** in it, never a tmux session (ADR 0010). So "close the
+    session" is never ambiguous — you close a **Run**, i.e. a tmux window.
+  - a Run's tmux window/pane (formerly iTerm's `sessions of tabs`) — the
+    terminal container. Here: a **Run**, an implementation detail.
 - "close a session" conflated ending a process with destroying a thread —
   resolved: you close a **Run**. Nothing the Launcher does can destroy a
   **Session**.
