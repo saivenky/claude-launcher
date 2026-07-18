@@ -3,7 +3,8 @@
 
 Vocabulary (see CONTEXT.md): a **Session** is the durable thread Claude Code
 identifies by `sessionId`; a **Run** is one `claude` process executing it,
-concretely an iTerm pane. The launcher only ever creates and destroys Runs.
+concretely a tmux window (ADR 0010). The launcher only ever creates and
+destroys Runs.
 
 Three ways to start a Run, on one page:
   - generic: type a subdir under PROJECTS_ROOT -> runs `cl` there
@@ -34,10 +35,13 @@ import importlib
 import json
 import os
 import re
+import shutil
+import socket
 import subprocess
 import sys
 import threading
 import time
+import uuid
 
 HOST = os.environ.get("CLAUDE_LAUNCHER_HOST", "0.0.0.0")
 PORT = int(os.environ.get("CLAUDE_LAUNCHER_PORT", "8765"))
@@ -47,6 +51,11 @@ COMMAND = os.environ.get("CLAUDE_LAUNCHER_COMMAND", "cl")
 REMOTE = os.environ.get("CLAUDE_LAUNCHER_REMOTE", "1").strip().lower() not in (
     "0", "false", "no", "off", "",
 )
+
+# The dedicated tmux socket AND session name a Run lives in (ADR 0010). One
+# detached `tmux -L <socket>` server holds a single session of this name; each
+# Run is a window in it. Env-overridable in the spirit of CLAUDE_LAUNCHER_COMMAND.
+TMUX_SOCKET = os.environ.get("CLAUDE_LAUNCHER_TMUX_SOCKET", "claude-launcher")
 
 # Respond (typing into a live Run, incl. approving a permission) removes the
 # human-in-the-loop backstop, so it is gated by a shared secret — checked with
@@ -189,47 +198,73 @@ def _resume_cmd(workdir: str, session_id: str) -> str:
     return f"cd {shell_quote(workdir)} && {run}"
 
 
-def launch_iterm(workdir: str, prompt: str | None = None, task_id: str | None = None,
-                 resume_id: str | None = None) -> str:
-    """Open an iTerm pane running the launch command in workdir; return its Run id.
+def _tmux(*args: str, check: bool = True) -> subprocess.CompletedProcess:
+    """Run one `tmux -L <socket> …` command, list-form argv, never a shell."""
+    return subprocess.run(
+        ["tmux", "-L", TMUX_SOCKET, *args],
+        capture_output=True, text=True, check=check,
+    )
+
+
+def _ensure_tmux() -> None:
+    """Idempotently ensure the detached claude-launcher server+session exist.
+
+    The tmux analogue of iTerm's `activate` + create-window-if-none. When the
+    session is absent we create it, then pin the render geometry: `default-size
+    120x40` + global `window-size latest` so every later `new-window` is safe.
+    Width is only ever pinned per-window (`window-size manual` on each Run's own
+    window) — setting it globally crashes the server on the next `new-window`
+    (observed on 3.6a; ADR 0010).
+    """
+    if _tmux("has-session", "-t", TMUX_SOCKET, check=False).returncode == 0:
+        return
+    _tmux("new-session", "-d", "-s", TMUX_SOCKET, "-x", "120", "-y", "40")
+    _tmux("set", "-g", "default-size", "120x40")
+    _tmux("set", "-g", "window-size", "latest")
+
+
+def launch_run(workdir: str, prompt: str | None = None, task_id: str | None = None,
+               resume_id: str | None = None) -> str:
+    """Open a tmux window running the launch command in workdir; return its Run id.
 
     Named tasks pass their slash-command as ``prompt`` and their id as
-    ``task_id``; the id is stamped on the pane as user.cl_task so the live
-    list can label it. Resume passes ``resume_id`` (a Session's sessionId)
-    to spawn ``cl --resume``. Generic launches pass none of them.
+    ``task_id``; the id is stamped on the pane as @cl_task so the live list
+    can label it. Resume passes ``resume_id`` (a Session's sessionId) to spawn
+    ``cl --resume``. Generic launches pass none of them.
 
-    The AppleScript returns `id of current session` — the new pane's UUID,
-    which is the same id `list_runs` keys rows by. The client needs it to
-    paint an optimistic row: a Run is not visible to `list_runs` until
-    `claude` shows up in `ps` (1-3s later), so without this correlation key
-    a launch looks like it did nothing.
+    We mint the Run id ourselves — a lowercase UUID — and stamp it on the pane
+    as @cl_run_id (tmux's own `%N` pane ids are reused across a server restart,
+    so a stale phone id could drive an unrelated Session; ADR 0010). The client
+    needs the returned id to paint an optimistic row: a Run is not visible to
+    `list_runs` until `claude` shows up in `ps` (1-3s later), so without this
+    correlation key a launch looks like it did nothing.
+
+    The window is created **bare** and the launch line is *typed* with
+    `send-keys -l`, never passed as a `new-window` argument: `cl` is a zsh
+    function, and `new-window '…'` runs via `/bin/sh -c`, which never sourced
+    `.zshrc` and would fail with `cl: not found` (ADR 0010). Submit is a
+    separate Enter keystroke, distinct from the literal text.
     """
+    _ensure_tmux()
+    run_id = str(uuid.uuid4())
     cmd = _resume_cmd(workdir, resume_id) if resume_id else _launch_cmd(workdir, prompt)
-    stamp = ""
+    pane = _tmux("new-window", "-d", "-t", TMUX_SOCKET, "-P", "-F", "#{pane_id}").stdout.strip()
+    # Pin THIS window's width so a narrow client that merely attaches to look
+    # cannot reflow the Run and corrupt the parse frame. Addressing the pane
+    # resolves to its window for `set -w`.
+    _tmux("set", "-w", "-t", pane, "window-size", "manual")
+    _tmux("set", "-p", "-t", pane, "@cl_run_id", run_id)
     if task_id:
-        stamp = f'\n        set variable named "user.cl_task" to {applescript_quote(task_id)}'
-    script = f'''
-tell application "iTerm"
-    activate
-    if (count of windows) = 0 then
-        create window with default profile
-    else
-        tell current window to create tab with default profile
-    end if
-    tell current session of current window
-        write text {applescript_quote(cmd)}{stamp}
-        return id
-    end tell
-end tell
-'''
-    run_id = _osascript(script).strip()
-    return run_id if _UUID_RE.match(run_id) else ""
+        _tmux("set", "-p", "-t", pane, "@cl_task", task_id)
+    _tmux("send-keys", "-t", pane, "-l", cmd)
+    _tmux("send-keys", "-t", pane, "Enter")
+    return run_id
 
 
 def dispatch(workdir: str, argv: list[str], seed: str = "", log: str | None = None) -> None:
     """Run a preset command detached, appending `seed` as one argv element.
 
-    A **Dispatch** is not a **Run**: no `claude`, no Session, no iTerm pane —
+    A **Dispatch** is not a **Run**: no `claude`, no Session, no tmux window —
     nothing to observe or close (ADR 0004). It exists for fire-and-forget agents
     that take one input and leave their own trace elsewhere.
 
@@ -276,22 +311,16 @@ def _display_path(p: str) -> str:
 _CONTROL_CHAR_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 
 
-def applescript_quote(s: str) -> str:
-    s = _CONTROL_CHAR_RE.sub("", s)
-    s = s.replace("\\", "\\\\").replace('"', '\\"')
-    s = s.replace("\n", "\\n").replace("\r", "\\r").replace("\t", "\\t")
-    return '"' + s + '"'
-
-
 def sanitize_log(s: str) -> str:
     return _CONTROL_CHAR_RE.sub("?", s).replace("\n", "?").replace("\r", "?")
 
 
-# --- live Run discovery (iTerm panes running `claude`) ------------------------
+# --- live Run discovery (tmux windows running `claude`) -----------------------
 
-# Both a Run id (an iTerm pane) and a Session id (Claude's sessionId) are
-# 36-char UUIDs. This checks *shape only* and belongs to neither: the two are
-# distinguished by which field they arrive in, never by their format.
+# Both a Run id (our own UUID, stamped as the pane option @cl_run_id) and a
+# Session id (Claude's sessionId) are 36-char UUIDs. This checks *shape only*
+# and belongs to neither: the two are distinguished by which field they arrive
+# in, never by their format.
 _UUID_RE = re.compile(r"^[0-9A-Fa-f-]{36}$")
 
 # The only statuses Claude Code writes. Whitelisted because `status` lands in
@@ -304,52 +333,37 @@ _STATUSES = ("busy", "waiting", "idle")
 # — so it is whitelisted here the way `status` is, before it can reach an href.
 _BRIDGE_RE = re.compile(r"^session_[A-Za-z0-9]+$")
 
-# Emit one line per iTerm pane: id <US> tty <US> name <US> cl_task. US (0x1f)
-# can't appear in any field, so splitting is unambiguous. An unset user.cl_task
-# comes back as `missing value`, so coerce it to "" first.
-_LIST_SCRIPT = """
-if application "iTerm" is running then
-  tell application "iTerm"
-    set sep to (ASCII character 31)
-    set out to ""
-    repeat with w in windows
-      repeat with t in tabs of w
-        repeat with s in sessions of t
-          tell s
-            set tag to (variable named "user.cl_task")
-            if tag is missing value then set tag to ""
-            set out to out & (id) & sep & (tty) & sep & (name) & sep & tag & linefeed
-          end tell
-        end repeat
-      end repeat
-    end repeat
-    return out
-  end tell
-end if
-return ""
-"""
-
-_CLOSE_SCRIPT = """
-if application "iTerm" is running then
-  tell application "iTerm"
-    repeat with w in windows
-      repeat with t in tabs of w
-        repeat with s in sessions of t
-          if (id of s) is "%s" then
-            close s
-            return "ok"
-          end if
-        end repeat
-      end repeat
-    end repeat
-  end tell
-end if
-return "notfound"
-"""
+# One line per pane, US-separated (0x1f, unusable in any field so splitting is
+# unambiguous): @cl_run_id <US> pane_tty <US> pane_title <US> @cl_task. An unset
+# pane option renders empty, so a pane the Launcher didn't create comes back with
+# a blank @cl_run_id and is dropped in `_parse_tmux_panes`.
+_PANE_FMT = "#{@cl_run_id}\x1f#{pane_tty}\x1f#{pane_title}\x1f#{@cl_task}"
 
 
-def _parse_iterm_panes(out: str) -> list[tuple[str, str, str, str]]:
-    """(run_id, tty_basename, name, cl_task) for each _LIST_SCRIPT line."""
+def _list_panes_raw() -> str:
+    """One `tmux list-panes -a -F` over every pane in the server, US-separated."""
+    return _tmux("list-panes", "-a", "-F", _PANE_FMT).stdout
+
+
+def _pane_for_run(run_id: str) -> str:
+    """Resolve a Run UUID to its tmux pane id (`%N`) via one list-panes walk, or ''."""
+    try:
+        out = _tmux("list-panes", "-a", "-F", "#{@cl_run_id}\x1f#{pane_id}").stdout
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return ""
+    for line in out.split("\n"):
+        rid, _, pane = line.partition("\x1f")
+        if rid.strip() == run_id:
+            return pane.strip()
+    return ""
+
+
+def _parse_tmux_panes(out: str) -> list[tuple[str, str, str, str]]:
+    """(run_id, tty_basename, name, cl_task) for each `list-panes` line.
+
+    Rows whose @cl_run_id is empty — a pane not created by the Launcher — are
+    dropped, so `list_runs` only ever sees Runs it owns.
+    """
     rows = []
     for line in out.split("\n"):
         if not line:
@@ -358,6 +372,8 @@ def _parse_iterm_panes(out: str) -> list[tuple[str, str, str, str]]:
         if len(parts) != 4:
             continue
         rid, tty, name, tag = parts
+        if not rid.strip():
+            continue
         rows.append((rid.strip(), os.path.basename(tty.strip()), name.strip(), tag.strip()))
     return rows
 
@@ -524,16 +540,23 @@ def _session_cwd(session_id: str, base: str = _PROJECTS_STATE) -> str:
     return os.path.basename(os.path.dirname(path)).replace("-", "/")
 
 
+# tmux titles a fresh pane with the host's own name (e.g. "Mac-mini.local", or
+# its short form "Mac-mini") until `claude` overrides it via a title escape
+# sequence. That default is not a Run title, so it is treated as no title —
+# whereupon list_runs falls through to the _first_user_msg backstop (ADR 0010).
+_HOST_DEFAULT_TITLES = {socket.gethostname(), socket.gethostname().split(".", 1)[0]}
+
+
 def _clean_title(name: str) -> str:
-    """Strip iTerm's status glyph + trailing '(profile)' from a pane title."""
+    """A usable Run title from a tmux pane title, or '' when there is none.
+
+    Strips a leading status glyph and a trailing '(profile)' — iTerm's tab shape,
+    harmless to run on a plain tmux title. A hostname-default title (what tmux
+    shows before `claude` sets its own) is treated as no title, so the caller
+    backstops with _first_user_msg (see list_runs)."""
     s = re.sub(r"\s*\([^)]*\)\s*$", "", name).strip()
-    return re.sub(r"^[\W_]+", "", s).strip()
-
-
-def _osascript(script: str) -> str:
-    return subprocess.run(
-        ["osascript", "-e", script], capture_output=True, text=True, check=True
-    ).stdout
+    s = re.sub(r"^[\W_]+", "", s).strip()
+    return "" if s in _HOST_DEFAULT_TITLES else s
 
 
 def _ps_output() -> str:
@@ -543,14 +566,14 @@ def _ps_output() -> str:
 
 
 def list_runs() -> list[dict]:
-    """Live `claude` Runs visible as iTerm panes, newest activity first.
+    """Live `claude` Runs visible as tmux windows, newest activity first.
 
     ``updatedAt`` ships raw (epoch ms). Formatting it server-side into "47m"
     would make an idle Run's payload change every minute, defeating the ETag
     and every "nothing changed, skip the re-render" check downstream.
     """
     try:
-        panes = _parse_iterm_panes(_osascript(_LIST_SCRIPT))
+        panes = _parse_tmux_panes(_list_panes_raw())
         ps_out = _ps_output()
     except (subprocess.CalledProcessError, FileNotFoundError):
         return []
@@ -593,10 +616,12 @@ def list_runs() -> list[dict]:
     return rows
 
 
-# One AppleScript walk costs ~140ms (84ms iTerm + 53ms `ps`). Memoize briefly so
-# the burst-poll after a launch, the periodic poll, and a second open tab all
-# collapse into one walk. Mutations invalidate it — a closed Run must vanish on
-# the very next poll, not up to a TTL later.
+# Memoize the runs list briefly so the burst-poll after a launch, the periodic
+# poll, and a second open tab all collapse into one walk. The memoize predates
+# tmux — it hid a ~140ms AppleScript walk (84ms iTerm + 53ms `ps`); the tmux
+# `list-panes` walk is ~2-5ms, so it is now near-redundant and kept only for
+# parity (removing it is a follow-up; ADR 0010). Mutations invalidate it — a
+# closed Run must vanish on the very next poll, not up to a TTL later.
 _RUNS_TTL = 0.75
 _runs_lock = threading.Lock()
 _runs_cache: tuple[float, list[dict]] = (0.0, [])
@@ -629,87 +654,71 @@ def _live_session_ids() -> set[str]:
 
 
 def close_run(run_id: str) -> bool:
-    """Close the iTerm pane with this Run id, but only if it's a live claude one."""
+    """Close the tmux window for this Run id, but only if it's a live claude one."""
     if not _UUID_RE.match(run_id):
         return False
     if run_id not in {r["id"] for r in cached_runs()}:
         return False
+    pane = _pane_for_run(run_id)
+    if not pane:
+        return False
     try:
-        ok = _osascript(_CLOSE_SCRIPT % run_id).strip() == "ok"
+        _tmux("kill-window", "-t", pane)   # a pane target resolves to its window
     except (subprocess.CalledProcessError, FileNotFoundError):
         return False
-    if ok:
-        invalidate_runs()
-    return ok
+    invalidate_runs()
+    return True
 
 
 # --- Respond: inject input into a live Run's pane --------------------------
-# The Launcher's own driving channel, over the Launcher transport (local
-# AppleScript into the pane), independent of the Remote Control bridge. iTerm
-# won't address `session id "X"` directly, so the script iterates panes and
-# matches by id — the same walk `close` uses. Keys come from a fixed map, so a
-# client can drive a selector (a permission menu, an AskUserQuestion) without
-# ever supplying a raw escape sequence.
+# The Launcher's own driving channel — `tmux send-keys` into the Run's pane —
+# independent of the Remote Control bridge. The Run UUID resolves to its pane
+# via `_pane_for_run` (the same walk `close` uses). Keys come from a fixed map
+# of tmux key names, so a client can drive a selector (a permission menu, an
+# AskUserQuestion) without ever supplying a raw escape sequence.
 _RESPOND_KEYS = {
-    "enter": "(ASCII character 13)",
-    "esc": "(ASCII character 27)",
-    "up": '((ASCII character 27) & "[A")',
-    "down": '((ASCII character 27) & "[B")',
-    "right": '((ASCII character 27) & "[C")',
-    "left": '((ASCII character 27) & "[D")',
-    "tab": "(ASCII character 9)",
-    "space": '" "',
+    "enter": "Enter",
+    "esc": "Escape",
+    "up": "Up",
+    "down": "Down",
+    "right": "Right",
+    "left": "Left",
+    "tab": "Tab",
+    "space": "Space",
 }
-
-_RESPOND_SCRIPT = """
-if application "iTerm" is running then
-  tell application "iTerm"
-    repeat with w in windows
-      repeat with t in tabs of w
-        repeat with s in sessions of t
-          if (id of s) is "%s" then
-            tell s
-              %s
-            end tell
-            return "ok"
-          end if
-        end repeat
-      end repeat
-    end repeat
-  end tell
-end if
-return "notfound"
-"""
 
 
 def respond_run(run_id: str, text: str = "", keys: list | None = None) -> bool:
     """Inject a reply and/or keys into a live Run's pane. Acts only on a
     currently-live claude Run (mirrors close_run); a stale or bogus id no-ops.
 
-    Text is typed WITHOUT a trailing newline, then submitted by a *separate*
-    Enter keystroke after a short pause. A combined `write text` appends its
-    return inside iTerm's bracketed paste, where Claude Code's input treats it
-    as a literal newline and the reply sticks unsent in the box; a standalone
-    CR always registers as submit. Keys pass straight through.
+    Text is sent literally with `send-keys -l` (which, unlike iTerm's `write
+    text`, does NOT bracket-paste), then submitted by a *separate* `send-keys
+    Enter` — the submit stays a distinct keystroke (ADR 0010 landmine #3), so a
+    newline can never ride inside the literal text and stick unsent in the box.
+    Selector keys are bare tmux key names from the fixed map (no `-l`), so the
+    client can never inject a raw escape sequence.
     """
     keys = keys or []
     if not _UUID_RE.match(run_id) or run_id not in {r["id"] for r in cached_runs()}:
         return False
+    pane = _pane_for_run(run_id)
+    if not pane:
+        return False
 
-    def send(action: str) -> bool:
+    def send(*args: str) -> bool:
         try:
-            return _osascript(_RESPOND_SCRIPT % (run_id, action)).strip() == "ok"
+            return _tmux("send-keys", "-t", pane, *args).returncode == 0
         except (subprocess.CalledProcessError, FileNotFoundError):
             return False
 
     ok = False
     if text:
-        if send(f"write text {applescript_quote(text)} newline no"):
-            time.sleep(0.15)   # let the TUI ingest the paste before the submit
-            send("write text (ASCII character 13) newline no")
+        if send("-l", text):        # literal text, no bracketed paste
+            send("Enter")           # submit is a SEPARATE keystroke (landmine #3)
             ok = True
     for k in keys:
-        if k in _RESPOND_KEYS and send(f"write text {_RESPOND_KEYS[k]} newline no"):
+        if k in _RESPOND_KEYS and send(_RESPOND_KEYS[k]):
             ok = True
     if ok:
         invalidate_runs()   # the Run is now busy; reflect it on the next poll
@@ -720,23 +729,24 @@ def clear_input(run_id: str) -> bool:
     """Empty a live Run's input box by deleting exactly what is typed in it.
 
     Reads the current box content (a half-composed message, or a prior stuck
-    send) and sends that many backspaces plus a small margin. Deterministic —
-    it does not rely on any clear-line keybinding working — and safe: a
-    backspace at the start of the input is a no-op, so an over-count can never
-    reach the prompt or the scrollback above it.
+    send) and sends that many `send-keys BSpace` backspaces plus a small margin.
+    Deterministic — it does not rely on any clear-line keybinding working — and
+    safe: a backspace at the start of the input is a no-op, so an over-count can
+    never reach the prompt or the scrollback above it.
     """
     if not _UUID_RE.match(run_id) or run_id not in {r["id"] for r in cached_runs()}:
         return False
+    pane = _pane_for_run(run_id)
+    if not pane:
+        return False
     content = _pane_input(_pane_contents(run_id))
     n = min(len(content) + 16, MAX_RESPOND_CHARS + 32)
-    dels = " & ".join(["(ASCII character 127)"] * n)   # n DEL (backspace) bytes
     try:
-        ok = _osascript(_RESPOND_SCRIPT % (run_id, f"write text ({dels}) newline no")).strip() == "ok"
+        _tmux("send-keys", "-t", pane, *(["BSpace"] * n))   # n backspaces
     except (subprocess.CalledProcessError, FileNotFoundError):
         return False
-    if ok:
-        invalidate_runs()
-    return ok
+    invalidate_runs()
+    return True
 
 
 # --- page ---------------------------------------------------------------------
@@ -1010,21 +1020,7 @@ def _lane_of(run: dict) -> str:
 # A permission prompt is a live TUI dialog that often never reaches the
 # transcript — so for that lane the concrete blocker is read from the *rendered
 # pane* instead. This is Observe reading the screen (see CONTEXT.md); it costs
-# one AppleScript walk, so it runs only for the focus, and only when Blocked.
-_PANE_SCRIPT = """
-if application "iTerm" is running then
-  tell application "iTerm"
-    repeat with w in windows
-      repeat with t in tabs of w
-        repeat with s in sessions of t
-          if (id of s) is "%s" then return (contents of s)
-        end repeat
-      end repeat
-    end repeat
-  end tell
-end if
-return ""
-"""
+# one capture-pane read, so it runs only for the focus, and only when Blocked.
 
 # A rendered selector line: an optional cursor glyph, an optional "N." / "N)"
 # index, then the label. Claude Code marks the current option with a cursor
@@ -1037,10 +1033,22 @@ _BOX_RE = re.compile("[─-╿]")
 
 
 def _pane_contents(run_id: str) -> str:
+    """The Run's rendered pane as a single visible frame, or '' if unreadable.
+
+    Resolves the Run UUID to its tmux pane (`_pane_for_run`) and reads it with
+    `capture-pane -p`. Unlike iTerm's `contents of session`, this returns ONLY
+    the current visible frame — no scrollback — so ADR 0009's "last contiguous
+    option run" scrollback guard is now belt-and-suspenders: a single frame has
+    exactly one option run, which the guard still picks correctly. Returns ''
+    on any failure; callers depend on '' meaning "couldn't read".
+    """
     if not _UUID_RE.match(run_id):
         return ""
+    pane = _pane_for_run(run_id)
+    if not pane:
+        return ""
     try:
-        return _osascript(_PANE_SCRIPT % run_id)
+        return _tmux("capture-pane", "-p", "-t", pane).stdout
     except (subprocess.CalledProcessError, FileNotFoundError):
         return ""
 
@@ -1128,6 +1136,22 @@ def _pane_question(text: str) -> str:
     return " ".join(q)[:200]
 
 
+def _tmux_server_down() -> bool:
+    """True when the claude-launcher tmux server isn't running.
+
+    A dead detached server takes every Run with it, so list_runs returns [] —
+    indistinguishable from 'server up, zero Runs'. `has-session` exits non-zero
+    only when the server/session is absent (it returns cleanly when up), so the
+    Board can surface a distinct 'no tmux server' empty state rather than an
+    ordinary empty list (ADR 0010). Never raises: a missing tmux binary — the
+    launcher's own substrate gone — also reads as down.
+    """
+    try:
+        return _tmux("has-session", "-t", TMUX_SOCKET, check=False).returncode != 0
+    except (FileNotFoundError, OSError):
+        return True
+
+
 def _board(focus_sid: str = "") -> dict:
     now = time.time() * 1000
     items = []
@@ -1195,10 +1219,14 @@ def _board(focus_sid: str = "") -> dict:
         focus = dict(focus, lane=lane, aiTitle=_ai_title(focus["sessionId"]),
                      contextHtml=_md_to_html(text), ask=ask, options=options,
                      cursor=cursor, pendingInput=pending, pinned=pinned)
+    # serverDown distinguishes a dead tmux server (all Runs gone silently) from
+    # an ordinary empty board. The web client does not render this yet — plumbing
+    # only; the empty-state UI is a documented follow-up (ADR 0010).
     return {"focus": focus, "upnext": other, "watching": working,
             "snoozed": snoozed, "dormant": dormant,
             "counts": {"needYou": len(order), "watching": len(working),
-                       "dormant": len(dormant), "snoozed": len(snoozed)}}
+                       "dormant": len(dormant), "snoozed": len(snoozed)},
+            "serverDown": _tmux_server_down()}
 
 
 def _board_payload(focus_sid: str = "") -> tuple[bytes, str]:
@@ -1373,9 +1401,9 @@ class Handler(BaseHTTPRequestHandler):
             self._fail(400, str(e))
             return
         try:
-            run_id = launch_iterm(workdir)
+            run_id = launch_run(workdir)
         except subprocess.CalledProcessError as e:
-            self._fail(500, f"osascript failed: {e}")
+            self._fail(500, f"tmux failed: {e}")
             return
         invalidate_runs()
         self._json(200, {"ok": True, "runId": run_id,
@@ -1476,9 +1504,9 @@ class Handler(BaseHTTPRequestHandler):
 
         prompt = f"{task['command']} {seed}" if seed else task["command"]
         try:
-            run_id = launch_iterm(workdir, prompt, task_id=task["id"])
+            run_id = launch_run(workdir, prompt, task_id=task["id"])
         except subprocess.CalledProcessError as e:
-            self._fail(500, f"osascript failed: {e}")
+            self._fail(500, f"tmux failed: {e}")
             return
         invalidate_runs()
         self._json(200, {"ok": True, "runId": run_id, "message": f"launched {task['id']}"})
@@ -1513,9 +1541,9 @@ class Handler(BaseHTTPRequestHandler):
             self._fail(400, "session's dir is gone")
             return
         try:
-            run_id = launch_iterm(workdir, resume_id=session_id)
+            run_id = launch_run(workdir, resume_id=session_id)
         except subprocess.CalledProcessError as e:
-            self._fail(500, f"osascript failed: {e}")
+            self._fail(500, f"tmux failed: {e}")
             return
         invalidate_runs()
         self._json(200, {"ok": True, "runId": run_id, "message": f"resumed {session_id}"})
@@ -1532,8 +1560,8 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main() -> None:
-    if sys.platform != "darwin":
-        sys.exit("claude-launcher: macOS only (uses AppleScript + iTerm2)")
+    if not shutil.which("tmux"):
+        sys.exit("claude-launcher: tmux not found on PATH — it is the Run substrate (ADR 0010)")
     _load_state()   # restore per-session priority + snooze from the last run
     server = ThreadingHTTPServer((HOST, PORT), Handler)
     print(f"claude-launcher listening on {HOST}:{PORT}", file=sys.stderr)

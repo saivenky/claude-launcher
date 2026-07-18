@@ -1,9 +1,11 @@
 import json
 import os
 import shutil
+import socket
 import sys
 import threading
 import time
+import types
 import unittest
 import urllib.error
 import urllib.request
@@ -13,7 +15,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import server  # noqa: E402
 from http.server import ThreadingHTTPServer  # noqa: E402
 
-_RUN = "11111111-1111-1111-1111-111111111111"      # a Run id (iTerm pane)
+_RUN = "11111111-1111-1111-1111-111111111111"      # a Run id (tmux window)
 _GOOD = "AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA"     # transcript + existing cwd
 _LIVE = "BBBBBBBB-BBBB-BBBB-BBBB-BBBBBBBBBBBB"     # Session with a live Run
 _GONE = "CCCCCCCC-CCCC-CCCC-CCCC-CCCCCCCCCCCC"     # transcript, but cwd deleted
@@ -57,18 +59,6 @@ class EscaperTests(unittest.TestCase):
     def test_shell_quote_escapes_single_quote(self):
         self.assertEqual(server.shell_quote("a'b"), "'a'\\''b'")
 
-    def test_applescript_quote_escapes_backslash_and_quote(self):
-        self.assertEqual(server.applescript_quote('a"b'), '"a\\"b"')
-        self.assertEqual(server.applescript_quote("a\\b"), '"a\\\\b"')
-
-    def test_applescript_quote_escapes_whitespace(self):
-        self.assertEqual(server.applescript_quote("a\nb"), '"a\\nb"')
-        self.assertEqual(server.applescript_quote("a\tb"), '"a\\tb"')
-        self.assertEqual(server.applescript_quote("a\rb"), '"a\\rb"')
-
-    def test_applescript_quote_strips_control_chars(self):
-        self.assertEqual(server.applescript_quote("a\x07b\x1fc"), '"abc"')
-
 
 class ResolveDirTests(unittest.TestCase):
     def setUp(self):
@@ -101,8 +91,8 @@ class ResolveDirTests(unittest.TestCase):
 class HttpEndpointTests(_HttpCase):
     @classmethod
     def setUpClass(cls):
-        cls._saved_launch = server.launch_iterm
-        server.launch_iterm = lambda *a, **k: _RUN  # stub out osascript
+        cls._saved_launch = server.launch_run
+        server.launch_run = lambda *a, **k: _RUN  # stub out tmux
         cls.httpd = ThreadingHTTPServer(("127.0.0.1", 0), server.Handler)
         cls.port = cls.httpd.server_address[1]
         cls.thread = threading.Thread(target=cls.httpd.serve_forever, daemon=True)
@@ -112,7 +102,7 @@ class HttpEndpointTests(_HttpCase):
     def tearDownClass(cls):
         cls.httpd.shutdown()
         cls.thread.join(timeout=2)
-        server.launch_iterm = cls._saved_launch
+        server.launch_run = cls._saved_launch
 
     def test_cross_origin_post_blocked(self):
         status, body = self._post("/api/launch", {"dir": ""}, origin=False)
@@ -205,7 +195,8 @@ class HttpEndpointTests(_HttpCase):
 
 
 class ListRunsTests(unittest.TestCase):
-    """The pane walk joined to `ps` and Claude Code's per-pid session files."""
+    """The tmux list-panes walk joined to `ps` and Claude Code's per-pid session
+    files. Each pane carries its @cl_run_id (US-separated) as the Run id."""
 
     PANES = ("R1\x1f/dev/ttys001\x1fold work (claude)\x1f\n"
              "R2\x1f/dev/ttys002\x1flogin\x1f\n"
@@ -215,9 +206,9 @@ class ListRunsTests(unittest.TestCase):
           "  300 ttys003 zsh\n")
 
     def setUp(self):
-        self._saved = (server._osascript, server._ps_output, server._run_meta,
+        self._saved = (server._list_panes_raw, server._ps_output, server._run_meta,
                        server._last_msg)
-        server._osascript = lambda script: self.PANES
+        server._list_panes_raw = lambda: self.PANES
         server._ps_output = lambda: self.PS
         server._last_msg = lambda sid, *a, **k: ""
         # pid 100 registered with Claude Code; pid 200 has not yet (the ~0.5s
@@ -228,11 +219,20 @@ class ListRunsTests(unittest.TestCase):
         }
 
     def tearDown(self):
-        (server._osascript, server._ps_output, server._run_meta,
+        (server._list_panes_raw, server._ps_output, server._run_meta,
          server._last_msg) = self._saved
 
     def test_pane_without_claude_is_not_a_run(self):
         self.assertNotIn("R3", [r["id"] for r in server.list_runs()])
+
+    def test_pane_without_cl_run_id_is_invisible(self):
+        # A pane the Launcher didn't create has a blank @cl_run_id (e.g. the
+        # session's own initial window) and must never surface as a Run — even
+        # if `claude` happens to be running on its tty.
+        server._list_panes_raw = lambda: (
+            "\x1f/dev/ttys001\x1fsome shell\x1f\n" + self.PANES)
+        ids = [r["id"] for r in server.list_runs()]
+        self.assertEqual(ids, ["R2", "R1"])   # the blank-id row dropped entirely
 
     def test_unregistered_run_is_marked_starting(self):
         rows = {r["id"]: r for r in server.list_runs()}
@@ -436,6 +436,48 @@ class PaneParsingTests(unittest.TestCase):
         self.assertEqual(server._pane_input(_INPUT_PANE), "draft a reply but do not send")
 
 
+class PaneContentsTests(unittest.TestCase):
+    """_pane_contents resolves the Run UUID to its tmux pane and reads the
+    visible frame with `capture-pane -p` (ADR 0010, slice 3). '' is the contract
+    callers depend on for "couldn't read": a bad-shape id, or a UUID no live pane
+    carries, never reaches capture-pane."""
+
+    def setUp(self):
+        self._saved_tmux = server._tmux
+        self.calls = []
+        self.resolvable = True
+
+        def fake(*args, check=True):
+            self.calls.append(args)
+            if args[0] == "list-panes":
+                out = f"{_RUN}\x1f%5\n" if self.resolvable else ""
+                return types.SimpleNamespace(returncode=0, stdout=out, stderr="")
+            if args[0] == "capture-pane":
+                return types.SimpleNamespace(
+                    returncode=0, stdout="rendered frame\n", stderr="")
+            return types.SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        server._tmux = fake
+
+    def tearDown(self):
+        server._tmux = self._saved_tmux
+
+    def test_resolves_the_pane_and_returns_capture_pane_output(self):
+        self.assertEqual(server._pane_contents(_RUN), "rendered frame\n")
+        # the visible frame is read off the resolved pane (`-p`, no scrollback)
+        self.assertIn(("capture-pane", "-p", "-t", "%5"), self.calls)
+
+    def test_a_bogus_id_returns_empty_without_touching_tmux(self):
+        for bad in ("../etc", "short"):
+            self.assertEqual(server._pane_contents(bad), "")
+        self.assertEqual(self.calls, [])
+
+    def test_an_unresolvable_uuid_returns_empty_before_capture(self):
+        self.resolvable = False   # valid UUID shape, but no pane carries it
+        self.assertEqual(server._pane_contents(_LIVE), "")
+        self.assertEqual([c for c in self.calls if c[0] == "capture-pane"], [])
+
+
 class BlockedFocusTests(unittest.TestCase):
     """A pending AskUserQuestion never reaches the transcript, so its focus card
     is enriched entirely from the rendered pane. Regression guard for the card
@@ -444,7 +486,9 @@ class BlockedFocusTests(unittest.TestCase):
 
     def setUp(self):
         self._saved = {n: getattr(server, n) for n in
-                       ("cached_runs", "_transcript_path", "_pane_contents", "_ai_title")}
+                       ("cached_runs", "_transcript_path", "_pane_contents", "_ai_title",
+                        "_tmux_server_down")}
+        server._tmux_server_down = lambda: False         # don't shell out to real tmux
         server._transcript_path = lambda *a, **k: ""     # empty tail → nothing flushed
         server._ai_title = lambda sid: "fix the cards"
         server._pane_contents = lambda rid: _ASK_PANE
@@ -475,10 +519,11 @@ class BoardPayloadTests(unittest.TestCase):
     deep-link into the Claude app (ADR 0008)."""
 
     def setUp(self):
-        self._saved = server.cached_runs
+        self._saved = (server.cached_runs, server._tmux_server_down)
+        server._tmux_server_down = lambda: False         # don't shell out to real tmux
 
     def tearDown(self):
-        server.cached_runs = self._saved
+        server.cached_runs, server._tmux_server_down = self._saved
 
     def test_items_carry_the_bridge_for_the_deep_link(self):
         server.cached_runs = lambda: [{
@@ -505,6 +550,20 @@ class BoardPayloadTests(unittest.TestCase):
             time.time = real_time
         self.assertEqual(etag_a, etag_b)
 
+    def test_server_down_is_surfaced_and_shifts_the_etag(self):
+        # A dead tmux server is a distinct empty state, not an ordinary empty
+        # board — the payload carries the signal and its ETag reflects the flip
+        # (ADR 0010). The web client rendering it is a documented follow-up.
+        server.cached_runs = lambda: []
+        server._tmux_server_down = lambda: False
+        self.assertFalse(server._board()["serverDown"])
+        body_up, etag_up = server._board_payload()
+        server._tmux_server_down = lambda: True
+        self.assertTrue(server._board()["serverDown"])
+        body_down, etag_down = server._board_payload()
+        self.assertNotEqual(etag_up, etag_down)
+        self.assertNotEqual(body_up, body_down)
+
 
 class IdConfusionTests(_HttpCase):
     """A Run id and a Session id are both UUIDs. Neither endpoint may take the
@@ -512,11 +571,11 @@ class IdConfusionTests(_HttpCase):
 
     @classmethod
     def setUpClass(cls):
-        cls._saved = {"launch": server.launch_iterm, "list": server.list_runs,
+        cls._saved = {"launch": server.launch_run, "list": server.list_runs,
                       "transcript": server._transcript_path,
                       "cwd": server._session_cwd}
         cls.calls = []
-        server.launch_iterm = lambda *a, **k: (cls.calls.append((a, k)), _RUN)[1]
+        server.launch_run = lambda *a, **k: (cls.calls.append((a, k)), _RUN)[1]
         server.list_runs = lambda: [{"id": _RUN, "sessionId": _LIVE}]
         server._transcript_path = lambda sid, *a, **k: (
             "/x/" + sid + ".jsonl" if sid in (_GOOD, _LIVE) else "")
@@ -530,7 +589,7 @@ class IdConfusionTests(_HttpCase):
     def tearDownClass(cls):
         cls.httpd.shutdown()
         cls.thread.join(timeout=2)
-        server.launch_iterm = cls._saved["launch"]
+        server.launch_run = cls._saved["launch"]
         server.list_runs = cls._saved["list"]
         server._transcript_path = cls._saved["transcript"]
         server._session_cwd = cls._saved["cwd"]
@@ -578,18 +637,28 @@ class IdConfusionTests(_HttpCase):
 
 
 class RunParseTests(unittest.TestCase):
-    def test_parse_iterm_panes(self):
-        # four fields: run id, tty, name, cl_task tag (blank when untagged)
+    def test_parse_tmux_panes(self):
+        # four fields: @cl_run_id, pane_tty, pane_title, @cl_task (blank untagged)
         out = ("ID1\x1f/dev/ttys001\x1f✳ Fix bug (claude)\x1fcapture\n"
                "ID2\x1f/dev/ttys002\x1fDefault\x1f\n")
         self.assertEqual(
-            server._parse_iterm_panes(out),
+            server._parse_tmux_panes(out),
             [("ID1", "ttys001", "✳ Fix bug (claude)", "capture"),
              ("ID2", "ttys002", "Default", "")],
         )
 
-    def test_parse_iterm_panes_skips_malformed(self):
-        self.assertEqual(server._parse_iterm_panes("garbage-no-separators\n\n"), [])
+    def test_parse_tmux_panes_skips_malformed(self):
+        self.assertEqual(server._parse_tmux_panes("garbage-no-separators\n\n"), [])
+
+    def test_parse_tmux_panes_drops_rows_without_a_run_id(self):
+        # A pane not created by the Launcher renders @cl_run_id empty; it is not
+        # a Run and must be dropped, keeping list_runs to Runs it owns.
+        out = ("\x1f/dev/ttys001\x1fsome shell\x1f\n"
+               "ID2\x1f/dev/ttys002\x1fclaude\x1fcap\n")
+        self.assertEqual(
+            server._parse_tmux_panes(out),
+            [("ID2", "ttys002", "claude", "cap")],
+        )
 
     def test_parse_claude_ttys_filters_to_claude(self):
         out = (
@@ -704,6 +773,15 @@ class RunParseTests(unittest.TestCase):
             "Improve /grill-me command functionality")
         self.assertEqual(server._clean_title("Plain title"), "Plain title")
 
+    def test_clean_title_treats_the_tmux_hostname_default_as_no_title(self):
+        # tmux titles a fresh pane with the host's name until `claude` overrides
+        # it; that default must read as no title so list_runs backstops with
+        # _first_user_msg instead of showing the hostname (ADR 0010).
+        for host in (socket.gethostname(), socket.gethostname().split(".", 1)[0]):
+            self.assertEqual(server._clean_title(host), "")
+        # A genuine claude title still survives the hostname check.
+        self.assertEqual(server._clean_title("✳ Fix the login bug"), "Fix the login bug")
+
 
 class CachedRunsTests(unittest.TestCase):
     def setUp(self):
@@ -745,6 +823,175 @@ class CloseRunTests(unittest.TestCase):
             server.list_runs = saved
             server.invalidate_runs()
 
+    def test_resolves_the_uuid_to_its_window_and_kills_it(self):
+        saved_list, saved_tmux = server.list_runs, server._tmux
+        server.list_runs = lambda: [{"id": _RUN, "sessionId": _GOOD}]
+        server.invalidate_runs()
+        self.calls = []
+
+        def fake(*args, check=True):
+            self.calls.append(args)
+            if args[0] == "list-panes":
+                return types.SimpleNamespace(
+                    returncode=0, stdout=f"{_RUN}\x1f%9\n", stderr="")
+            return types.SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        server._tmux = fake
+        try:
+            self.assertTrue(server.close_run(_RUN))
+            # a pane target resolves to its window for kill-window
+            self.assertIn(("kill-window", "-t", "%9"), self.calls)
+        finally:
+            server.list_runs, server._tmux = saved_list, saved_tmux
+            server.invalidate_runs()
+
+    def test_a_live_run_with_no_resolvable_pane_does_not_kill(self):
+        # In the live set but the UUID no longer resolves to a pane (a stale
+        # cache after the server restarted): close must not fire a kill-window.
+        saved_list, saved_tmux = server.list_runs, server._tmux
+        server.list_runs = lambda: [{"id": _RUN, "sessionId": _GOOD}]
+        server.invalidate_runs()
+        self.calls = []
+
+        def fake(*args, check=True):
+            self.calls.append(args)
+            return types.SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        server._tmux = fake
+        try:
+            self.assertFalse(server.close_run(_RUN))
+            self.assertEqual([c for c in self.calls if c[0] == "kill-window"], [])
+        finally:
+            server.list_runs, server._tmux = saved_list, saved_tmux
+            server.invalidate_runs()
+
+
+class RespondRunTests(unittest.TestCase):
+    """respond_run drives a live Run's pane over `tmux send-keys` (ADR 0010,
+    slice 2). Text is typed literally (`-l`) then submitted by a SEPARATE Enter;
+    selector keys map to fixed tmux key names sent bare; a stale/bogus id
+    no-ops, exactly as close_run does."""
+
+    def setUp(self):
+        self._saved_list, self._saved_tmux = server.list_runs, server._tmux
+        server.list_runs = lambda: [{"id": _RUN, "sessionId": _GOOD}]
+        server.invalidate_runs()
+        self.calls = []
+        self.resolvable = True
+
+        def fake(*args, check=True):
+            self.calls.append(args)
+            if args[0] == "list-panes":
+                out = f"{_RUN}\x1f%7\n" if self.resolvable else ""
+                return types.SimpleNamespace(returncode=0, stdout=out, stderr="")
+            return types.SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        server._tmux = fake
+
+    def tearDown(self):
+        server.list_runs, server._tmux = self._saved_list, self._saved_tmux
+        server.invalidate_runs()
+
+    def _sends(self):
+        return [c for c in self.calls if c and c[0] == "send-keys"]
+
+    def test_text_is_typed_literally_then_submitted_by_a_separate_enter(self):
+        self.assertTrue(server.respond_run(_RUN, "hello world"))
+        sends = self._sends()
+        typed = ("send-keys", "-t", "%7", "-l", "hello world")
+        enter = ("send-keys", "-t", "%7", "Enter")
+        self.assertIn(typed, sends)
+        self.assertIn(enter, sends)
+        # landmine 3: the literal text is typed BEFORE its distinct Enter submit
+        self.assertLess(sends.index(typed), sends.index(enter))
+
+    def test_the_enter_submit_carries_no_dash_l(self):
+        server.respond_run(_RUN, "hi")
+        enter = next(c for c in self._sends() if c[-1] == "Enter")
+        self.assertNotIn("-l", enter)   # a bare key name, never literal text
+
+    def test_each_key_maps_to_its_tmux_name_sent_bare(self):
+        vocab = ["enter", "esc", "up", "down", "right", "left", "tab", "space"]
+        self.assertTrue(server.respond_run(_RUN, "", vocab))
+        sends = self._sends()
+        for name in ("Enter", "Escape", "Up", "Down", "Right", "Left", "Tab", "Space"):
+            self.assertIn(("send-keys", "-t", "%7", name), sends)
+        # keys are bare names — never `-l` (that would type the literal word)
+        self.assertTrue(all("-l" not in c for c in sends))
+
+    def test_an_unknown_key_is_ignored_and_nothing_is_sent(self):
+        self.assertFalse(server.respond_run(_RUN, "", ["boom"]))
+        self.assertEqual(self._sends(), [])
+
+    def test_a_bogus_id_no_ops_without_touching_tmux(self):
+        for bad in ("../etc", "short"):
+            self.assertFalse(server.respond_run(bad, "hi"))
+        self.assertEqual(self.calls, [])
+
+    def test_a_stale_id_not_in_the_live_set_no_ops(self):
+        # _LIVE is a valid UUID but not the live Run id, so it never resolves.
+        self.assertFalse(server.respond_run(_LIVE, "hi"))
+        self.assertEqual(self.calls, [])
+
+    def test_a_live_id_with_no_resolvable_pane_no_ops(self):
+        self.resolvable = False   # in the live set, but list-panes has no match
+        self.assertFalse(server.respond_run(_RUN, "hi"))
+        self.assertEqual(self._sends(), [])
+
+
+class ClearInputTests(unittest.TestCase):
+    """clear_input empties a live Run's box with N `send-keys BSpace`
+    backspaces (ADR 0010, slice 2). N is the real box length read from the pane
+    (slice 3) plus a small over-count margin; an empty box still deletes only the
+    safe margin, which a backspace at the input start no-ops away."""
+
+    def setUp(self):
+        self._saved = {n: getattr(server, n) for n in
+                       ("list_runs", "_tmux", "_pane_contents", "_pane_input")}
+        server.list_runs = lambda: [{"id": _RUN, "sessionId": _GOOD}]
+        server.invalidate_runs()
+        self.calls = []
+        self.resolvable = True
+
+        def fake(*args, check=True):
+            self.calls.append(args)
+            if args[0] == "list-panes":
+                out = f"{_RUN}\x1f%3\n" if self.resolvable else ""
+                return types.SimpleNamespace(returncode=0, stdout=out, stderr="")
+            return types.SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        server._tmux = fake
+
+    def tearDown(self):
+        for n, v in self._saved.items():
+            setattr(server, n, v)
+        server.invalidate_runs()
+
+    def test_an_empty_box_read_still_sends_the_margin_of_backspaces(self):
+        server._pane_contents = lambda rid: ""   # nothing typed in the box
+        self.assertTrue(server.clear_input(_RUN))
+        send = next(c for c in self.calls if c[0] == "send-keys")
+        self.assertEqual(send[:3], ("send-keys", "-t", "%3"))
+        self.assertEqual(list(send[3:]), ["BSpace"] * 16)   # 0 content + 16 margin
+
+    def test_backspace_count_is_the_box_length_plus_the_margin(self):
+        server._pane_contents = lambda rid: "unused"
+        server._pane_input = lambda text: "draft"   # 5 chars
+        server.clear_input(_RUN)
+        send = next(c for c in self.calls if c[0] == "send-keys")
+        self.assertEqual(list(send[3:]), ["BSpace"] * (5 + 16))
+        self.assertTrue(all(k == "BSpace" for k in send[3:]))
+
+    def test_a_bogus_id_no_ops_without_touching_tmux(self):
+        self.assertFalse(server.clear_input("short"))
+        self.assertEqual(self.calls, [])
+
+    def test_a_live_id_with_no_resolvable_pane_no_ops(self):
+        self.resolvable = False
+        server._pane_contents = lambda rid: ""
+        self.assertFalse(server.clear_input(_RUN))
+        self.assertEqual([c for c in self.calls if c[0] == "send-keys"], [])
+
 
 class LaunchCmdTests(unittest.TestCase):
     def setUp(self):
@@ -779,28 +1026,86 @@ class LaunchCmdTests(unittest.TestCase):
         self.assertEqual(server._resume_cmd("/w", "x"), "cd '/w' && cl --resume 'x'")
 
 
-class LaunchItermTests(unittest.TestCase):
+class LaunchRunTests(unittest.TestCase):
+    """launch_run mints the Run UUID itself, bootstraps the detached tmux
+    server/session, opens a bare window, and *types* the launch line into it
+    (never passes it as a new-window argument). Guards the three ADR 0010
+    landmines: per-window width, bare window, separate Enter."""
+
     def setUp(self):
-        self._saved = server._osascript
+        self._saved = server._tmux
+        self.calls = []
+        self.session_exists = True   # has-session succeeds -> bootstrap no-ops
+
+        def fake(*args, check=True):
+            self.calls.append(args)
+            if args[0] == "has-session":
+                return types.SimpleNamespace(
+                    returncode=0 if self.session_exists else 1, stdout="", stderr="")
+            if args[0] == "new-window":
+                return types.SimpleNamespace(returncode=0, stdout="%42\n", stderr="")
+            return types.SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        server._tmux = fake
 
     def tearDown(self):
-        server._osascript = self._saved
+        server._tmux = self._saved
 
-    def test_returns_run_id_from_applescript(self):
-        server._osascript = lambda script: _RUN + "\n"
-        self.assertEqual(server.launch_iterm("/w"), _RUN)
+    def _of(self, verb):
+        return [c for c in self.calls if c and c[0] == verb]
 
-    def test_non_uuid_output_yields_no_run_id(self):
-        # never hand the client a correlation key it cannot match against a row
-        server._osascript = lambda script: "some iTerm chatter\n"
-        self.assertEqual(server.launch_iterm("/w"), "")
+    def test_launch_returns_a_generated_uuid(self):
+        rid = server.launch_run("/w")
+        self.assertTrue(server._UUID_RE.match(rid))
+
+    def test_the_returned_uuid_is_the_one_stamped_on_the_pane(self):
+        rid = server.launch_run("/w")
+        self.assertIn(("set", "-p", "-t", "%42", "@cl_run_id", rid), self.calls)
+
+    def test_window_is_bare_and_the_launch_line_is_typed_then_submitted(self):
+        server.launch_run("/w")
+        # landmine 2: the window is created bare — the launch line is never a
+        # new-window argument (it would run via /bin/sh -c and `cl` not be found).
+        self.assertEqual(
+            self._of("new-window"),
+            [("new-window", "-d", "-t", server.TMUX_SOCKET, "-P", "-F", "#{pane_id}")])
+        sends = self._of("send-keys")
+        typed = next(c for c in sends if "-l" in c)
+        enter = next(c for c in sends if c[-1] == "Enter")
+        self.assertEqual(typed[:4], ("send-keys", "-t", "%42", "-l"))
+        self.assertTrue(typed[4].startswith("cd ") and " cl" in typed[4])  # the launch line
+        # landmine 3: submit is a SEPARATE Enter keystroke, after the literal text.
+        self.assertEqual(enter, ("send-keys", "-t", "%42", "Enter"))
+        self.assertLess(self.calls.index(typed), self.calls.index(enter))
+
+    def test_width_is_pinned_per_window_never_globally(self):
+        # landmine 1: `window-size manual` is set per-window only. Setting it
+        # globally crashes the tmux server on the next new-window (3.6a).
+        server.launch_run("/w")
+        self.assertIn(("set", "-w", "-t", "%42", "window-size", "manual"), self.calls)
+        self.assertNotIn(("set", "-g", "window-size", "manual"), self.calls)
 
     def test_task_id_is_stamped_on_the_pane(self):
-        seen = []
-        server._osascript = lambda script: (seen.append(script), _RUN)[1]
-        server.launch_iterm("/w", "/capture", task_id="cap")
-        self.assertIn('set variable named "user.cl_task" to "cap"', seen[0])
-        self.assertIn("return id", seen[0])
+        server.launch_run("/w", "/capture", task_id="cap")
+        self.assertIn(("set", "-p", "-t", "%42", "@cl_task", "cap"), self.calls)
+
+    def test_no_task_id_leaves_the_pane_untagged(self):
+        server.launch_run("/w")
+        self.assertEqual([c for c in self.calls if "@cl_task" in c], [])
+
+    def test_bootstrap_creates_the_session_when_absent(self):
+        self.session_exists = False
+        server.launch_run("/w")
+        self.assertEqual(len(self._of("new-session")), 1)
+        self.assertIn("-d", self._of("new-session")[0])
+        # geometry: global `window-size latest` (never `manual`) + default-size.
+        self.assertIn(("set", "-g", "window-size", "latest"), self.calls)
+        self.assertIn(("set", "-g", "default-size", "120x40"), self.calls)
+
+    def test_bootstrap_noops_when_the_session_already_exists(self):
+        self.session_exists = True
+        server.launch_run("/w")
+        self.assertEqual(self._of("new-session"), [])
 
 
 class TasksDataTests(unittest.TestCase):
@@ -907,10 +1212,10 @@ class RefreshTasksTests(unittest.TestCase):
 class NamedLaunchHttpTests(_HttpCase):
     @classmethod
     def setUpClass(cls):
-        cls._saved_launch = server.launch_iterm
+        cls._saved_launch = server.launch_run
         cls._saved_tasks = server.TASKS_BY_ID
         cls.calls = []
-        server.launch_iterm = lambda *a, **k: (cls.calls.append((a, k)), _RUN)[1]
+        server.launch_run = lambda *a, **k: (cls.calls.append((a, k)), _RUN)[1]
         here = os.path.dirname(os.path.abspath(__file__))  # a dir that exists
         server.TASKS_BY_ID = {
             "cap": {"id": "cap", "label": "cap", "workdir": here,
@@ -929,7 +1234,7 @@ class NamedLaunchHttpTests(_HttpCase):
     def tearDownClass(cls):
         cls.httpd.shutdown()
         cls.thread.join(timeout=2)
-        server.launch_iterm = cls._saved_launch
+        server.launch_run = cls._saved_launch
         server.TASKS_BY_ID = cls._saved_tasks
 
     def setUp(self):
@@ -1025,8 +1330,8 @@ class DispatchTests(_HttpCase):
     def setUpClass(cls):
         cls._saved_tasks = dict(server.TASKS_BY_ID)
         cls._saved_dispatch = server.dispatch
-        cls._saved_launch = server.launch_iterm
-        server.launch_iterm = lambda *a, **k: _RUN
+        cls._saved_launch = server.launch_run
+        server.launch_run = lambda *a, **k: _RUN
         cls.httpd = ThreadingHTTPServer(("127.0.0.1", 0), server.Handler)
         cls.port = cls.httpd.server_address[1]
         cls.thread = threading.Thread(target=cls.httpd.serve_forever, daemon=True)
@@ -1038,7 +1343,7 @@ class DispatchTests(_HttpCase):
         cls.thread.join(timeout=2)
         server.TASKS_BY_ID = cls._saved_tasks
         server.dispatch = cls._saved_dispatch
-        server.launch_iterm = cls._saved_launch
+        server.launch_run = cls._saved_launch
 
     def setUp(self):
         self.calls = []

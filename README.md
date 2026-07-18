@@ -1,7 +1,7 @@
 # claude-launcher
 
 Tiny HTTP server to spawn and manage Claude Code sessions on a Mac from
-a phone over Tailscale. Opens a new iTerm2 tab running `claude` with
+a phone over Tailscale. Opens a detached tmux window running `claude` with
 Remote Control enabled — so you can drive the session from the Claude
 app — and lists what's running, each with a tap-to-close button.
 
@@ -15,20 +15,22 @@ Two words, used precisely throughout (see [CONTEXT.md](CONTEXT.md)):
 
 - a **session** is the durable thread Claude Code identifies by
   `sessionId` — the one the Claude app shows you, the one you resume.
-- a **run** is one `claude` process executing a session, concretely an
-  iTerm pane. The launcher only ever starts and closes runs. **Closing a
+- a **run** is one `claude` process executing a session, concretely a
+  tmux window. The launcher only ever starts and closes runs. **Closing a
   run never destroys a session.**
 
 ## Requirements
 
-- macOS with iTerm2
+- `tmux` on `PATH` (the Run substrate; see
+  [ADR 0010](docs/adr/0010-tmux-as-the-run-substrate.md)) — macOS or Linux
 - Python 3.10+
 - Claude Code CLI (`claude`) on `PATH`
 - For Remote Control: Claude Code v2.1.51+, a Pro/Max/Team/Enterprise
   plan, and full-scope login (`claude auth login`, not an API key)
 
-First `/launch` will prompt macOS to grant automation access to iTerm2.
-Approve it.
+Runs live in a single detached `tmux -L claude-launcher` server, so there is
+no GUI app to focus and nothing to approve — a Run never steals the Mac's
+foreground.
 
 ## Run
 
@@ -175,8 +177,9 @@ What the server does enforce:
   `CLAUDE_LAUNCHER_PROJECTS_ROOT`). Named-task workdirs come from your own
   `tasks.py` (trusted config) and are intentionally *not* confined to
   `PROJECTS_ROOT`; the generic `dir` field still is.
-- Shell and AppleScript injection blocked (quoting + control-char
-  stripping).
+- Shell injection blocked: the launch line is single-quoted, and Respond
+  types text literally with `tmux send-keys -l` while selector keys come from
+  a fixed key map — a client can never inject a raw escape sequence.
 - CSRF blocked structurally: every `/api/*` action is POST-only and must
   send `Content-Type: application/json`, which is not a CORS "simple
   request" — a cross-origin `fetch` has to preflight, and the preflight
@@ -191,7 +194,8 @@ What the server does enforce:
   touches the shell) that already has a transcript on disk, and refuses ids
   whose run is currently live.
 - `/api/close` only acts on a run id that matches a currently-live `claude`
-  run, and only closes iTerm panes — never arbitrary processes or tabs.
+  run, and only closes tmux windows the launcher created — never arbitrary
+  processes or windows.
 - Log injection blocked (CRLF + control chars scrubbed).
 
 If you need access control on top, add a shared-secret token to the JSON
