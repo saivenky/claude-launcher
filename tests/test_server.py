@@ -88,6 +88,86 @@ class ResolveDirTests(unittest.TestCase):
             server.resolve_dir("does-not-exist-xyz")
 
 
+class RecentDirsTests(unittest.TestCase):
+    """The launch input's quick-pick list, derived from the cwd recorded in one
+    (newest) transcript per ~/.claude/projects dir."""
+
+    def setUp(self):
+        self.tmp = os.path.realpath(os.path.join(os.path.dirname(__file__), "_dirfix"))
+        self.root = os.path.join(self.tmp, "root")
+        self.state = os.path.join(self.tmp, "state")
+        for sub in ("alpha", "beta", "nested/deep"):
+            os.makedirs(os.path.join(self.root, sub), exist_ok=True)
+        self._saved_root = server.PROJECTS_ROOT
+        server.PROJECTS_ROOT = self.root
+
+    def tearDown(self):
+        server.PROJECTS_ROOT = self._saved_root
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _proj(self, slug, cwd, mtime):
+        """A project dir holding one transcript whose first line records `cwd`,
+        stamped with `mtime` so ordering is deterministic."""
+        d = os.path.join(self.state, slug)
+        os.makedirs(d, exist_ok=True)
+        p = os.path.join(d, slug + ".jsonl")
+        with open(p, "w") as fh:
+            fh.write(json.dumps({"type": "user", "cwd": cwd}) + "\n")
+        os.utime(p, (mtime, mtime))
+        os.utime(d, (mtime, mtime))
+
+    def test_newest_first_filtered_and_deduped(self):
+        self._proj("d-beta", os.path.join(self.root, "beta"), 2000)
+        self._proj("d-nested", os.path.join(self.root, "nested/deep"), 1000)
+        self._proj("d-alpha", os.path.join(self.root, "alpha"), 3000)
+        self._proj("d-alpha2", os.path.join(self.root, "alpha"), 5000)  # dup cwd, newest
+        self._proj("d-outside", "/etc", 4000)                           # outside root
+        self._proj("d-gone", os.path.join(self.root, "ghost"), 4500)    # cwd missing
+        os.makedirs(os.path.join(self.state, "d-empty"), exist_ok=True)  # no transcript
+
+        dirs = server._recent_dirs(base=self.state)
+        # alpha floats to top on its newest occurrence; dup collapses; /etc and
+        # the deleted-project cwd are dropped; nested paths kept verbatim.
+        self.assertEqual(dirs, ["alpha", "beta", "nested/deep"])
+
+    def test_missing_state_dir_is_empty(self):
+        self.assertEqual(server._recent_dirs(base=os.path.join(self.tmp, "nope")), [])
+
+    def test_capped_at_max(self):
+        for i in range(server._RECENT_DIRS_MAX + 5):
+            sub = f"p{i:02d}"
+            os.makedirs(os.path.join(self.root, sub), exist_ok=True)
+            self._proj(f"d-{sub}", os.path.join(self.root, sub), 1000 + i)
+        dirs = server._recent_dirs(base=self.state)
+        self.assertEqual(len(dirs), server._RECENT_DIRS_MAX)
+
+
+class RecentDirsApiTests(_HttpCase):
+    """GET /api/dirs wraps the recent-dirs list as data (ADR 0008), served
+    fresh so the quick-pick reflects work done since page load."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls._saved = server._recent_dirs
+        server._recent_dirs = lambda *a, **k: ["alpha", "nested/deep"]
+        cls.httpd = ThreadingHTTPServer(("127.0.0.1", 0), server.Handler)
+        cls.port = cls.httpd.server_address[1]
+        cls.thread = threading.Thread(target=cls.httpd.serve_forever, daemon=True)
+        cls.thread.start()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.httpd.shutdown()
+        cls.thread.join(timeout=2)
+        server._recent_dirs = cls._saved
+
+    def test_dirs_payload_shape(self):
+        status, body, headers = self._raw("GET", "/api/dirs")
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(body), {"dirs": ["alpha", "nested/deep"]})
+        self.assertEqual(headers.get("Cache-Control"), "no-store")
+
+
 class HttpEndpointTests(_HttpCase):
     @classmethod
     def setUpClass(cls):

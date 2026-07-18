@@ -540,6 +540,74 @@ def _session_cwd(session_id: str, base: str = _PROJECTS_STATE) -> str:
     return os.path.basename(os.path.dirname(path)).replace("-", "/")
 
 
+# --- Recent dirs: the launch input's quick-pick list -----------------------
+# The compose bar's dir input takes a subdir under PROJECTS_ROOT; offer the
+# folders you have actually run Claude in as a datalist. One
+# `~/.claude/projects/<slug>` dir == one cwd, so we read a single (newest)
+# transcript per project dir for its authoritative cwd — far cheaper than
+# walking every session file, and the folder is already the dedup unit. Slug
+# collisions (two real paths munging to the same name) are rare and still
+# yield a real cwd, so they are harmless.
+_RECENT_DIRS_MAX = 12        # dropdown length that fits a phone
+_RECENT_DIRS_SCAN = 200      # project dirs inspected — bounds a huge history
+
+
+def _cwd_from_transcript(path: str) -> str:
+    """The authoritative ``cwd`` recorded in a transcript, or '' if none."""
+    try:
+        with open(path) as fh:
+            for line in fh:
+                try:
+                    o = json.loads(line)
+                except ValueError:
+                    continue
+                cwd = o.get("cwd")
+                if cwd:
+                    return cwd
+    except OSError:
+        return ""
+    return ""
+
+
+def _recent_dirs(base: str = _PROJECTS_STATE) -> list[str]:
+    """Recently-used working dirs under PROJECTS_ROOT, newest-first, as the
+    root-relative subdir strings the launch input expects."""
+    projects_real = os.path.realpath(PROJECTS_ROOT)
+    prefix = projects_real + os.sep
+    try:
+        entries = [e for e in os.scandir(base) if e.is_dir()]
+    except OSError:
+        return []
+    # Cheap first pass: a project dir's own mtime bumps when a session file is
+    # added, so it picks which dirs are worth opening; the ceiling caps cost on
+    # a huge history. Final order is by newest-transcript mtime, computed below.
+    entries.sort(key=lambda e: e.stat().st_mtime, reverse=True)
+
+    found: list[tuple[float, str]] = []
+    seen: set[str] = set()
+    for e in entries[:_RECENT_DIRS_SCAN]:
+        transcripts = glob.glob(os.path.join(e.path, "*.jsonl"))
+        if not transcripts:
+            continue
+        newest = max(transcripts, key=os.path.getmtime)
+        cwd = _cwd_from_transcript(newest)
+        if not cwd:
+            continue
+        real = os.path.realpath(cwd)
+        # only genuine subdirs of PROJECTS_ROOT that still exist on disk (a
+        # deleted project leaves a stale transcript behind)
+        if real == projects_real or not real.startswith(prefix) \
+                or not os.path.isdir(real):
+            continue
+        rel = real[len(prefix):]
+        if rel in seen:
+            continue
+        seen.add(rel)
+        found.append((os.path.getmtime(newest), rel))
+    found.sort(key=lambda t: t[0], reverse=True)
+    return [rel for _, rel in found[:_RECENT_DIRS_MAX]]
+
+
 # tmux titles a fresh pane with the host's own name (e.g. "Mac-mini.local", or
 # its short form "Mac-mini") until `claude` overrides it via a title escape
 # sequence. That default is not a Run title, so it is treated as no title —
@@ -1373,6 +1441,11 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(304, b"", "application/json; charset=utf-8", {"ETag": etag})
                 return
             self._send(200, body, "application/json; charset=utf-8", {"ETag": etag})
+            return
+        if path == "/api/dirs":
+            # Recent dirs change as you work, so serve fresh (no-store) at point
+            # of use — the client fetches this on focusing the launch input.
+            self._json(200, {"dirs": _recent_dirs()})
             return
         if path in _API_POSTS:
             self.send_response(405)

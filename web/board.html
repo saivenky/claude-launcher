@@ -139,7 +139,8 @@ a.ghost{text-decoration:none;display:inline-block}
   <div class=dockbar>
     <button class=dplus id=dplus aria-label="more intake" aria-expanded=false>＋</button>
     <span class=dprompt id=dirroot>~/projects/</span>
-    <input class=dinp id=dir placeholder=subdir autocomplete=off aria-label="project subdir under the projects root">
+    <input class=dinp id=dir placeholder=subdir autocomplete=off list=dirlist aria-label="project subdir under the projects root">
+    <datalist id=dirlist></datalist>
     <button class=dgo id=launch>launch</button>
   </div>
 </div>

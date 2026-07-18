@@ -26,6 +26,7 @@ const summary = document.getElementById("summary");
 const toastEl = document.getElementById("toast");
 const pendingEl = document.getElementById("pending");
 const dirEl = document.getElementById("dir");
+const dirlistEl = document.getElementById("dirlist");
 const sidEl = document.getElementById("sid");
 const dirRootEl = document.getElementById("dirroot");
 const launchEl = document.getElementById("launch");
@@ -247,6 +248,19 @@ function reconcile(data) {
 function setDock(open) {
   dockexpEl.hidden = !open;
   dplusEl.setAttribute("aria-expanded", open ? "true" : "false");
+}
+
+// The launch input's quick-pick: the folders you have recently run Claude in,
+// as subdir strings under the projects root (server-derived; ADR 0006). Recent
+// dirs change as you work, so fetch fresh on focus — point of use, not on load.
+async function loadDirs() {
+  let data;
+  try { data = await (await fetch("api/dirs")).json(); }
+  catch (e) { return; }
+  dirlistEl.textContent = "";
+  for (const d of data.dirs || []) {
+    const o = el("option"); o.value = d; dirlistEl.append(o);
+  }
 }
 
 async function launchDir() {
@@ -608,6 +622,7 @@ dplusEl.addEventListener("click", () => setDock(dockexpEl.hidden));
 launchEl.addEventListener("click", launchDir);
 resumeEl.addEventListener("click", resumeSession);
 dirEl.addEventListener("keydown", (e) => { if (e.key === "Enter") launchDir(); });
+dirEl.addEventListener("focus", loadDirs);
 sidEl.addEventListener("keydown", (e) => { if (e.key === "Enter") resumeSession(); });
 
 document.addEventListener("visibilitychange", () => {
