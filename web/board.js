@@ -173,6 +173,22 @@ function deepLink(bridge) {
     ? "https://claude.ai/code/" + bridge : "";
 }
 
+// Copy the server-built `tmux … attach` line (ADR 0011) so you can drive a live
+// Run by hand in a local terminal — the ❯ local twin of ↗. navigator.clipboard
+// needs a secure context: fine at localhost (the Mac-side path this is built
+// for), unavailable over the Tailscale-HTTP phone path — so degrade to a
+// prompt() you hand-copy there rather than fail silently.
+async function copyAttach(cmd) {
+  try {
+    if (navigator.clipboard && window.isSecureContext) {
+      await navigator.clipboard.writeText(cmd);
+      toast("copied — paste in a terminal");
+      return;
+    }
+  } catch (_) { /* clipboard blocked — fall through to the manual path */ }
+  window.prompt("copy the tmux attach command:", cmd);
+}
+
 async function closeRun(item) {
   if (!item.runId) { toast("nothing to close"); return; }
   // A mis-tap on a dense list would end a Run; confirm first. Closing ends the
@@ -193,6 +209,14 @@ function rowActions(item) {
     a.title = "open in the Claude app";
     a.addEventListener("click", (e) => e.stopPropagation());
     wrap.append(a);
+  }
+  // ❯ — the local twin of ↗: copy the tmux attach line for a hands-on terminal.
+  if (item.attach) {
+    const t = el("button", "iconbtn", "❯");
+    t.title = "copy tmux attach command";
+    t.setAttribute("aria-label", "copy tmux attach command");
+    t.addEventListener("click", (e) => { e.stopPropagation(); copyAttach(item.attach); });
+    wrap.append(t);
   }
   const x = el("button", "iconbtn x", "×");
   x.title = "close run";
@@ -453,12 +477,18 @@ function focusCard(f) {
   // for a button you may never press.
   skip.addEventListener("click", () => nextUp ? setPinned(nextUp) : toast("nothing up next"));
   actions.append(snooze, skip);
-  // Per-run deep-link + close, mirroring the queued rows.
+  // Per-run deep-link + attach + close, mirroring the queued rows.
   const link = deepLink(f.bridge);
   if (link) {
     const open = el("a", "ghost", "open ↗");
     open.href = link; open.target = "_blank"; open.rel = "noopener";
     actions.append(open);
+  }
+  if (f.attach) {
+    const term = el("button", "ghost", "attach ❯");
+    term.title = "copy tmux attach command";
+    term.addEventListener("click", () => copyAttach(f.attach));
+    actions.append(term);
   }
   const close = el("button", "ghost", "× close");
   close.addEventListener("click", () => closeRun(f));

@@ -65,13 +65,30 @@ backstop — so it, unlike the read-only verbs, is gated by a shared secret.
 _Avoid_: drive (the channel-agnostic *capability*, not this one channel);
 type / answer / approve (each names only one shape); remote control
 
+**Attach**:
+Open a *live* **Run**'s own tmux window in a local terminal to drive it by
+hand — the copy-to-clipboard `tmux … new-session -t claude-launcher \;
+select-window` line the **Board** hands you per Run (the `❯` local twin of the
+`↗` **Remote Control bridge** handoff). A *handoff to a local terminal*, not a
+new **Run**: it opens an ephemeral grouped-session *view* onto the Run's
+existing window, so the Run keeps its one live process and its UUID, and the
+view self-destroys the moment you detach. The connection is a **local** tmux
+client on the Mac — the Board only *serves the command string* over the
+**Launcher transport**; the attach itself traverses no transport. Distinct
+from **Resume** (a *new* Run on a *dead* **Session** — refused while this Run
+is live) and from **Respond** (input over the transport, no terminal).
+Requires a live Run; a closed one has no window to attach.
+_Avoid_: resume (a new Run, not this), open / reopen (overloaded), tmux
+session (the view is a throwaway grouped session, never a **Run**)
+
 **Board**:
 The single screen — the Launcher's only page — that aggregates every live
 **Run**, holds one at a time as the **Focus** while the rest queue by
 urgency (**Blocked** first, with its concrete blocker), lets you **Respond**
 to the Focus inline, and carries the full **intake** and lifecycle
 surface: launch, **resume**, close, the one-tap **Task** / **Dispatch**
-buttons, and the deep-link handoff to the **Remote Control bridge**. It
+buttons, and the two per-Run handoffs — the `↗` deep-link to the **Remote
+Control bridge** and the `❯` **Attach** line for a local terminal. It
 supersedes the legacy inline launcher page (once served at `/` alongside
 it): the Board *is* the launcher page now, grown from a run list into the
 whole management surface. Its UI is served from disk and hot-reloads (ship
@@ -163,6 +180,14 @@ _Avoid_: access, availability
   flows over the **Remote Control bridge** — different channels
 - A **Launcher** **observes** Runs; it never drives them. Observing rides
   the **Launcher transport**; driving rides the bridge
+- Three ways lead onto a *live* **Run**: **Respond** (input over the
+  **Launcher transport**), the **Remote Control bridge** (Anthropic's cloud →
+  the Claude app), and **Attach** (a local terminal onto the Run's tmux
+  window). Only the bridge leaves the Mac; **Attach** never touches the
+  transport at all — the Board just serves its command string
+- **Attach** needs a live **Run**; **Resume** needs a **Session** with none.
+  The same Session cannot offer both at once — the live-Run guard that refuses
+  Resume is exactly what makes Attach the only terminal route while a Run runs
 - A **Launcher transport** choice is bounded by the required
   **Reachability scope**
 - A **Dispatch** produces no **Run** and no **Session**, so none of the

@@ -278,9 +278,9 @@ class ListRunsTests(unittest.TestCase):
     """The tmux list-panes walk joined to `ps` and Claude Code's per-pid session
     files. Each pane carries its @cl_run_id (US-separated) as the Run id."""
 
-    PANES = ("R1\x1f/dev/ttys001\x1fold work (claude)\x1f\n"
-             "R2\x1f/dev/ttys002\x1flogin\x1f\n"
-             "R3\x1f/dev/ttys003\x1fnot claude\x1f\n")
+    PANES = ("R1\x1f/dev/ttys001\x1fold work (claude)\x1f\x1f@1\n"
+             "R2\x1f/dev/ttys002\x1flogin\x1f\x1f@2\n"
+             "R3\x1f/dev/ttys003\x1fnot claude\x1f\x1f@3\n")
     PS = ("  100 ttys001 claude\n"
           "  200 ttys002 claude\n"
           "  300 ttys003 zsh\n")
@@ -305,12 +305,22 @@ class ListRunsTests(unittest.TestCase):
     def test_pane_without_claude_is_not_a_run(self):
         self.assertNotIn("R3", [r["id"] for r in server.list_runs()])
 
+    def test_row_carries_the_attach_command_for_its_window(self):
+        # R1 is a registered Run on window @1 — its row hands the client the
+        # ready-to-paste grouped-attach line (ADR 0011).
+        sock = server.TMUX_SOCKET
+        row = {r["id"]: r for r in server.list_runs()}["R1"]
+        self.assertEqual(
+            row["attach"],
+            f"tmux -L {sock} new-session -t {sock} "
+            f"\\; set destroy-unattached on \\; select-window -t @1")
+
     def test_pane_without_cl_run_id_is_invisible(self):
         # A pane the Launcher didn't create has a blank @cl_run_id (e.g. the
         # session's own initial window) and must never surface as a Run — even
         # if `claude` happens to be running on its tty.
         server._list_panes_raw = lambda: (
-            "\x1f/dev/ttys001\x1fsome shell\x1f\n" + self.PANES)
+            "\x1f/dev/ttys001\x1fsome shell\x1f\x1f@9\n" + self.PANES)
         ids = [r["id"] for r in server.list_runs()]
         self.assertEqual(ids, ["R2", "R1"])   # the blank-id row dropped entirely
 
@@ -867,13 +877,14 @@ class IdConfusionTests(_HttpCase):
 
 class RunParseTests(unittest.TestCase):
     def test_parse_tmux_panes(self):
-        # four fields: @cl_run_id, pane_tty, pane_title, @cl_task (blank untagged)
-        out = ("ID1\x1f/dev/ttys001\x1f✳ Fix bug (claude)\x1fcapture\n"
-               "ID2\x1f/dev/ttys002\x1fDefault\x1f\n")
+        # five fields: @cl_run_id, pane_tty, pane_title, @cl_task (blank
+        # untagged), window_id
+        out = ("ID1\x1f/dev/ttys001\x1f✳ Fix bug (claude)\x1fcapture\x1f@4\n"
+               "ID2\x1f/dev/ttys002\x1fDefault\x1f\x1f@5\n")
         self.assertEqual(
             server._parse_tmux_panes(out),
-            [("ID1", "ttys001", "✳ Fix bug (claude)", "capture"),
-             ("ID2", "ttys002", "Default", "")],
+            [("ID1", "ttys001", "✳ Fix bug (claude)", "capture", "@4"),
+             ("ID2", "ttys002", "Default", "", "@5")],
         )
 
     def test_parse_tmux_panes_skips_malformed(self):
@@ -882,12 +893,22 @@ class RunParseTests(unittest.TestCase):
     def test_parse_tmux_panes_drops_rows_without_a_run_id(self):
         # A pane not created by the Launcher renders @cl_run_id empty; it is not
         # a Run and must be dropped, keeping list_runs to Runs it owns.
-        out = ("\x1f/dev/ttys001\x1fsome shell\x1f\n"
-               "ID2\x1f/dev/ttys002\x1fclaude\x1fcap\n")
+        out = ("\x1f/dev/ttys001\x1fsome shell\x1f\x1f@1\n"
+               "ID2\x1f/dev/ttys002\x1fclaude\x1fcap\x1f@2\n")
         self.assertEqual(
             server._parse_tmux_panes(out),
-            [("ID2", "ttys002", "claude", "cap")],
+            [("ID2", "ttys002", "claude", "cap", "@2")],
         )
+
+    def test_attach_cmd_targets_the_window_in_a_self_cleaning_grouped_session(self):
+        sock = server.TMUX_SOCKET
+        self.assertEqual(
+            server._attach_cmd("@7"),
+            f"tmux -L {sock} new-session -t {sock} "
+            f"\\; set destroy-unattached on \\; select-window -t @7")
+
+    def test_attach_cmd_is_empty_without_a_window(self):
+        self.assertEqual(server._attach_cmd(""), "")
 
     def test_parse_claude_ttys_filters_to_claude(self):
         out = (

@@ -198,6 +198,26 @@ def _resume_cmd(workdir: str, session_id: str) -> str:
     return f"cd {shell_quote(workdir)} && {run}"
 
 
+def _attach_cmd(window_id: str) -> str:
+    """The copy-to-clipboard `tmux … new-session … select-window` line that opens
+    a live Run's own window in a local terminal (ADR 0011). '' when there is no
+    window, so the Board hides the button.
+
+    A *grouped* session (`new-session -t`), never a plain `attach`: clients on the
+    one shared session share the active window, so a second terminal would yank
+    the first onto its Run. A grouped view keeps its own active window, and
+    `destroy-unattached on` deletes it the instant you detach, so `tmux ls` never
+    accumulates. `select-window` is required — a bare attach lands on whatever
+    window is *active*, not this Run. Only server-owned config is interpolated
+    (the socket/session name and a tmux window id), never user input, so the line
+    carries no injection surface and needs no token gate — parity with `bridge`.
+    """
+    if not window_id:
+        return ""
+    return (f"tmux -L {TMUX_SOCKET} new-session -t {TMUX_SOCKET} "
+            f"\\; set destroy-unattached on \\; select-window -t {window_id}")
+
+
 def _tmux(*args: str, check: bool = True) -> subprocess.CompletedProcess:
     """Run one `tmux -L <socket> …` command, list-form argv, never a shell."""
     return subprocess.run(
@@ -334,10 +354,12 @@ _STATUSES = ("busy", "waiting", "idle")
 _BRIDGE_RE = re.compile(r"^session_[A-Za-z0-9]+$")
 
 # One line per pane, US-separated (0x1f, unusable in any field so splitting is
-# unambiguous): @cl_run_id <US> pane_tty <US> pane_title <US> @cl_task. An unset
-# pane option renders empty, so a pane the Launcher didn't create comes back with
-# a blank @cl_run_id and is dropped in `_parse_tmux_panes`.
-_PANE_FMT = "#{@cl_run_id}\x1f#{pane_tty}\x1f#{pane_title}\x1f#{@cl_task}"
+# unambiguous): @cl_run_id <US> pane_tty <US> pane_title <US> @cl_task <US>
+# window_id. An unset pane option renders empty, so a pane the Launcher didn't
+# create comes back with a blank @cl_run_id and is dropped in `_parse_tmux_panes`.
+# window_id (`@N`) is the Attach target — the window a copied `tmux … attach`
+# line selects (ADR 0011); appended last so the existing four positions are fixed.
+_PANE_FMT = "#{@cl_run_id}\x1f#{pane_tty}\x1f#{pane_title}\x1f#{@cl_task}\x1f#{window_id}"
 
 
 def _list_panes_raw() -> str:
@@ -358,8 +380,8 @@ def _pane_for_run(run_id: str) -> str:
     return ""
 
 
-def _parse_tmux_panes(out: str) -> list[tuple[str, str, str, str]]:
-    """(run_id, tty_basename, name, cl_task) for each `list-panes` line.
+def _parse_tmux_panes(out: str) -> list[tuple[str, str, str, str, str]]:
+    """(run_id, tty_basename, name, cl_task, window_id) for each `list-panes` line.
 
     Rows whose @cl_run_id is empty — a pane not created by the Launcher — are
     dropped, so `list_runs` only ever sees Runs it owns.
@@ -369,12 +391,13 @@ def _parse_tmux_panes(out: str) -> list[tuple[str, str, str, str]]:
         if not line:
             continue
         parts = line.split("\x1f")
-        if len(parts) != 4:
+        if len(parts) != 5:
             continue
-        rid, tty, name, tag = parts
+        rid, tty, name, tag, window = parts
         if not rid.strip():
             continue
-        rows.append((rid.strip(), os.path.basename(tty.strip()), name.strip(), tag.strip()))
+        rows.append((rid.strip(), os.path.basename(tty.strip()),
+                     name.strip(), tag.strip(), window.strip()))
     return rows
 
 
@@ -648,7 +671,7 @@ def list_runs() -> list[dict]:
     claude = _parse_claude_ttys(ps_out)
     meta = _run_meta()
     rows = []
-    for rid, tty, name, tag in panes:
+    for rid, tty, name, tag, window in panes:
         pid = claude.get(tty)
         if pid is None:
             continue  # pane exists, `claude` not in ps yet -> not a Run
@@ -673,6 +696,7 @@ def list_runs() -> list[dict]:
             "status": m.get("status", ""),
             "remote": m.get("remote", False),
             "bridge": m.get("bridge", ""),
+            "attach": _attach_cmd(window),
             "updatedAt": m.get("updatedAt"),
             "snippet": _last_msg(session_id),
             "starting": starting,
@@ -1284,6 +1308,7 @@ def _board(focus_sid: str = "") -> dict:
         proj = (r.get("dir") or "").rstrip("/").split("/")[-1]
         items.append({"runId": r.get("id"), "sessionId": sid, "title": proj or r.get("title", ""),
                       "dir": r.get("dir", ""), "status": r.get("status", ""), "bridge": r.get("bridge", ""),
+                      "attach": r.get("attach", ""),
                       "updatedAt": r.get("updatedAt"), "lane": lane, "pri": _pri(sid), "one": one})
 
     blocked = [it for it in items if it["lane"] in ("question", "approval")]
