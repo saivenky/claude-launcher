@@ -80,11 +80,15 @@ touches the transport.
   restart attaches to the wrong Run *after* one. Accepted because this is
   copy-and-paste-*now* on the same Mac (staleness ≈ seconds), not a phone holding
   an id for minutes; the re-resolving variant above is the fix if it bites.
-- **`❯` is Mac-localhost-first.** `navigator.clipboard.writeText` needs a secure
-  context; the transport is LAN-bound HTTP over Tailscale (ADR 0001), so on the
-  phone the Clipboard API is unavailable and the button degrades to a `prompt()`
-  you hand-copy. Even then, a phone clipboard only reaches the Mac terminal via
-  Universal Clipboard — so the phone path is a fallback, not the design centre.
+- **`❯` renders only where it works — the Mac at localhost.**
+  `navigator.clipboard.writeText` needs a secure context; the transport is
+  LAN-bound HTTP over Tailscale (ADR 0001), so on the phone the Clipboard API is
+  unavailable. Rather than degrade to a `prompt()`, the button is **hidden** off
+  a secure context (`navigator.clipboard && window.isSecureContext`) — a phone
+  has no local terminal to paste into, so a copy affordance there is noise, not a
+  fallback. The Board still *serves* the `attach` string to every client; only
+  the button is gated, so making the phone a secure context (e.g. Tailscale Serve
+  over HTTPS) would light it up with no server change.
 - **Attach and Respond drive the same pane without conflict.** Respond's
   `send-keys` and Observe's `capture-pane` target the *pane* directly, never as
   attaching tmux clients, so a human attached-and-typing and the phone responding

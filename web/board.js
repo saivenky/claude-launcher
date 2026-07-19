@@ -173,20 +173,23 @@ function deepLink(bridge) {
     ? "https://claude.ai/code/" + bridge : "";
 }
 
-// Copy the server-built `tmux … attach` line (ADR 0011) so you can drive a live
-// Run by hand in a local terminal — the ❯ local twin of ↗. navigator.clipboard
-// needs a secure context: fine at localhost (the Mac-side path this is built
-// for), unavailable over the Tailscale-HTTP phone path — so degrade to a
-// prompt() you hand-copy there rather than fail silently.
+// Whether this browser can copy to a usable clipboard: a secure context with the
+// Clipboard API. True on the Mac at localhost, false over the Tailscale-HTTP
+// phone path. Gates whether the ❯ renders at all — a phone has no local terminal
+// to paste into and can't reach the clipboard anyway, so the button is only shown
+// where it actually works (the Mac). This is the local twin of ↗ (ADR 0011).
+const CAN_ATTACH = !!(navigator.clipboard && window.isSecureContext);
+
+// Copy the server-built `tmux … attach` line so you can drive a live Run by hand
+// in a local terminal. Only ever called from a ❯ that renders under CAN_ATTACH,
+// so the clipboard is present; a runtime failure just toasts.
 async function copyAttach(cmd) {
   try {
-    if (navigator.clipboard && window.isSecureContext) {
-      await navigator.clipboard.writeText(cmd);
-      toast("copied — paste in a terminal");
-      return;
-    }
-  } catch (_) { /* clipboard blocked — fall through to the manual path */ }
-  window.prompt("copy the tmux attach command:", cmd);
+    await navigator.clipboard.writeText(cmd);
+    toast("copied — paste in a terminal");
+  } catch (_) {
+    toast("copy failed");
+  }
 }
 
 async function closeRun(item) {
@@ -211,7 +214,8 @@ function rowActions(item) {
     wrap.append(a);
   }
   // ❯ — the local twin of ↗: copy the tmux attach line for a hands-on terminal.
-  if (item.attach) {
+  // Hidden where it can't work (no clipboard / no local terminal — the phone).
+  if (item.attach && CAN_ATTACH) {
     const t = el("button", "iconbtn", "❯");
     t.title = "copy tmux attach command";
     t.setAttribute("aria-label", "copy tmux attach command");
@@ -484,7 +488,7 @@ function focusCard(f) {
     open.href = link; open.target = "_blank"; open.rel = "noopener";
     actions.append(open);
   }
-  if (f.attach) {
+  if (f.attach && CAN_ATTACH) {
     const term = el("button", "ghost", "attach ❯");
     term.title = "copy tmux attach command";
     term.addEventListener("click", () => copyAttach(f.attach));
