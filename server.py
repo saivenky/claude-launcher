@@ -385,8 +385,15 @@ def _parse_tmux_panes(out: str) -> list[tuple[str, str, str, str, str]]:
 
     Rows whose @cl_run_id is empty — a pane not created by the Launcher — are
     dropped, so `list_runs` only ever sees Runs it owns.
+
+    Deduped by run_id. An Attach (ADR 0011) spins up a *grouped* session that
+    shares the base session's windows, so `list-panes -a` emits every pane once
+    per session in the group — the same Run's pane twice while anyone is
+    attached. The rows are identical (shared window, same tty), so keeping the
+    first is safe and keeps a live Run from appearing twice on the Board.
     """
     rows = []
+    seen: set[str] = set()
     for line in out.split("\n"):
         if not line:
             continue
@@ -394,9 +401,11 @@ def _parse_tmux_panes(out: str) -> list[tuple[str, str, str, str, str]]:
         if len(parts) != 5:
             continue
         rid, tty, name, tag, window = parts
-        if not rid.strip():
+        rid = rid.strip()
+        if not rid or rid in seen:
             continue
-        rows.append((rid.strip(), os.path.basename(tty.strip()),
+        seen.add(rid)
+        rows.append((rid, os.path.basename(tty.strip()),
                      name.strip(), tag.strip(), window.strip()))
     return rows
 

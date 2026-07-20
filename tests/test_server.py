@@ -900,6 +900,20 @@ class RunParseTests(unittest.TestCase):
             [("ID2", "ttys002", "claude", "cap", "@2")],
         )
 
+    def test_parse_tmux_panes_dedupes_grouped_session_rows(self):
+        # An Attach (ADR 0011) opens a grouped session sharing the base session's
+        # windows, so `list-panes -a` emits every Run's pane once per session in
+        # the group. Without dedup the Board doubles every live Run. Keep first.
+        out = ("ID1\x1f/dev/ttys001\x1f✳ Fix bug\x1fcap\x1f@4\n"
+               "ID2\x1f/dev/ttys002\x1fDefault\x1f\x1f@5\n"
+               "ID1\x1f/dev/ttys001\x1f✳ Fix bug\x1fcap\x1f@4\n"
+               "ID2\x1f/dev/ttys002\x1fDefault\x1f\x1f@5\n")
+        self.assertEqual(
+            server._parse_tmux_panes(out),
+            [("ID1", "ttys001", "✳ Fix bug", "cap", "@4"),
+             ("ID2", "ttys002", "Default", "", "@5")],
+        )
+
     def test_attach_cmd_targets_the_window_in_a_self_cleaning_grouped_session(self):
         sock = server.TMUX_SOCKET
         self.assertEqual(
