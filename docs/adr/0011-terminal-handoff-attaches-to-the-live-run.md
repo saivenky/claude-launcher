@@ -80,15 +80,18 @@ touches the transport.
   restart attaches to the wrong Run *after* one. Accepted because this is
   copy-and-paste-*now* on the same Mac (staleness ≈ seconds), not a phone holding
   an id for minutes; the re-resolving variant above is the fix if it bites.
-- **`❯` renders only where it works — the Mac at localhost.**
-  `navigator.clipboard.writeText` needs a secure context; the transport is
-  LAN-bound HTTP over Tailscale (ADR 0001), so on the phone the Clipboard API is
-  unavailable. Rather than degrade to a `prompt()`, the button is **hidden** off
-  a secure context (`navigator.clipboard && window.isSecureContext`) — a phone
-  has no local terminal to paste into, so a copy affordance there is noise, not a
-  fallback. The Board still *serves* the `attach` string to every client; only
-  the button is gated, so making the phone a secure context (e.g. Tailscale Serve
-  over HTTPS) would light it up with no server change.
+- **`❯` renders wherever the server serves an `attach` string; the copy degrades,
+  not the button.** `navigator.clipboard.writeText` needs a secure context — fine
+  at localhost, absent when the Board is reached over plain HTTP by hostname (e.g.
+  `http://mac-mini`) or the Tailscale phone path (ADR 0001). An earlier revision
+  *hid* the button off a secure context, but that also hid it on the Mac whenever
+  it was opened by hostname rather than `localhost` — the common case. So the
+  button always shows, and `copyAttach` falls back to a synchronous
+  `execCommand('copy')` off an off-screen textarea, which still lands the string
+  on a real clipboard on an insecure origin. On the phone the copy reaches the Mac
+  terminal only via Universal Clipboard, so that path stays a fallback, not the
+  design centre; a secure context (e.g. Tailscale Serve over HTTPS) restores the
+  native one-tap `navigator.clipboard` write.
 - **Attach and Respond drive the same pane without conflict.** Respond's
   `send-keys` and Observe's `capture-pane` target the *pane* directly, never as
   attaching tmux clients, so a human attached-and-typing and the phone responding

@@ -173,23 +173,39 @@ function deepLink(bridge) {
     ? "https://claude.ai/code/" + bridge : "";
 }
 
-// Whether this browser can copy to a usable clipboard: a secure context with the
-// Clipboard API. True on the Mac at localhost, false over the Tailscale-HTTP
-// phone path. Gates whether the ❯ renders at all — a phone has no local terminal
-// to paste into and can't reach the clipboard anyway, so the button is only shown
-// where it actually works (the Mac). This is the local twin of ↗ (ADR 0011).
-const CAN_ATTACH = !!(navigator.clipboard && window.isSecureContext);
-
 // Copy the server-built `tmux … attach` line so you can drive a live Run by hand
-// in a local terminal. Only ever called from a ❯ that renders under CAN_ATTACH,
-// so the clipboard is present; a runtime failure just toasts.
+// in a local terminal — the ❯ local twin of ↗ (ADR 0011). The Clipboard API only
+// exists in a secure context: fine at localhost, absent when the Board is reached
+// over plain HTTP by hostname (e.g. http://mac-mini) or the Tailscale phone path.
+// So fall back to a synchronous execCommand('copy') via an off-screen textarea,
+// which still lands the string on a real clipboard on an insecure origin — one
+// tap, no prompt() dialog to hand-copy from.
 async function copyAttach(cmd) {
   try {
-    await navigator.clipboard.writeText(cmd);
-    toast("copied — paste in a terminal");
-  } catch (_) {
-    toast("copy failed");
-  }
+    if (navigator.clipboard && window.isSecureContext) {
+      await navigator.clipboard.writeText(cmd);
+      toast("copied — paste in a terminal");
+      return;
+    }
+  } catch (_) { /* fall through to the execCommand path */ }
+  if (legacyCopy(cmd)) toast("copied — paste in a terminal");
+  else toast("copy failed");
+}
+
+// Insecure-origin clipboard write: select a hidden textarea and execCommand copy.
+// Deprecated but works where navigator.clipboard doesn't (non-secure contexts).
+function legacyCopy(text) {
+  const ta = document.createElement("textarea");
+  ta.value = text;
+  ta.setAttribute("readonly", "");
+  ta.style.position = "fixed";
+  ta.style.top = "-1000px";
+  document.body.append(ta);
+  ta.select();
+  let ok = false;
+  try { ok = document.execCommand("copy"); } catch (_) { ok = false; }
+  ta.remove();
+  return ok;
 }
 
 async function closeRun(item) {
@@ -214,8 +230,9 @@ function rowActions(item) {
     wrap.append(a);
   }
   // ❯ — the local twin of ↗: copy the tmux attach line for a hands-on terminal.
-  // Hidden where it can't work (no clipboard / no local terminal — the phone).
-  if (item.attach && CAN_ATTACH) {
+  // Shown wherever the server serves an attach string; copyAttach degrades to a
+  // legacy clipboard write on an insecure origin (see copyAttach).
+  if (item.attach) {
     const t = el("button", "iconbtn", "❯");
     t.title = "copy tmux attach command";
     t.setAttribute("aria-label", "copy tmux attach command");
@@ -488,7 +505,7 @@ function focusCard(f) {
     open.href = link; open.target = "_blank"; open.rel = "noopener";
     actions.append(open);
   }
-  if (f.attach && CAN_ATTACH) {
+  if (f.attach) {
     const term = el("button", "ghost", "attach ❯");
     term.title = "copy tmux attach command";
     term.addEventListener("click", () => copyAttach(f.attach));
