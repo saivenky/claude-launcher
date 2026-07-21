@@ -29,19 +29,42 @@ _Avoid_: conversation, transcript (the file on disk, not the living
 thread), history, thread
 
 **Run**:
-One `claude` process executing a **Session** — concretely, a tmux window
-(one pane) running `claude` (see ADR 0010; formerly an iTerm pane). This is
-the only thing the Launcher creates and destroys. A Run embodies exactly one
-Session; ending a Run leaves its Session intact. At most one live Run per
-Session.
+One `claude` process executing a **Session**, whatever terminal holds it. A
+Run embodies exactly one Session; ending a Run leaves its Session intact. At
+most one live Run per Session. Two kinds, told apart by who started it: a
+**Managed Run** — the only thing the Launcher creates and destroys —
+concretely a tmux window (one pane) stamped `@cl_run_id` (see ADR 0010;
+formerly an iTerm pane), and a **Foreign Run**.
 _Avoid_: session (that's the durable thread here — and tmux's own container,
 see *Flagged ambiguities*), window, tab, terminal, process, instance
+
+**Foreign Run**:
+A live **Run** the Launcher did not start — a `claude` someone ran by hand in
+any other terminal, so it has no tmux window and no `@cl_run_id`. The Launcher
+sees it (its **Session**, dir, status, and last message all come from Claude
+Code's own state, never the terminal's) but cannot reach into it: no
+**rendered pane**, so no **Respond**, no **Attach**, no close. Visible for
+exactly two reasons — so it can be **transferred**, and so the one-live-Run-per-
+Session guard is not blind to it.
+_Avoid_: unmanaged (the Launcher does observe it), external, orphan, stray
 
 **Resume**:
 Start a new **Run** on an existing **Session** (via
 `claude --resume <sessionId>`). Distinct from re-attaching to a *live*
 Run, which is the **Remote Control bridge**'s job, not the Launcher's.
 _Avoid_: reopen, restore, continue (overloaded by `claude --continue`)
+
+**Transfer**:
+End a **Foreign Run** and **Resume** its **Session** as a Managed Run — one
+tap, one atomic operation. What moves is *custody of the Session*, not a
+process: the original `claude` is killed and a new Run replaces it, so the
+in-flight turn and any text typed-but-not-sent in the old terminal are lost
+(accepted — see ADR 0012). The Session itself is untouched, as always. The
+only Launcher action that destroys a Run it did not create, and the only
+thing that can be done to a Foreign Run at all.
+_Avoid_: adopt / take over (each reads as driving it *where it lives*, which
+is the rejected design); migrate, move (no process moves — see *Flagged
+ambiguities*); hand-off (that's **Attach** and the bridge)
 
 **Observe**:
 Read a live **Run**'s externally visible state — which **Session** it is
@@ -174,8 +197,20 @@ _Avoid_: access, availability
   destroys a **Session**
 - A **Run** executes exactly one **Session**; a **Session** outlives its
   Run and can be **resumed** into a new one
-- At most one live **Run** per **Session** — resume refuses a Session
-  that is already running, so a transcript is never forked
+- At most one live **Run** per **Session** — resume refuses a Session that
+  already has one, so a transcript is never forked. The guard must count
+  **Foreign Runs** too: a Session live in another terminal is just as forkable
+  as one live in a tmux window
+- Every **Run** is either Managed or **Foreign**, and only the Launcher's own
+  act of starting it decides which. A Managed Run never becomes Foreign; a
+  Foreign Run becomes Managed only by being **transferred**, which replaces it
+- A **Foreign Run** is never **Blocked**, never takes the **Focus**, and never
+  enters **Rotation**. It has no **rendered pane** to read a blocker from, and
+  no **Respond** to answer one with — a row you cannot answer would only make
+  the queue lie. It sits outside the triage surface entirely
+- **Transfer** needs a **Foreign Run**; **Attach** and **Respond** need a
+  Managed one. No Run offers both, and the split is the same one throughout:
+  the Launcher drives only what it started
 - A **Run**'s lifecycle flows over the **Launcher transport**; its I/O
   flows over the **Remote Control bridge** — different channels
 - A **Launcher** **observes** Runs; it never drives them. Observing rides
@@ -210,6 +245,13 @@ _Avoid_: access, availability
 > Anthropic's cloud. Tailscale only carries the **Launcher transport**.
 > Replacing it only affects spawn / list / close."
 
+> **A:** "I left a `claude` running in iTerm at home — can I answer it from
+> my phone?"
+> **B:** "Not directly; it's a **Foreign Run**, so there's no pane to
+> **Respond** into. **Transfer** it — that kills it and **resumes** the same
+> **Session** as a Managed Run you can drive. You'll lose whatever turn was
+> in flight, and iTerm keeps a dead tab until you close it."
+
 > **A:** "Tapping × killed my session."
 > **B:** "It ended the **Run**. The **Session** is on disk; **resume** it
 > and you get a new Run on the same Session."
@@ -237,6 +279,18 @@ _Avoid_: access, availability
   into a live Run — partially resolved: management today means lifecycle
   (spawn / close / **resume**) plus **Observe**. Driving a Run stays the
   **Remote Control bridge**'s and is deferred, not ruled out.
+- "transfer a session from iTerm" read as *moving* something — flagged and
+  kept anyway, with the reading pinned down. Nothing moves: a **Session**
+  never moves (it is a file the Launcher never touches), and a `claude`
+  process cannot be reparented off its tty. **Transfer** moves only *custody*,
+  by destroying one **Run** and starting another on the same Session. If a
+  future reader expects the process to survive, this is the line that says it
+  does not.
+- "a Run is a tmux window" was true between ADR 0010 and 0012 — resolved: a
+  **Run** is one `claude` process; a tmux window is what a *Managed* Run is
+  made of. The narrower definition made every `claude` outside the Launcher
+  nameless, which is why the one-live-Run-per-Session guard silently stopped
+  holding.
 - "depend on Tailscale" was used to mean the whole tool — resolved:
   Tailscale is only the **Launcher transport**; the **Remote Control
   bridge** is unaffected.
