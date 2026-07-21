@@ -145,6 +145,15 @@ min-width:58px;flex:0 0 auto}
 .fgpath,.fgone{color:var(--dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .fgpath{font-size:11px;margin-top:3px}
 .fgone{font-size:12px;margin-top:2px}
+/* The one thing a Foreign Run can be told to do. A labelled button, not a third
+.iconbtn glyph beside ↗ — the glyph row belongs to the queue, and borrowing it
+here would make these rows read as work waiting on you. Full row width so it is
+a comfortable phone target, dim until touched so the section stays quiet. */
+.fgxfer{display:block;width:100%;margin-top:7px;background:transparent;
+border:1px solid var(--line);border-radius:6px;color:var(--dim);font:inherit;
+font-size:11.5px;letter-spacing:.3px;padding:6px 8px;cursor:pointer}
+.fgxfer:hover{border-color:var(--dim);color:var(--fg)}
+.fgxfer:disabled{cursor:default;opacity:.55}
 </style></head>
 <body><div class=wrap>
 <header><h1>◆ claude board</h1><span class=sub id=summary>loading…</span></header>

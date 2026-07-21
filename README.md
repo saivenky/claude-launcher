@@ -202,6 +202,12 @@ What the server does enforce:
 - `/api/close` only acts on a run id that matches a currently-live `claude`
   run, and only closes tmux windows the launcher created — never arbitrary
   processes or windows.
+- `/api/transfer` takes a `sessionId`, never a pid. The pid it signals is
+  re-derived server-side from the live-run walk and must belong to a
+  currently-live *foreign* `claude` (one started by hand elsewhere); a
+  session naming a launcher-created run is refused, because closing those
+  is `/api/close`'s job. So the set of processes this can ever kill is
+  exactly the set the launcher already lists.
 - Log injection blocked (CRLF + control chars scrubbed).
 
 If you need access control on top, add a shared-secret token to the JSON

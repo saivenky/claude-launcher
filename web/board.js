@@ -8,8 +8,8 @@
 // Since ADR 0008 the Board is the Launcher's only page, so it also carries
 // intake (dir-launch, resume, task/dispatch buttons — the bottom compose dock),
 // the per-run close (×) and deep-link (↗), and the optimistic launch card.
-// Below all of it, outside the triage surface, sit the Foreign Runs — seen but
-// never drivable (foreignZone, ADR 0012).
+// Below all of it, outside the triage surface, sit the Foreign Runs — seen,
+// never driven, and transferable in one tap (foreignZone, ADR 0012).
 //
 // Rotation is consent-based (CONTEXT.md: Focus, Rotation). Two rules carry it,
 // and between them nothing the Board does can cost you a half-typed reply or
@@ -556,10 +556,10 @@ function qrow(item) {
 // Foreign Run cannot reach it. Nothing below pins, and the row is a div rather
 // than a .qbody button so there is no tap target to pin *with*.
 //
-// The one action offered is ↗. The Remote Control bridge is Anthropic's cloud,
-// not a terminal, so it reaches a Run the Launcher's own transport cannot. A
-// row without a bridge carries no action at all — which is the honest reading:
-// a Foreign Run sitting on a permission prompt is silent here, deliberately.
+// Two actions, and no more. ↗ — the Remote Control bridge is Anthropic's cloud,
+// not a terminal, so it reaches a Run the Launcher's own transport cannot; a row
+// without a bridge simply does not get it. And `transfer`, the one thing the
+// Launcher itself can do to a Foreign Run (transferRun, below).
 // Every field lands as textContent; only `bridge` becomes structure, and
 // deepLink re-checks it exactly as it does for a Managed row.
 function frow(item) {
@@ -578,12 +578,60 @@ function frow(item) {
   row.append(head);
   if (item.dir) row.append(el("div", "fgpath", item.dir));
   row.append(el("div", "fgone", item.one || ""));
+  // Deliberately not a third .iconbtn beside ↗: that glyph row is the queue's,
+  // and copying it here would make these read as rows demanding attention. A
+  // labelled button in the section's own weight is discoverable — it is the only
+  // thing on the row that does anything — without shouting.
+  //
+  // The status rides on the label, not only in the badge above, because it is the
+  // price of the tap: a busy Run is mid-turn and that turn dies with the process.
+  // Refusing the tap was considered and rejected — you tapped from somewhere
+  // else, and a refusal only strands you (ADR 0012).
+  const x = el("button", "fgxfer", item.status === "busy" ? "transfer · mid-turn" : "transfer");
+  x.title = "end this run at the Mac and resume its session here";
+  x.addEventListener("click", () => transferRun(item, x));
+  row.append(x);
   return row;
 }
 
+// **Transfer**: one tap that ends the Foreign Run and resumes its Session as a
+// Managed Run. One server call, never two — a tap that failed between a kill and
+// a resume would leave the Session with nothing running, and you are not at the
+// Mac to notice (ADR 0012). We send the sessionId; the pid is the server's to
+// find, and is not on this row at all.
+async function transferRun(item, btn) {
+  // Mirrors the close confirm — a mis-tap here also ends a Run — but names a
+  // larger cost, because this Run is not ours: nothing on its screen can be read
+  // back first, so the loss is stated rather than enumerated.
+  const midturn = item.status === "busy" ? "It is mid-turn — that turn is lost.\n\n" : "";
+  if (!window.confirm("Transfer this run?\n\n" + midturn +
+      "The run at the Mac is ended and its session resumed here as one you can " +
+      "drive. Anything typed there and not sent goes with it, unseen.")) return;
+  // The server kills, waits for the exit, then resumes — seconds, not
+  // milliseconds. Say so on the button: an unmarked wait reads as a dead tap and
+  // gets tapped again. (The server serialises Transfers so a second tap cannot
+  // fork the Session, but a second confirm dialog is still noise.)
+  btn.disabled = true;
+  btn.textContent = "transferring…";
+  const res = await postJSON("api/transfer", {sessionId: item.sessionId});
+  if (res.orphaned) {
+    // The kill landed and the resume did not: this Session now has nothing
+    // running and you are away from the Mac. A toast fades after 2.6s, which is
+    // exactly how you would miss it, so this one blocks until it is read.
+    window.alert(res.message);
+  }
+  toast(res.message || (res.ok ? "transferred" : "transfer failed"));
+  // It is a Managed Run now, invisible until `claude` reaches `ps` — the same
+  // gap a launch or a resume leaves, so reuse the same optimistic card and
+  // burst-poll. The poll also clears the Foreign row it replaced.
+  if (res.ok) watch(res.runId, item.title || "transfer");
+  etag = null; poll();
+}
+
 // Last on the page and visibly not a queue: no lane colour, no count in the
-// summary line, no action but ↗. The note says why in the reading that matters
-// on a phone — this exists, and you cannot answer it from here.
+// summary line, nothing to answer. The note says why in the reading that matters
+// on a phone — this exists, you cannot answer it from here, and there is one way
+// to change that.
 function foreignZone(items) {
   if (!items || !items.length) return;
   const h = el("div", "qhead");
@@ -591,7 +639,7 @@ function foreignZone(items) {
   h.append(el("span", "ct", String(items.length)));
   zonesWrap.append(h);
   zonesWrap.append(el("div", "fgnote",
-    "seen, not driven — no reply box, no attach, no close. answer these at the Mac, or via ↗ where the Claude app is bridged."));
+    "seen, not driven — no reply box, no attach, no close. transfer one to end it and pick the session up here, or answer it at the Mac (↗ where the Claude app is bridged)."));
   const box = el("div", "fgbox");
   items.forEach((it) => box.append(frow(it)));
   zonesWrap.append(box);

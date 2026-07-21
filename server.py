@@ -38,6 +38,7 @@ import json
 import os
 import re
 import shutil
+import signal
 import socket
 import subprocess
 import sys
@@ -910,6 +911,199 @@ def close_run(run_id: str) -> bool:
     return True
 
 
+# --- Transfer: end a Foreign Run, resume its Session as a Managed one -------
+# One atomic operation — kill, wait for the exit, resume (ADR 0012). Split
+# across two client calls, a tap that fails between them leaves a killed Run and
+# nothing running, which is strictly worse than not tapping; and the tap comes
+# from a phone, so nobody is at the Mac to finish it by hand.
+#
+# The client sends the **Session**, never a pid. The pid is re-derived here from
+# the Launcher's own walk, so the only process this can ever signal is one it has
+# just itself identified as a live **Foreign Run**. Taking a pid from the body
+# would make this a kill-anything endpoint — which is why the Board's Foreign
+# rows drop `pid` rather than blanking it (`_foreign_items`).
+
+# SIGTERM, then SIGKILL. `claude` normally goes within a few hundred ms of a
+# TERM; the grace is long enough to cover a slow flush and short enough that an
+# AFK tap does not read as a hang. The wait is load-bearing, not politeness: the
+# resume guard counts Foreign Runs, so the resume is refused until this Run is
+# gone from `ps`.
+_TRANSFER_TERM_GRACE = 4.0
+_TRANSFER_KILL_GRACE = 2.0
+_TRANSFER_POLL = 0.1
+
+# Serialises Transfers, so a double-tap cannot kill once and resume twice. The
+# second caller runs the whole sequence *after* the first, finds no Foreign Run
+# on that Session any more, and refuses — rather than racing it to two Managed
+# Runs on one transcript, which is exactly the fork the guard exists to stop.
+_transfer_lock = threading.Lock()
+
+
+class TransferFailed(Exception):
+    """A **Transfer** that did not complete.
+
+    `orphaned` is the field that matters: True means the **Foreign Run** was
+    already killed when the failure happened, so the **Session** now has nothing
+    running at all and the person who tapped is not at the Mac to notice. The
+    Session itself is on disk and recoverable, as always — but that case must be
+    reported as itself, never as a generic error (ADR 0012).
+    """
+
+    def __init__(self, message: str, *, status: int = 400, orphaned: bool = False):
+        super().__init__(message)
+        self.status = status
+        self.orphaned = orphaned
+
+
+def _pid_alive(pid: int) -> bool:
+    """Signal 0: does this process still exist?
+
+    A PermissionError means it exists and is not ours to signal, which is still
+    "alive" as far as the wait is concerned — treating it as gone would let the
+    resume through beside a Run that never died.
+    """
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def _foreign_run_for(session_id: str) -> dict | None:
+    """The live **Foreign Run** executing this Session, or None.
+
+    Re-walks first (`invalidate_runs`): the memoized walk is up to `_RUNS_TTL`
+    old, and everything after this *signals* the pid it returns. A pid that
+    exited inside that window is a pid the OS is free to hand to something else,
+    so Transfer must never take one on trust from the cache.
+
+    `cached_foreign_runs` rather than a `foreign` filter over the whole walk, for
+    the reason that accessor exists: a Managed Run must not be reachable from
+    here even by a typo. Closing one of ours is `/api/close`'s job, and Transfer
+    may never become a second way to kill a Run we own.
+    """
+    invalidate_runs()
+    for r in cached_foreign_runs():
+        pid = r.get("pid")
+        # pid > 1 belt-and-braces: 0 and -1 are broadcast targets to `kill(2)`,
+        # and a row that somehow carried one would signal every process we own.
+        if r.get("sessionId") == session_id and isinstance(pid, int) and pid > 1:
+            return r
+    return None
+
+
+def _await_run_gone(pid: int, session_id: str, grace: float) -> bool:
+    """Wait until this Run has left the Launcher's own view, or `grace` runs out.
+
+    Two conditions, not one. The process must be gone (`_pid_alive`), *and* the
+    Session must have left `_live_session_ids()` — which is what the resume
+    actually has to satisfy, and which is fed from `ps` rather than from
+    `os.kill`. The two can disagree: a `claude` that has exited but not yet been
+    reaped by its terminal is gone to `os.kill` while `ps` may still be catching
+    up, and a Session that has a *second* live Run never clears at all. Waiting on
+    the weaker condition would hand the resume a refusal it cannot recover from —
+    after the kill, which is the one place there is no way back.
+
+    Each pass invalidates the cache before looking: a memoized walk would answer
+    with the state from *before* the kill and wave the resume through while the
+    old Run is still there, or (once it is gone) keep reporting it for up to a
+    TTL and burn the whole grace on a Run that already exited.
+    """
+    deadline = time.monotonic() + grace
+    while True:
+        invalidate_runs()
+        if not _pid_alive(pid) and session_id not in _live_session_ids():
+            return True
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(_TRANSFER_POLL)
+
+
+def _end_foreign_run(pid: int, session_id: str) -> bool:
+    """SIGTERM, then SIGKILL on a short timeout. True once the Run is gone.
+
+    Kills the *process*, never the terminal holding it: the original tab is left
+    at a dead shell prompt until a human closes it (ADR 0012). Reaching into a
+    GUI terminal to close it is the dependency this whole design refuses.
+    """
+    for sig, grace in ((signal.SIGTERM, _TRANSFER_TERM_GRACE),
+                       (signal.SIGKILL, _TRANSFER_KILL_GRACE)):
+        try:
+            os.kill(pid, sig)
+        except ProcessLookupError:
+            # It exited between the walk and the signal — that is the outcome we
+            # wanted, so fall through to the wait, which confirms it against `ps`
+            # instead of assuming.
+            pass
+        except PermissionError as e:
+            # Nothing was delivered, so nothing died: a refusal, not an orphan.
+            raise TransferFailed(
+                f"not allowed to end the Foreign Run (pid {pid}) — nothing was "
+                f"changed: {e}", status=500) from e
+        if _await_run_gone(pid, session_id, grace):
+            return True
+    return False
+
+
+def transfer_session(session_id: str) -> str:
+    """**Transfer**: end the live **Foreign Run** on this Session and **resume**
+    the Session as a **Managed Run**. Returns the new Run id.
+
+    Custody moves; no process does. The old `claude` is killed and a new Run
+    replaces it, so the in-flight turn — and any text typed but not sent in the
+    other terminal, which is undetectable from here — is lost (ADR 0012). The
+    Session is untouched, as always.
+
+    Never refuses a `busy` Run. You tapped deliberately from somewhere else, and
+    a refusal would only strand you with no other route onto it; the cost is
+    named on the button and in the confirm instead.
+
+    Raises `TransferFailed`, whose `orphaned` flag separates "we changed nothing"
+    from "the Run is dead and the resume did not happen".
+    """
+    if not _UUID_RE.match(session_id):
+        raise TransferFailed("invalid session id")
+    with _transfer_lock:
+        run = _foreign_run_for(session_id)
+        if not run:
+            # Say which refusal this is. `cached_runs` reads the same fresh walk
+            # `_foreign_run_for` just took, so the two answers cannot disagree.
+            if any(r.get("sessionId") == session_id for r in cached_runs()):
+                raise TransferFailed(
+                    "that Session is already a Managed Run — close it with ×, "
+                    "not Transfer")
+            raise TransferFailed("no live Foreign Run on that Session — it may have ended")
+        # Resolve everything the resume needs BEFORE the irreversible step. The
+        # dir comes from Claude Code's own state, exactly as /api/resume takes it;
+        # finding it gone *after* the kill would be an orphaned Session for a
+        # reason that was visible all along.
+        workdir = _session_cwd(session_id)
+        if not workdir or not os.path.isdir(workdir):
+            raise TransferFailed("session's dir is gone")
+        pid = run["pid"]
+        if not _end_foreign_run(pid, session_id):
+            # Phrased as the guard saw it, not as "the pid is still alive": the
+            # wait fails either because the process outlived SIGKILL or because
+            # that Session has a *second* live Run. Both mean the same thing to
+            # whoever tapped — the resume was not safe, so it did not happen.
+            raise TransferFailed(
+                f"could not end the Foreign Run (pid {pid}) — that Session still "
+                f"has a live Run, and nothing was resumed", status=500)
+        try:
+            run_id = launch_run(workdir, resume_id=session_id)
+        except (subprocess.CalledProcessError, OSError) as e:
+            raise TransferFailed(
+                f"ended the Foreign Run but the resume failed ({e}) — NOTHING IS "
+                f"RUNNING on this Session. It is safe on disk: resume {session_id} "
+                f"to get it back.", status=500, orphaned=True) from e
+        # The Foreign row is gone and a Managed one is starting; both must be true
+        # on the very next poll rather than up to a TTL later.
+        invalidate_runs()
+        return run_id
+
+
 # --- Respond: inject input into a live Run's pane --------------------------
 # The Launcher's own driving channel — `tmux send-keys` into the Run's pane —
 # independent of the Remote Control bridge. The Run UUID resolves to its pane
@@ -1583,8 +1777,8 @@ _WEB_FILES = {"board.html": "text/html; charset=utf-8",
 
 
 MAX_BODY_BYTES = 4096
-_API_POSTS = ("/api/launch", "/api/resume", "/api/close", "/api/respond",
-              "/api/clear", "/api/priority", "/api/snooze")
+_API_POSTS = ("/api/launch", "/api/resume", "/api/close", "/api/transfer",
+              "/api/respond", "/api/clear", "/api/priority", "/api/snooze")
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -1718,6 +1912,8 @@ class Handler(BaseHTTPRequestHandler):
             return
         if path == "/api/close":
             self._handle_close(body)
+        elif path == "/api/transfer":
+            self._handle_transfer(body)
         elif path == "/api/resume":
             self._handle_resume(body)
         elif path == "/api/respond":
@@ -1899,6 +2095,33 @@ class Handler(BaseHTTPRequestHandler):
             self._fail(400, "could not close run")
             return
         self._json(200, {"ok": True, "message": "closed"})
+
+    def _handle_transfer(self, body: dict) -> None:
+        """**Transfer** a **Foreign Run**: kill it, wait, resume its Session.
+
+        Takes a `sessionId` and never a pid — the pid is re-derived server-side
+        from the live walk (see `transfer_session`), which is the whole reason
+        this is not a kill-anything endpoint.
+
+        Ungated, like launch / resume / close. The shared secret exists because
+        **Respond** can approve tool calls (ADR 0007); Transfer approves nothing —
+        it ends one Run and starts another on the same Session.
+        """
+        session_id = self._str(body, "sessionId")
+        try:
+            run_id = transfer_session(session_id)
+        except TransferFailed as e:
+            if e.orphaned:
+                # The one failure the server records on its own account: whoever
+                # tapped is away from the Mac, and the response may not survive
+                # the trip back. The log is then the only trace of a Session left
+                # with nothing running.
+                sys.stderr.write(f"TRANSFER ORPHANED {sanitize_log(session_id)}: "
+                                 f"{sanitize_log(str(e))}\n")
+            self._json(e.status, {"ok": False, "orphaned": e.orphaned, "message": str(e)})
+            return
+        self._json(200, {"ok": True, "runId": run_id,
+                         "message": "transferred — now a managed run"})
 
     def log_message(self, fmt: str, *args) -> None:
         msg = fmt % args

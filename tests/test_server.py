@@ -1,7 +1,9 @@
 import json
 import os
 import shutil
+import signal
 import socket
+import subprocess
 import sys
 import threading
 import time
@@ -16,6 +18,7 @@ import server  # noqa: E402
 from http.server import ThreadingHTTPServer  # noqa: E402
 
 _RUN = "11111111-1111-1111-1111-111111111111"      # a Run id (tmux window)
+_RUN2 = "22222222-2222-2222-2222-222222222222"     # the Run a Transfer resumes into
 _GOOD = "AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA"     # transcript + existing cwd
 _LIVE = "BBBBBBBB-BBBB-BBBB-BBBB-BBBBBBBBBBBB"     # Session with a live Run
 _GONE = "CCCCCCCC-CCCC-CCCC-CCCC-CCCCCCCCCCCC"     # transcript, but cwd deleted
@@ -237,7 +240,7 @@ class HttpEndpointTests(_HttpCase):
             server.DEFAULT_DIR = old_default
 
     def test_get_on_post_endpoint_is_405(self):
-        for path in ("/api/launch", "/api/resume", "/api/close"):
+        for path in ("/api/launch", "/api/resume", "/api/close", "/api/transfer"):
             with self.subTest(path=path):
                 status, _, headers = self._raw("GET", path)
                 self.assertEqual(status, 405)
@@ -520,6 +523,320 @@ class ForeignRunGuardTests(unittest.TestCase):
     def test_the_managed_run_beside_it_still_closes(self):
         self.assertTrue(server.close_run(_RUN))
         self.assertIn(("kill-window", "-t", "%4"), self.calls)
+
+
+class TransferTests(unittest.TestCase):
+    """**Transfer**: end the live **Foreign Run** on a **Session** and **resume**
+    that Session as a **Managed Run** — one atomic operation (ADR 0012). Custody
+    moves, no process does.
+
+    The world here is derived from `self.alive` rather than fixed, because the
+    order is the whole contract: the resume guard counts Foreign Runs, so a
+    Transfer that resumed before the old pid left `ps` would be refused by its own
+    guard — and only a walk that actually reflects the kill can catch that.
+
+    `os.kill` is patched on the `os` module itself. There is no seam to stub
+    instead, and inventing one would put a test-only indirection in front of the
+    single irreversible line in the file.
+
+    The graces are shrunk to milliseconds; the real ones are seconds, and the
+    SIGKILL-escalation test has to sit through the SIGTERM one.
+    """
+
+    GRACES = {"_TRANSFER_TERM_GRACE": 0.05, "_TRANSFER_KILL_GRACE": 0.05,
+              "_TRANSFER_POLL": 0.005}
+
+    def setUp(self):
+        self._saved = {n: getattr(server, n) for n in
+                       ("list_runs", "launch_run", "_session_cwd", *self.GRACES)}
+        self._kill = os.kill
+        for name, val in self.GRACES.items():
+            setattr(server, name, val)
+        self.log = []          # every side effect, in order — the sequence IS the test
+        self.alive = {400}     # pids `ps` and signal 0 can still see
+        self.deaf = set()      # pids that ignore SIGTERM, to force the escalation
+        self.immortal = set()  # pids that ignore everything, to exhaust both graces
+        self.launch_fails = None
+        self.alive_at_launch = None
+
+        def fake_kill(pid, sig):
+            self.log.append(("kill", pid, sig))
+            if pid not in self.alive:
+                raise ProcessLookupError(pid)
+            if sig == 0 or pid in self.immortal:
+                return
+            if sig == signal.SIGTERM and pid in self.deaf:
+                return
+            self.alive.discard(pid)
+
+        def fake_launch(workdir, prompt=None, task_id=None, resume_id=None):
+            self.log.append(("launch", resume_id))
+            self.alive_at_launch = set(self.alive)
+            if self.launch_fails:
+                raise self.launch_fails
+            return _RUN2
+
+        os.kill = fake_kill
+        server.launch_run = fake_launch
+        server.list_runs = self._world
+        server._session_cwd = lambda sid, *a, **k: os.path.dirname(__file__)
+        server.invalidate_runs()
+
+    def tearDown(self):
+        os.kill = self._kill
+        for name, fn in self._saved.items():
+            setattr(server, name, fn)
+        server.invalidate_runs()
+
+    def _world(self):
+        """The live Runs, derived from `self.alive` so a walk actually reflects
+        the kill. A Managed Run of ours sits beside the Foreign one throughout —
+        Transfer must never touch it."""
+        self.log.append(("walk",))
+        rows = [{"id": _RUN, "sessionId": _GOOD, "attach": "tmux …"}]
+        if 400 in self.alive:
+            rows.append({"id": "", "attach": "", "foreign": True, "pid": 400,
+                         "sessionId": _LIVE, "status": "busy"})
+        return rows
+
+    def _kinds(self):
+        return [e[0] for e in self.log]
+
+    def _acts(self):
+        """The log stripped of the walks and the signal-0 liveness probes: just
+        the two things that cannot be undone, in the order they happened."""
+        return [e for e in self.log if e[0] == "launch" or (e[0] == "kill" and e[2])]
+
+    def test_it_kills_the_run_then_resumes_the_session(self):
+        self.assertEqual(server.transfer_session(_LIVE), _RUN2)
+        self.assertEqual(self._acts(),
+                         [("kill", 400, signal.SIGTERM), ("launch", _LIVE)])
+
+    def test_the_resume_waits_for_the_exit(self):
+        # Not politeness: `_live_session_ids` counts Foreign Runs, so resuming
+        # before the old pid leaves `ps` would be refused by our own fork guard.
+        self.deaf = {400}     # survives the SIGTERM, so the wait has to do work
+        server.transfer_session(_LIVE)
+        self.assertNotIn(400, self.alive_at_launch)
+
+    def test_the_walk_is_refreshed_around_the_kill(self):
+        # A memoized walk is up to _RUNS_TTL old: read before the kill it names a
+        # pid that may already have exited (and been reused), read after it still
+        # reports the Run we just ended and the resume never happens. So there
+        # must be a fresh walk on both sides of the signal.
+        server.transfer_session(_LIVE)
+        kinds = self._kinds()
+        self.assertEqual(kinds[0], "walk")
+        self.assertIn("walk", kinds[kinds.index("kill"):kinds.index("launch")])
+
+    def test_sigkill_escalates_after_the_sigterm_grace(self):
+        self.deaf = {400}
+        self.assertEqual(server.transfer_session(_LIVE), _RUN2)
+        signals = [e[2] for e in self.log if e[0] == "kill" and e[2]]
+        self.assertEqual(signals, [signal.SIGTERM, signal.SIGKILL])
+
+    def test_a_run_that_survives_sigkill_is_refused_with_nothing_resumed(self):
+        self.immortal = {400}
+        with self.assertRaises(server.TransferFailed) as cm:
+            server.transfer_session(_LIVE)
+        self.assertEqual(cm.exception.status, 500)
+        # Not orphaned: the Run is still running, so the Session is not stranded.
+        self.assertFalse(cm.exception.orphaned)
+        self.assertIn("still has a live Run", str(cm.exception))
+        self.assertNotIn("launch", self._kinds())
+
+    def test_a_managed_runs_session_is_refused(self):
+        # Closing one of ours is /api/close's job. Transfer must never become a
+        # second way to kill a Run we own — nor to kill it *and* fork it.
+        with self.assertRaises(server.TransferFailed) as cm:
+            server.transfer_session(_GOOD)
+        self.assertIn("already a Managed Run", str(cm.exception))
+        self.assertEqual([e for e in self.log if e[0] != "walk"], [])
+
+    def test_a_session_with_no_live_run_is_refused(self):
+        with self.assertRaises(server.TransferFailed) as cm:
+            server.transfer_session(_UNKNOWN)
+        self.assertIn("no live Foreign Run", str(cm.exception))
+        self.assertEqual([e for e in self.log if e[0] != "walk"], [])
+
+    def test_a_bogus_session_id_is_refused_before_any_walk(self):
+        for bad in ("", "not-a-uuid", "400", _LIVE + "x"):
+            with self.subTest(bad=bad), self.assertRaises(server.TransferFailed) as cm:
+                server.transfer_session(bad)
+            self.assertIn("invalid session id", str(cm.exception))
+        self.assertEqual(self.log, [])
+
+    def test_a_dir_that_is_gone_is_refused_before_the_kill(self):
+        # The dir check has to happen on this side of the irreversible step —
+        # discovering it afterwards would strand the Session for a reason that
+        # was visible all along.
+        server._session_cwd = lambda sid, *a, **k: "/no/such/dir"
+        with self.assertRaises(server.TransferFailed) as cm:
+            server.transfer_session(_LIVE)
+        self.assertIn("dir is gone", str(cm.exception))
+        self.assertEqual([e for e in self.log if e[0] != "walk"], [])
+        self.assertIn(400, self.alive)
+
+    def test_a_resume_that_fails_after_the_kill_is_reported_as_orphaned(self):
+        # The loud one. The Run is dead and nothing replaced it, and whoever
+        # tapped is away from the Mac — so this can never read as a generic error.
+        self.launch_fails = subprocess.CalledProcessError(1, "tmux")
+        with self.assertRaises(server.TransferFailed) as cm:
+            server.transfer_session(_LIVE)
+        self.assertTrue(cm.exception.orphaned)
+        self.assertEqual(cm.exception.status, 500)
+        self.assertIn("NOTHING IS RUNNING", str(cm.exception))
+        self.assertIn(_LIVE, str(cm.exception))   # the Session, so it can be resumed by hand
+        self.assertNotIn(400, self.alive)         # and it really is dead
+
+    def test_a_second_transfer_of_the_same_session_finds_nothing_to_take(self):
+        # What the _transfer_lock buys: a double-tap runs the second attempt
+        # against the world the first one left, so it refuses instead of racing to
+        # a second Managed Run on one transcript.
+        server.transfer_session(_LIVE)
+        with self.assertRaises(server.TransferFailed) as cm:
+            server.transfer_session(_LIVE)
+        self.assertIn("no live Foreign Run", str(cm.exception))
+        self.assertEqual([e for e in self.log if e[0] == "launch"], [("launch", _LIVE)])
+
+    def test_it_resumes_in_the_sessions_own_dir(self):
+        seen = []
+        server.launch_run = lambda workdir, *a, **k: (seen.append((workdir, k)), _RUN2)[1]
+        server.transfer_session(_LIVE)
+        self.assertEqual(seen, [(os.path.dirname(__file__), {"resume_id": _LIVE})])
+
+
+class TransferApiTests(_HttpCase):
+    """POST /api/transfer over the real Handler, end to end.
+
+    The client sends a **Session** and never a pid: the pid is re-derived from
+    the Launcher's own walk, which is the only thing standing between this and a
+    kill-anything endpoint. Ungated, like launch / resume / close — the shared
+    secret exists because **Respond** can approve tool calls (ADR 0007), and
+    Transfer approves nothing.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls._saved = {n: getattr(server, n) for n in
+                      ("list_runs", "launch_run", "_session_cwd", "TOKEN",
+                       *TransferTests.GRACES)}
+        cls._kill = os.kill
+        for name, val in TransferTests.GRACES.items():
+            setattr(server, name, val)
+        # A token IS configured here, so "no token in the body" proves the
+        # endpoint is ungated rather than that gating was never reachable.
+        server.TOKEN = "a-shared-secret"
+        cls.alive = {400}
+        cls.launched = []
+        cls.launch_fails = None
+
+        def fake_kill(pid, sig):
+            if pid not in cls.alive:
+                raise ProcessLookupError(pid)
+            if sig:
+                cls.alive.discard(pid)
+
+        def fake_launch(workdir, prompt=None, task_id=None, resume_id=None):
+            cls.launched.append(resume_id)
+            if cls.launch_fails:
+                raise cls.launch_fails
+            return _RUN2
+
+        os.kill = fake_kill
+        server.launch_run = fake_launch
+        server.list_runs = lambda: (
+            [{"id": _RUN, "sessionId": _GOOD, "attach": "tmux …"}] +
+            [{"id": "", "attach": "", "foreign": True, "pid": pid,
+              "sessionId": _LIVE if pid == 400 else _GONE, "status": "busy"}
+             for pid in sorted(cls.alive)])
+        server._session_cwd = lambda sid, *a, **k: os.path.dirname(__file__)
+        cls.httpd = ThreadingHTTPServer(("127.0.0.1", 0), server.Handler)
+        cls.port = cls.httpd.server_address[1]
+        cls.thread = threading.Thread(target=cls.httpd.serve_forever, daemon=True)
+        cls.thread.start()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.httpd.shutdown()
+        cls.thread.join(timeout=2)
+        os.kill = cls._kill
+        for name, val in cls._saved.items():
+            setattr(server, name, val)
+        server.invalidate_runs()
+
+    def setUp(self):
+        type(self).alive = {400}
+        type(self).launched = []
+        type(self).launch_fails = None
+        server.invalidate_runs()
+
+    def test_it_transfers_and_hands_back_the_new_run_id(self):
+        status, body = self._post("/api/transfer", {"sessionId": _LIVE})
+        self.assertEqual(status, 200)
+        self.assertTrue(body["ok"])
+        self.assertEqual(body["runId"], _RUN2)      # the client's optimistic row
+        self.assertIn("transferred", body["message"])
+        self.assertEqual(self.launched, [_LIVE])    # same Session, new Run
+        self.assertNotIn(400, self.alive)
+
+    def test_it_is_ungated_even_with_a_token_configured(self):
+        self.assertTrue(server.TOKEN)
+        status, _ = self._post("/api/transfer", {"sessionId": _LIVE})
+        self.assertEqual(status, 200)
+
+    def test_a_pid_in_the_body_is_ignored(self):
+        # The server re-derives the pid from the walk. A pid in the body must be
+        # inert — otherwise this endpoint kills whatever it is handed.
+        type(self).alive = {400, 999}
+        status, _ = self._post("/api/transfer", {"sessionId": _LIVE, "pid": 999})
+        self.assertEqual(status, 200)
+        self.assertEqual(self.alive, {999})   # 400 died, the named pid did not
+
+    def test_a_body_carrying_only_a_pid_is_refused(self):
+        status, body = self._post("/api/transfer", {"pid": 400})
+        self.assertEqual(status, 400)
+        self.assertIn("invalid session id", body["message"])
+        self.assertIn(400, self.alive)
+        self.assertEqual(self.launched, [])
+
+    def test_a_managed_runs_session_is_refused(self):
+        status, body = self._post("/api/transfer", {"sessionId": _GOOD})
+        self.assertEqual(status, 400)
+        self.assertIn("already a Managed Run", body["message"])
+        self.assertEqual(self.launched, [])
+        self.assertIn(400, self.alive)   # and the Foreign Run beside it is untouched
+
+    def test_a_session_with_no_live_run_is_refused(self):
+        status, body = self._post("/api/transfer", {"sessionId": _UNKNOWN})
+        self.assertEqual(status, 400)
+        self.assertIn("no live Foreign Run", body["message"])
+        self.assertIn(400, self.alive)
+
+    def test_a_resume_that_fails_after_the_kill_reports_it_distinctly(self):
+        type(self).launch_fails = subprocess.CalledProcessError(1, "tmux")
+        status, body = self._post("/api/transfer", {"sessionId": _LIVE})
+        self.assertEqual(status, 500)
+        self.assertFalse(body["ok"])
+        # `orphaned` is the field the client keys its loud path on — a Session
+        # with nothing running, and nobody at the Mac to see it.
+        self.assertTrue(body["orphaned"])
+        self.assertIn("NOTHING IS RUNNING", body["message"])
+        self.assertIn(_LIVE, body["message"])
+
+    def test_an_ordinary_refusal_is_not_flagged_as_orphaned(self):
+        _, body = self._post("/api/transfer", {"sessionId": _UNKNOWN})
+        self.assertFalse(body["orphaned"])
+
+    def test_get_is_405_like_every_other_post_endpoint(self):
+        status, _, headers = self._raw("GET", "/api/transfer")
+        self.assertEqual(status, 405)
+        self.assertEqual(headers.get("Allow"), "POST")
+
+    def test_cross_origin_is_blocked(self):
+        status, _ = self._post("/api/transfer", {"sessionId": _LIVE}, origin=False)
+        self.assertEqual(status, 403)
+        self.assertIn(400, self.alive)
 
 
 class TasksApiTests(_HttpCase):

@@ -77,6 +77,8 @@ const ctxOf = {};        // sessionId -> contextHtml, so a test can change one
 let etagN = 0;
 const fetched = [];      // every URL board.js asked for
 const respondLog = [];
+const transferLog = [];  // every body posted to api/transfer
+let transferReply = {status: 200, body: {ok: true, runId: "r-transferred"}};
 
 function fakeBoard(focusSid) {
   const rank = {question: 0, approval: 0, yourmove: 1};
@@ -116,13 +118,26 @@ function fakeFetch(url, opts) {
     return res(200, fakeBoard(m ? decodeURIComponent(m[1]) : ""), "e" + (++etagN));
   }
   if (url === "api/respond") { respondLog.push(JSON.parse(opts.body)); return res(200, {ok: true}); }
+  if (url === "api/transfer") {
+    transferLog.push(JSON.parse(opts.body));
+    return res(transferReply.status, transferReply.body);
+  }
   return res(200, {ok: true});
 }
+
+// window.confirm and window.alert are stubs a test can steer: Transfer confirms
+// before it kills, and shouts through alert() when a kill is left with nothing
+// resumed. Both default to "the user said yes and saw it".
+const confirmLog = [];
+const alertLog = [];
+let confirmReply = true;
 
 const store = {cl_token: "secret"};   // pre-seeded: Respond is token-gated (ADR 0007)
 const sandbox = {
   document: doc, console,
-  window: {prompt: () => "secret", confirm: () => true},
+  window: {prompt: () => "secret",
+           confirm: (m) => { confirmLog.push(m); return confirmReply; },
+           alert: (m) => { alertLog.push(m); }},
   localStorage: {getItem: (k) => (k in store ? store[k] : null), setItem: (k, v) => { store[k] = v; },
                  removeItem: (k) => { delete store[k]; }},
   fetch: fakeFetch, setTimeout, clearTimeout, Date, JSON, Object, Array, Math, String, encodeURIComponent,
@@ -319,6 +334,64 @@ const W = "wwwwwwww-3333-3333-3333-333333333333";
   ok("foreign: it never takes the Focus — an all-foreign board is still 'all clear'",
      card() === null && focusWrap().textContent.includes("All clear"), focusWrap().textContent);
   ok("foreign: while staying listed and visible", findAll(zones(), "frow").length === 1);
+
+  // --- Transfer: the one thing a Foreign Run can be told to do (ADR 0012) ----
+  // Everything above says what these rows cannot do. This is the exception, and
+  // it has to be reachable without turning the section into a second queue.
+  const xfer = () => findAll(zones(), "fgxfer")[0];
+  ok("transfer: the row offers it", !!xfer() && xfer().tag === "button" &&
+     xfer().textContent === "transfer", xfer() && xfer().textContent);
+  ok("transfer: not as a fourth glyph in the queue's icon row",
+     !(" " + xfer().className + " ").includes(" iconbtn "), xfer().className);
+
+  // The status is the price of the tap: a busy Run is mid-turn and that turn dies
+  // with the process. Never a refusal — you tapped from somewhere else, and a
+  // refusal would only strand you — so it is named instead (ADR 0012).
+  foreignWorld[0].status = "busy";
+  await poll();
+  ok("transfer: a mid-turn run says so on the button",
+     xfer().textContent === "transfer · mid-turn", xfer().textContent);
+
+  confirmReply = false;
+  xfer().dispatch("click");
+  await settle();
+  ok("transfer: it confirms first — a mis-tap here ends a Run",
+     confirmLog.length === 1 && confirmLog[0].startsWith("Transfer this run?"),
+     JSON.stringify(confirmLog));
+  ok("transfer: the confirm names the in-flight turn and the unsent text",
+     confirmLog[0].includes("mid-turn") && confirmLog[0].includes("not sent"), confirmLog[0]);
+  ok("transfer: declining posts nothing at all", transferLog.length === 0,
+     JSON.stringify(transferLog));
+
+  confirmReply = true;
+  xfer().dispatch("click");
+  await settle();
+  ok("transfer: accepting posts the Session", transferLog.length === 1 &&
+     transferLog[0].sessionId === F, JSON.stringify(transferLog));
+  ok("transfer: and never a pid — the server re-derives that from its own walk",
+     transferLog.length === 1 && Object.keys(transferLog[0]).join() === "sessionId",
+     JSON.stringify(transferLog[0]));
+  // It is a Managed Run now, and invisible until `claude` reaches `ps` — the same
+  // gap a launch leaves, so it earns the same optimistic card and burst-poll.
+  ok("transfer: the new Run gets the optimistic card a launch would get",
+     findAll(doc.getElementById("pending"), "startcard").length === 1);
+
+  // The loud path: the kill landed, the resume did not, and this Session now has
+  // nothing running while you are away from the Mac. A toast fades in 2.6s.
+  transferReply = {status: 500, body: {ok: false, orphaned: true,
+    message: "ended the Foreign Run but the resume failed — NOTHING IS RUNNING"}};
+  xfer().dispatch("click");
+  await settle();
+  ok("transfer: a resume that failed after the kill blocks until it is read",
+     alertLog.length === 1 && alertLog[0].includes("NOTHING IS RUNNING"),
+     JSON.stringify(alertLog));
+
+  transferReply = {status: 400, body: {ok: false, orphaned: false,
+    message: "no live Foreign Run on that Session"}};
+  xfer().dispatch("click");
+  await settle();
+  ok("transfer: an ordinary refusal stays a toast", alertLog.length === 1,
+     JSON.stringify(alertLog));
 
   console.log("\n  " + pass + " passed, " + fail + " failed");
   process.exit(fail ? 1 : 0);
