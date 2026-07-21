@@ -353,6 +353,170 @@ class ListRunsTests(unittest.TestCase):
         self.assertEqual(rows["R1"]["dir"], "~/projects/x")
 
 
+class ForeignRunTests(unittest.TestCase):
+    """A **Foreign Run** is a live `claude` the Launcher did not start: a `ttys*`
+    in `ps` that is none of our panes (ADR 0012). It falls out of the same walk
+    the Managed Runs do — `ps` plus sessions/<pid>.json, both already in hand —
+    so detecting one costs no extra subprocess call."""
+
+    PANES = "R1\x1f/dev/ttys001\x1fold work (claude)\x1f\x1f@1\n"
+    PS = ("  100 ttys001 claude\n"                   # ours — the pane above
+          "  400 ttys004 claude\n"                   # foreign — a claude in iTerm
+          "  500 ??      claude -p summarize\n"      # headless — a Dispatch / CI
+          "  600 ttys006 zsh\n")                     # not a claude at all
+    META = {
+        100: {"cwd": "/x", "status": "idle", "remote": False,
+              "sessionId": _GOOD, "updatedAt": 1000},
+        400: {"cwd": os.path.expanduser("~/projects/mine"), "status": "waiting",
+              "remote": False, "bridge": "", "sessionId": _LIVE, "updatedAt": 5000},
+    }
+
+    def setUp(self):
+        self._saved = {n: getattr(server, n) for n in
+                       ("_list_panes_raw", "_ps_output", "_run_meta", "_last_msg",
+                        "_first_user_msg")}
+        server._list_panes_raw = lambda: self.PANES
+        server._ps_output = lambda: self.PS
+        server._run_meta = lambda *a, **k: self.META
+        server._last_msg = lambda sid, *a, **k: "tail of " + sid
+        server._first_user_msg = lambda sid, *a, **k: "opening ask of " + sid
+
+    def tearDown(self):
+        for name, fn in self._saved.items():
+            setattr(server, name, fn)
+
+    def _by_session(self):
+        return {r["sessionId"]: r for r in server.list_runs()}
+
+    def test_a_claude_in_another_terminal_is_a_foreign_run(self):
+        row = self._by_session()[_LIVE]
+        self.assertTrue(row["foreign"])
+        self.assertEqual(row["pid"], 400)   # the only handle Transfer will have
+
+    def test_a_headless_claude_p_is_invisible(self):
+        # `claude -p` (a Dispatch, a script, CI) has no tty, so _parse_claude_ttys
+        # never sees it. It is nobody's Run: there is nothing to observe and
+        # nothing to transfer, and a widened filter would put CI jobs on the Board.
+        self.assertEqual({r.get("pid") for r in server.list_runs() if r.get("foreign")},
+                         {400})
+
+    def test_a_managed_run_is_not_misclassified_as_foreign(self):
+        row = self._by_session()[_GOOD]
+        self.assertFalse(row.get("foreign"))
+        self.assertEqual(row["id"], "R1")
+        self.assertIn("select-window -t @1", row["attach"])
+
+    def test_a_starting_managed_run_is_not_briefly_foreign(self):
+        # Our pane's `claude` reaches `ps` ~0.5s before it writes
+        # sessions/<pid>.json. It must stay Managed-and-starting through that
+        # window, not flip kind under the Board for half a second.
+        server._list_panes_raw = lambda: self.PANES + "R2\x1f/dev/ttys002\x1flogin\x1f\x1f@2\n"
+        server._ps_output = lambda: self.PS + "  200 ttys002 claude\n"
+        rows = [r for r in server.list_runs() if r.get("id") == "R2"]
+        self.assertEqual(len(rows), 1)
+        self.assertTrue(rows[0]["starting"])
+        self.assertFalse(rows[0].get("foreign"))
+
+    def test_a_claude_in_a_pane_we_did_not_stamp_is_foreign(self):
+        # Managed vs Foreign is decided by who started the Run, never by which
+        # terminal holds it — a hand-run `claude` inside our own tmux server has
+        # no @cl_run_id and is just as unreachable.
+        server._list_panes_raw = lambda: self.PANES + "\x1f/dev/ttys009\x1fshell\x1f\x1f@9\n"
+        server._ps_output = lambda: self.PS + "  900 ttys009 claude\n"
+        server._run_meta = lambda *a, **k: {
+            **self.META,
+            900: {"cwd": "/z", "status": "idle", "remote": False,
+                  "sessionId": _GONE, "updatedAt": 9000},
+        }
+        self.assertTrue(self._by_session()[_GONE]["foreign"])
+
+    def test_a_foreign_claude_with_no_session_yet_is_skipped(self):
+        # No sessions/<pid>.json means no Session: nothing to resume (so nothing
+        # to transfer) and no sessionId to guard with. A contentless row would
+        # only be noise.
+        server._run_meta = lambda *a, **k: {100: self.META[100]}
+        self.assertEqual([r for r in server.list_runs() if r.get("foreign")], [])
+
+    def test_a_foreign_row_carries_session_state_but_no_pane_handles(self):
+        # Everything on it comes from Claude Code's own state, never the
+        # terminal's; the two pane-shaped fields stay empty because there is no
+        # pane behind it.
+        row = self._by_session()[_LIVE]
+        self.assertEqual(row["id"], "")
+        self.assertEqual(row["attach"], "")
+        self.assertEqual(row["dir"], "~/projects/mine")
+        self.assertEqual(row["status"], "waiting")
+        self.assertEqual(row["snippet"], "tail of " + _LIVE)
+        self.assertEqual(row["title"], "opening ask of " + _LIVE)
+        self.assertFalse(row["starting"])
+
+    def test_a_dead_tmux_server_hides_our_runs_but_not_the_foreign_one(self):
+        # A dead tmux server takes every Managed Run with it (ADR 0010) — but the
+        # claude left running in iTerm is untouched, and still forks its
+        # transcript if the resume guard cannot see it. Our own Runs degrade to
+        # Foreign rather than vanishing, which is honest: with no tmux to resolve
+        # them through, unreachable is exactly what they now are.
+        def gone():
+            raise FileNotFoundError("tmux")
+
+        server._list_panes_raw = gone
+        rows = server.list_runs()
+        self.assertIn(_LIVE, [r["sessionId"] for r in rows])
+        self.assertEqual([r for r in rows if not r.get("foreign")], [])
+
+
+class ForeignRunGuardTests(unittest.TestCase):
+    """Nothing that reaches for a pane may act on a **Foreign Run** — it has no
+    pane, so close / Respond / clear would either fail or, worse, land on some
+    other Run. The refusal is enforced here, not trusted to the client: the
+    fixture's foreign row deliberately carries a well-formed Run id."""
+
+    def setUp(self):
+        self._saved = (server.list_runs, server._tmux)
+        self.calls = []
+        server.list_runs = lambda: [
+            {"id": _RUN, "sessionId": _GOOD},
+            # a hostile shape: a Foreign Run that claims a real-looking Run id
+            {"id": _LIVE, "sessionId": _LIVE, "foreign": True, "pid": 400, "attach": ""},
+        ]
+
+        def fake(*args, check=True):
+            self.calls.append(args)
+            if args[0] == "list-panes":
+                return types.SimpleNamespace(
+                    returncode=0, stdout=f"{_RUN}\x1f%4\n", stderr="")
+            return types.SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        server._tmux = fake
+        server.invalidate_runs()
+
+    def tearDown(self):
+        server.list_runs, server._tmux = self._saved
+        server.invalidate_runs()
+
+    def test_cached_runs_hides_it_from_everything_that_drives_a_run(self):
+        self.assertEqual([r["id"] for r in server.cached_runs()], [_RUN])
+
+    def test_cached_all_runs_still_sees_it(self):
+        self.assertEqual([r["id"] for r in server.cached_all_runs()], [_RUN, _LIVE])
+
+    def test_close_refuses_it(self):
+        self.assertFalse(server.close_run(_LIVE))
+        self.assertEqual([c for c in self.calls if c[0] == "kill-window"], [])
+
+    def test_respond_refuses_it(self):
+        self.assertFalse(server.respond_run(_LIVE, "hello"))
+        self.assertEqual([c for c in self.calls if c[0] == "send-keys"], [])
+
+    def test_clear_refuses_it(self):
+        self.assertFalse(server.clear_input(_LIVE))
+        self.assertEqual([c for c in self.calls if c[0] == "send-keys"], [])
+
+    def test_the_managed_run_beside_it_still_closes(self):
+        self.assertTrue(server.close_run(_RUN))
+        self.assertIn(("kill-window", "-t", "%4"), self.calls)
+
+
 class TasksApiTests(_HttpCase):
     """Intake config reaches the static Board as data via GET /api/tasks
     (ADR 0008), not as server-rendered markup."""
@@ -1574,17 +1738,76 @@ class SessionCwdTests(unittest.TestCase):
 
 
 class LiveSessionIdsTests(unittest.TestCase):
+    def setUp(self):
+        self._saved = server.list_runs
+        server.invalidate_runs()
+
+    def tearDown(self):
+        server.list_runs = self._saved
+        server.invalidate_runs()
+
     def test_collects_nonblank_session_ids(self):
-        saved = server.list_runs
         server.list_runs = lambda: [
             {"sessionId": "s1"}, {"sessionId": ""}, {"sessionId": "s2"},
         ]
+        self.assertEqual(server._live_session_ids(), {"s1", "s2"})
+
+    def test_a_session_live_in_a_foreign_terminal_is_guarded(self):
+        # The fork bug: this set used to be fed from tmux panes alone, so a
+        # Session live in iTerm was resumable and its transcript forked, against
+        # CONTEXT.md's "at most one live Run per Session" (ADR 0012).
+        server.list_runs = lambda: [
+            {"sessionId": _GOOD},
+            {"sessionId": _LIVE, "foreign": True, "id": "", "pid": 400},
+        ]
+        self.assertEqual(server._live_session_ids(), {_GOOD, _LIVE})
+
+
+class ForeignResumeGuardTests(_HttpCase):
+    """/api/resume must refuse a Session that is live in another terminal. This
+    *tightens* resume — a Session that was wrongly resumable is now correctly
+    refused (ADR 0012)."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls._saved = {"launch": server.launch_run, "list": server.list_runs,
+                      "transcript": server._transcript_path, "cwd": server._session_cwd}
+        cls.calls = []
+        server.launch_run = lambda *a, **k: (cls.calls.append((a, k)), _RUN)[1]
+        # nothing of ours is running; _LIVE is live only as a Foreign Run
+        server.list_runs = lambda: [
+            {"id": "", "sessionId": _LIVE, "foreign": True, "pid": 400, "attach": ""}]
+        server._transcript_path = lambda sid, *a, **k: (
+            "/x/" + sid + ".jsonl" if sid in (_GOOD, _LIVE) else "")
+        server._session_cwd = lambda sid, *a, **k: os.path.dirname(__file__)
+        cls.httpd = ThreadingHTTPServer(("127.0.0.1", 0), server.Handler)
+        cls.port = cls.httpd.server_address[1]
+        cls.thread = threading.Thread(target=cls.httpd.serve_forever, daemon=True)
+        cls.thread.start()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.httpd.shutdown()
+        cls.thread.join(timeout=2)
+        server.launch_run = cls._saved["launch"]
+        server.list_runs = cls._saved["list"]
+        server._transcript_path = cls._saved["transcript"]
+        server._session_cwd = cls._saved["cwd"]
+
+    def setUp(self):
+        type(self).calls.clear()
         server.invalidate_runs()
-        try:
-            self.assertEqual(server._live_session_ids(), {"s1", "s2"})
-        finally:
-            server.list_runs = saved
-            server.invalidate_runs()
+
+    def test_resume_refuses_a_session_live_in_a_foreign_terminal(self):
+        status, body = self._post("/api/resume", {"sessionId": _LIVE})
+        self.assertEqual(status, 400)
+        self.assertIn("already live", body["message"])
+        self.assertEqual(self.calls, [])   # no second Run on that transcript
+
+    def test_resume_of_a_session_with_no_live_run_still_works(self):
+        status, body = self._post("/api/resume", {"sessionId": _GOOD})
+        self.assertEqual(status, 200)
+        self.assertEqual(body["runId"], _RUN)
 
 
 class DispatchTests(_HttpCase):

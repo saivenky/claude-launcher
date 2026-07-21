@@ -2,9 +2,11 @@
 """Spawn and manage Claude Code sessions on a Mac from a phone over Tailscale.
 
 Vocabulary (see CONTEXT.md): a **Session** is the durable thread Claude Code
-identifies by `sessionId`; a **Run** is one `claude` process executing it,
-concretely a tmux window (ADR 0010). The launcher only ever creates and
-destroys Runs.
+identifies by `sessionId`; a **Run** is one `claude` process executing it. A
+**Managed Run** — the only kind the launcher creates and destroys — is
+concretely a tmux window (ADR 0010); a **Foreign Run** is one started by hand
+in some other terminal, which the launcher sees but cannot reach into
+(ADR 0012).
 
 Three ways to start a Run, on one page:
   - generic: type a subdir under PROJECTS_ROOT -> runs `cl` there
@@ -335,7 +337,7 @@ def sanitize_log(s: str) -> str:
     return _CONTROL_CHAR_RE.sub("?", s).replace("\n", "?").replace("\r", "?")
 
 
-# --- live Run discovery (tmux windows running `claude`) -----------------------
+# --- live Run discovery (every `claude`; ours are the tmux windows) -----------
 
 # Both a Run id (our own UUID, stamped as the pane option @cl_run_id) and a
 # Session id (Claude's sessionId) are 36-char UUIDs. This checks *shape only*
@@ -368,7 +370,13 @@ def _list_panes_raw() -> str:
 
 
 def _pane_for_run(run_id: str) -> str:
-    """Resolve a Run UUID to its tmux pane id (`%N`) via one list-panes walk, or ''."""
+    """Resolve a Run UUID to its tmux pane id (`%N`) via one list-panes walk, or ''.
+
+    Only a **Managed Run** can ever resolve: the match is on @cl_run_id, which
+    only a pane the Launcher stamped carries. A **Foreign Run** has no pane and
+    no id at all (its row's `id` is ''), so every pane-reaching path — close,
+    Respond, clear, the pane capture — bottoms out here at '' (ADR 0012).
+    """
     try:
         out = _tmux("list-panes", "-a", "-F", "#{@cl_run_id}\x1f#{pane_id}").stdout
     except (subprocess.CalledProcessError, FileNotFoundError):
@@ -665,18 +673,87 @@ def _ps_output() -> str:
     ).stdout
 
 
+def _foreign_rows(claude: dict[str, int], pane_ttys: set[str],
+                  meta: dict[int, dict]) -> list[dict]:
+    """Rows for every live `claude` that is not one of our panes — the **Foreign
+    Runs** (ADR 0012).
+
+    Free by construction: `claude` (from `_ps_output`) and `meta` (from
+    `_run_meta`, which already reads sessions/*.json for every live process) are
+    both already in hand for the Managed walk, so detection costs no new
+    subprocess call. `_parse_claude_ttys` keeps its `ttys*` filter, which is what
+    makes a headless `claude -p` — a **Dispatch**, a script, CI — invisible here:
+    it has no tty, it is nobody's Run, and it must never become transferable.
+    Widening that filter would put CI jobs on the Board.
+
+    A `claude` sitting in a tmux pane we did not stamp is Foreign too (its pane
+    is dropped by `_parse_tmux_panes`, so its tty is not in `pane_ttys`). That is
+    the definition holding: Managed vs Foreign is decided by *who started the
+    Run*, never by which terminal happens to hold it.
+
+    A foreign process whose sessions/<pid>.json has not landed yet (the ~0.5s
+    window after `claude` reaches `ps`) is skipped, not reported as *starting*:
+    with no **Session** it is neither transferable (nothing to resume) nor
+    guardable (no sessionId to refuse), and unlike a Managed Run we did not just
+    launch it, so there is no optimistic row to keep honest.
+    """
+    rows = []
+    for tty, pid in claude.items():
+        if tty in pane_ttys:
+            continue
+        m = meta.get(pid) or {}
+        session_id = m.get("sessionId", "")
+        if not session_id:
+            continue
+        rows.append({
+            # No pane, so no @cl_run_id to key it by and no window to Attach to.
+            # Both stay empty deliberately: `_pane_for_run` matches on the id, so
+            # an empty one can never resolve to somebody else's pane.
+            "id": "",
+            "attach": "",
+            "foreign": True,
+            # The only handle on a Foreign Run — Transfer kills this pid, and it
+            # is the one thing here that does not come from a Session file.
+            "pid": pid,
+            "sessionId": session_id,
+            # No pane title to clean, so go straight to the backstop list_runs
+            # already uses for a Run whose title is generic.
+            "title": _first_user_msg(session_id) or "claude",
+            "dir": _display_path(m.get("cwd", "")) if m.get("cwd") else "",
+            "status": m.get("status", ""),
+            "remote": m.get("remote", False),
+            "bridge": m.get("bridge", ""),
+            "updatedAt": m.get("updatedAt"),
+            "snippet": _last_msg(session_id),
+            "starting": False,
+        })
+    return rows
+
+
 def list_runs() -> list[dict]:
-    """Live `claude` Runs visible as tmux windows, newest activity first.
+    """Every live `claude` **Run**, newest activity first — **Managed** (a tmux
+    window we stamped) and **Foreign** (one started by hand elsewhere).
+
+    A Foreign row carries `"foreign": True` and an empty `id`/`attach`; see
+    `_foreign_rows`. Almost nothing wants both kinds mixed, which is why
+    `cached_runs()` — not this — is what the rest of the module calls.
 
     ``updatedAt`` ships raw (epoch ms). Formatting it server-side into "47m"
     would make an idle Run's payload change every minute, defeating the ETag
     and every "nothing changed, skip the re-render" check downstream.
     """
     try:
-        panes = _parse_tmux_panes(_list_panes_raw())
         ps_out = _ps_output()
     except (subprocess.CalledProcessError, FileNotFoundError):
-        return []
+        return []   # no `ps`, no way to see a Run of either kind
+    try:
+        panes = _parse_tmux_panes(_list_panes_raw())
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        # A dead tmux server takes every Managed Run with it (ADR 0010), but the
+        # `claude` someone left running in iTerm is untouched — and still forks
+        # its transcript if resume cannot see it. So this degrades to "no Managed
+        # Runs", never to a blind resume guard.
+        panes = []
     claude = _parse_claude_ttys(ps_out)
     meta = _run_meta()
     rows = []
@@ -710,6 +787,10 @@ def list_runs() -> list[dict]:
             "snippet": _last_msg(session_id),
             "starting": starting,
         })
+    # Every tty we own, including one whose `claude` has not reached `ps` yet —
+    # otherwise a Managed Run would read as Foreign for the second it takes to
+    # start, and flip kind under the Board.
+    rows += _foreign_rows(claude, {tty for _, tty, _, _, _ in panes}, meta)
     # Starting Runs first — they are the newest thing that happened, and they
     # have no updatedAt to sort by. Then most-recently-active, as the Claude
     # app orders them.
@@ -728,7 +809,10 @@ _runs_lock = threading.Lock()
 _runs_cache: tuple[float, list[dict]] = (0.0, [])
 
 
-def cached_runs() -> list[dict]:
+def _cached_walk() -> list[dict]:
+    """The memoized walk: every live Run, Managed and Foreign. Not called
+    directly — go through `cached_runs` or `cached_all_runs`, which say which
+    kinds you mean."""
     global _runs_cache
     with _runs_lock:
         stamp, rows = _runs_cache
@@ -737,6 +821,29 @@ def cached_runs() -> list[dict]:
         rows = list_runs()
         _runs_cache = (time.monotonic(), rows)
         return rows
+
+
+def cached_runs() -> list[dict]:
+    """The live **Managed Runs** — the ones the Launcher started, each with a
+    pane behind it.
+
+    The Foreign filter lives here rather than at each call site so that every
+    existing caller — close, Respond, clear, the Board's triage lanes — keeps
+    meaning exactly what it meant before Foreign Runs existed. A Foreign Run has
+    no pane to send keys to, no rendered pane to read a blocker from, and no way
+    to answer one, so admitting it into any of those would either crash or make
+    the queue lie (ADR 0012). Seeing one must be an explicit ask.
+    """
+    return [r for r in _cached_walk() if not r.get("foreign")]
+
+
+def cached_all_runs() -> list[dict]:
+    """Every live Run, Managed and Foreign — the one-live-Run-per-Session view.
+
+    Only the resume guard wants this. Anything that *drives* a Run wants
+    `cached_runs`.
+    """
+    return _cached_walk()
 
 
 def invalidate_runs() -> None:
@@ -750,15 +857,34 @@ def _live_session_ids() -> set[str]:
 
     Resuming a Session that already has a live Run would put two Runs on one
     transcript, so /api/resume refuses any id in here.
+
+    Counts **Foreign Runs** too: a Session live in another terminal is exactly as
+    forkable as one live in a tmux window. Between ADR 0010 and 0012 this set was
+    fed from tmux panes alone, so CONTEXT.md's "at most one live Run per Session
+    … a transcript is never forked" quietly held only for Managed Runs. Widening
+    it *tightens* resume — a Session that was wrongly resumable is now correctly
+    refused, which reads as a regression to anyone who relied on the hole.
     """
-    return {sid for r in cached_runs() if (sid := r.get("sessionId"))}
+    return {sid for r in cached_all_runs() if (sid := r.get("sessionId"))}
+
+
+def _is_managed_run(run_id: str) -> bool:
+    """True only for a live **Managed Run** — one the Launcher started, so one
+    with a pane to reach into.
+
+    The gate on every driving verb (close, Respond, clear). An id that fails is
+    malformed, stale, or names a **Foreign Run**, and all three must no-op: a
+    Foreign Run is never closed or driven in place (ADR 0012), and the check is
+    made here rather than trusted to the client. `cached_runs` is Managed-only,
+    so membership in it *is* the Managed test.
+    """
+    return bool(_UUID_RE.match(run_id)) and run_id in {r["id"] for r in cached_runs()}
 
 
 def close_run(run_id: str) -> bool:
-    """Close the tmux window for this Run id, but only if it's a live claude one."""
-    if not _UUID_RE.match(run_id):
-        return False
-    if run_id not in {r["id"] for r in cached_runs()}:
+    """Close the tmux window for this Run id, but only if it's a live claude one
+    the Launcher started — a Foreign Run has no window of ours to close."""
+    if not _is_managed_run(run_id):
         return False
     pane = _pane_for_run(run_id)
     if not pane:
@@ -791,7 +917,8 @@ _RESPOND_KEYS = {
 
 def respond_run(run_id: str, text: str = "", keys: list | None = None) -> bool:
     """Inject a reply and/or keys into a live Run's pane. Acts only on a
-    currently-live claude Run (mirrors close_run); a stale or bogus id no-ops.
+    currently-live **Managed Run** (mirrors close_run); a stale, bogus or
+    foreign id no-ops.
 
     Text is sent literally with `send-keys -l` (which, unlike iTerm's `write
     text`, does NOT bracket-paste), then submitted by a *separate* `send-keys
@@ -801,7 +928,7 @@ def respond_run(run_id: str, text: str = "", keys: list | None = None) -> bool:
     client can never inject a raw escape sequence.
     """
     keys = keys or []
-    if not _UUID_RE.match(run_id) or run_id not in {r["id"] for r in cached_runs()}:
+    if not _is_managed_run(run_id):
         return False
     pane = _pane_for_run(run_id)
     if not pane:
@@ -835,7 +962,7 @@ def clear_input(run_id: str) -> bool:
     safe: a backspace at the start of the input is a no-op, so an over-count can
     never reach the prompt or the scrollback above it.
     """
-    if not _UUID_RE.match(run_id) or run_id not in {r["id"] for r in cached_runs()}:
+    if not _is_managed_run(run_id):
         return False
     pane = _pane_for_run(run_id)
     if not pane:
@@ -1192,6 +1319,10 @@ def _pane_contents(run_id: str) -> str:
     option run" scrollback guard is now belt-and-suspenders: a single frame has
     exactly one option run, which the guard still picks correctly. Returns ''
     on any failure; callers depend on '' meaning "couldn't read".
+
+    A **Foreign Run** can never be captured here whatever id is passed in: it has
+    no @cl_run_id, so nothing resolves for it (see `_pane_for_run`). Observing one
+    stops at Claude Code's own state — never the terminal's (ADR 0012).
     """
     if not _UUID_RE.match(run_id):
         return ""
@@ -1306,6 +1437,10 @@ def _tmux_server_down() -> bool:
 def _board(focus_sid: str = "") -> dict:
     now = time.time() * 1000
     items = []
+    # cached_runs, never cached_all_runs: a Foreign Run is never Blocked, never
+    # the Focus, and never in Rotation — there is no rendered pane to read its
+    # blocker from and no Respond to answer it with, so a row here would only
+    # make the queue lie (ADR 0012). It reaches the Board by its own path.
     for r in cached_runs():
         sid = r.get("sessionId", "")
         snoozed = sid and _SNOOZE.get(sid, 0) > now

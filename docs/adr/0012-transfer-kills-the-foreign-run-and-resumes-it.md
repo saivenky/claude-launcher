@@ -99,6 +99,16 @@ cannot approve anything.
   Foreign Run does not have. Accepted deliberately. It is the one argument for
   refusing Transfer on an `idle` Run (where you are most likely mid-sentence),
   and that argument was heard and rejected.
+- **"Foreign" is decided by who started the Run, not by which terminal holds
+  it.** A `claude` sitting in a tmux pane the Launcher did not stamp is Foreign
+  too. So Transfer can one day kill a process and leave a live *tmux* pane
+  behind — the same shape as the dead tab below, in the substrate we chose.
+- **The resume guard must outlive the tmux server.** `list_runs` used to treat
+  a `ps` failure and a `list-panes` failure alike and return nothing. It cannot:
+  a dead tmux server takes every Managed Run with it (ADR 0010) but leaves a
+  hand-started `claude` running, and that Session still forks if the guard
+  cannot see it — precisely when you are most likely to be resuming. A tmux
+  failure now degrades to "no Managed Runs"; only a `ps` failure blinds the walk.
 - **The dead terminal tab survives.** Transfer kills the process, not the
   terminal, so iTerm keeps a tab at a dead shell prompt until a human closes
   it. Closing it would require reaching into a GUI app the Launcher does not
