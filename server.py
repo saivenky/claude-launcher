@@ -846,6 +846,19 @@ def cached_all_runs() -> list[dict]:
     return _cached_walk()
 
 
+def cached_foreign_runs() -> list[dict]:
+    """The live **Foreign Runs** — the ones started by hand in another terminal,
+    which the Launcher sees but cannot reach into.
+
+    Its own accessor rather than a `foreign` filter at the call site, for the
+    same reason `cached_runs` filters here: reaching a Foreign Run must take
+    typing a different name, so no driving path can pick one up by accident. The
+    Board's quiet section is the only caller — everything else on the Board is
+    triage, and there is nothing here to triage with.
+    """
+    return [r for r in _cached_walk() if r.get("foreign")]
+
+
 def invalidate_runs() -> None:
     global _runs_cache
     with _runs_lock:
@@ -1440,7 +1453,8 @@ def _board(focus_sid: str = "") -> dict:
     # cached_runs, never cached_all_runs: a Foreign Run is never Blocked, never
     # the Focus, and never in Rotation — there is no rendered pane to read its
     # blocker from and no Respond to answer it with, so a row here would only
-    # make the queue lie (ADR 0012). It reaches the Board by its own path.
+    # make the queue lie (ADR 0012). It reaches the Board by its own path —
+    # `_foreign_items`, on its own payload key.
     for r in cached_runs():
         sid = r.get("sessionId", "")
         snoozed = sid and _SNOOZE.get(sid, 0) > now
@@ -1511,9 +1525,49 @@ def _board(focus_sid: str = "") -> dict:
     # only; the empty-state UI is a documented follow-up (ADR 0010).
     return {"focus": focus, "upnext": other, "watching": working,
             "snoozed": snoozed, "dormant": dormant,
+            "foreign": _foreign_items(),
+            # Managed-only, deliberately. These three numbers are the summary
+            # line's triage arithmetic — "how much of this needs me" — and a
+            # Foreign Run needs nothing from the phone, because nothing on the
+            # phone can answer it. Its section carries its own count instead.
             "counts": {"needYou": len(order), "watching": len(working),
                        "dormant": len(dormant), "snoozed": len(snoozed)},
             "serverDown": _tmux_server_down()}
+
+
+def _foreign_items() -> list[dict]:
+    """The **Foreign Run** rows, newest activity first — the Board's own quiet
+    section (ADR 0012).
+
+    A separate key, never merged into `items`: the lanes above are triage, and a
+    Foreign Run has no rendered pane to read a blocker from and no **Respond** to
+    answer one with, so it is never **Blocked**, never the **Focus** and never in
+    **Rotation**. Keeping it off `items` is what makes that structural rather
+    than a rule every lane has to remember.
+
+    The projection is a whitelist, not a copy: every handle onto a pane — `runId`,
+    `attach` — is dropped rather than blanked, so a row here cannot be handed to
+    anything that drives a Run even by mistake. `bridge` stays, because the
+    **Remote Control bridge** is Anthropic's cloud rather than a terminal — the
+    one genuine route onto a Foreign Run from a phone — and it is already
+    validated against `_BRIDGE_RE` before it can become an href. `status` is
+    likewise already whitelisted to `_STATUSES`.
+
+    No `pri` and no snooze: both are triage state keyed by Session, and this
+    section is outside the triage surface entirely.
+    """
+    rows = [{"sessionId": r.get("sessionId", ""),
+             # The project, exactly as the queue rows title themselves — falling
+             # back to the Session's opening ask when there is no dir to name.
+             "title": (r.get("dir") or "").rstrip("/").split("/")[-1] or r.get("title", ""),
+             "dir": r.get("dir", ""),
+             "status": r.get("status", ""),
+             "bridge": r.get("bridge", ""),
+             "updatedAt": r.get("updatedAt"),
+             "one": r.get("snippet", "")}
+            for r in cached_foreign_runs()]
+    rows.sort(key=lambda it: -(it["updatedAt"] or 0))
+    return rows
 
 
 def _board_payload(focus_sid: str = "") -> tuple[bytes, str]:

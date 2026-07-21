@@ -69,6 +69,10 @@ const doc = {
 // changes server-side, change it here too — the adopt tests are only meaningful
 // against a server that can still steal the focus back.
 let world = [];          // [{sessionId, runId, lane, title, updatedAt, pri, one}]
+// Foreign Runs live in their own array for the same reason they live on their
+// own payload key: they are not lanes, so nothing that orders `world` may ever
+// see one (server.py::_foreign_items, ADR 0012).
+let foreignWorld = [];   // [{sessionId, title, dir, status, bridge, updatedAt, one}]
 const ctxOf = {};        // sessionId -> contextHtml, so a test can change one
 let etagN = 0;
 const fetched = [];      // every URL board.js asked for
@@ -91,6 +95,7 @@ function fakeBoard(focusSid) {
     upnext: order.filter((s) => s !== focus).map(strip),
     watching: world.filter((s) => s.lane === "working" && s !== focus).map(strip),
     snoozed: [], dormant: [],
+    foreign: foreignWorld.map((s) => Object.assign({}, s)),
     counts: {needYou: order.length, watching: 0, dormant: 0, snoozed: 0},
   };
 }
@@ -137,6 +142,20 @@ const shownSid = () => {   // the card prints sessionId[:8] in its meta line
   return meta ? meta.textContent.slice(0, 8) : null;
 };
 const lastBoardUrl = () => [...fetched].reverse().find((u) => u.startsWith("api/board"));
+const zones = () => app.children[1];   // the queue half of #app; the Focus is children[0]
+const findAll = (root, cls) => {       // every descendant carrying this class
+  const out = [];
+  const walk = (n) => {
+    for (const c of (n.children || [])) {
+      if (!(c instanceof El)) continue;
+      if ((" " + c.className + " ").includes(" " + cls + " ")) out.push(c);
+      walk(c);
+    }
+  };
+  walk(root);
+  return out;
+};
+const ghost = (txt) => findAll(focusWrap(), "ghost").find((b) => b.textContent === txt);
 const tick = (ms) => new Promise((r) => setTimeout(r, ms));
 const settle = async () => { for (let i = 0; i < 8; i++) await Promise.resolve(); await tick(5); };
 const poll = async () => { await sandbox.poll(); await settle(); };
@@ -257,6 +276,49 @@ const W = "wwwwwwww-3333-3333-3333-333333333333";
   ok("respond: the text reaches the pane", respondLog.length === 1 && respondLog[0].text === "ship it",
      JSON.stringify(respondLog));
   ok("respond: a sent reply clears the box", ti().value === "", "got " + JSON.stringify(ti().value));
+
+  // --- Foreign Runs: visible, never drivable (ADR 0012) ---------------------
+  // A `claude` started by hand at the Mac. It arrives on its own payload key, so
+  // the assertions that matter are the negative ones: it is not in the queue, it
+  // cannot be answered, and none of the Focus discipline above moves because of it.
+  const F = "ffffffff-4444-4444-4444-444444444444";
+  foreignWorld = [{sessionId: F, title: "mine", dir: "~/projects/mine", status: "waiting",
+                   bridge: "session_abc", updatedAt: 1000, one: "the last thing it said"}];
+  const held = shownSid();   // B, from the respond test above
+  await poll();
+  const fr = findAll(zones(), "frow");
+  ok("foreign: it gets a row of its own", fr.length === 1, "rows: " + fr.length);
+  ok("foreign: showing title, dir, status and last message",
+     fr.length === 1 && ["mine", "~/projects/mine", "waiting", "the last thing it said"]
+       .every((s) => fr[0].textContent.includes(s)), fr.length && fr[0].textContent);
+  const acts = fr.length ? findAll(fr[0], "iconbtn") : [];
+  ok("foreign: ↗ to the bridge is offered — the one route onto it that is not a terminal",
+     acts.length === 1 && acts[0].tag === "a" && acts[0].href === "https://claude.ai/code/session_abc",
+     JSON.stringify(acts.map((a) => a.tag + ":" + a.textContent)));
+  ok("foreign: no ❯ attach and no × close — neither has anything to act on",
+     !acts.some((a) => a.tag === "button"));
+  ok("foreign: and no tap target to hand it the Focus with",
+     fr.length === 1 && !fr[0].listeners.click && findAll(fr[0], "qbody").length === 0);
+
+  // Nothing about the Focus discipline may move because a Foreign Run appeared.
+  ok("foreign: its arrival does not disturb the held Focus", shownSid() === held,
+     "was " + held + ", now " + shownSid());
+  ok("foreign: it is not in the queue either",
+     findAll(zones(), "qrow").every((r) => !r.textContent.includes("~/projects/mine")));
+
+  // Rotation walks data.upnext, which a Foreign Run is never in: with nothing
+  // else actionable, `skip →` must refuse rather than land on it.
+  ghost("skip →").dispatch("click");
+  await settle();
+  ok("foreign: it never enters Rotation — skip stays on the held card",
+     shownSid() === held, "got " + shownSid());
+
+  // And it can never be the Focus, not even as the only Run the Board can see.
+  world = [];
+  await poll();
+  ok("foreign: it never takes the Focus — an all-foreign board is still 'all clear'",
+     card() === null && focusWrap().textContent.includes("All clear"), focusWrap().textContent);
+  ok("foreign: while staying listed and visible", findAll(zones(), "frow").length === 1);
 
   console.log("\n  " + pass + " passed, " + fail + " failed");
   process.exit(fail ? 1 : 0);

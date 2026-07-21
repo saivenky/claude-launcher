@@ -500,6 +500,11 @@ class ForeignRunGuardTests(unittest.TestCase):
     def test_cached_all_runs_still_sees_it(self):
         self.assertEqual([r["id"] for r in server.cached_all_runs()], [_RUN, _LIVE])
 
+    def test_cached_foreign_runs_sees_only_it(self):
+        # The Board's quiet section reads through here, so it can never pick up a
+        # Managed Run and render it without its Respond / Attach / close.
+        self.assertEqual([r["id"] for r in server.cached_foreign_runs()], [_LIVE])
+
     def test_close_refuses_it(self):
         self.assertFalse(server.close_run(_LIVE))
         self.assertEqual([c for c in self.calls if c[0] == "kill-window"], [])
@@ -740,9 +745,10 @@ class BlockedFocusTests(unittest.TestCase):
 
     def setUp(self):
         self._saved = {n: getattr(server, n) for n in
-                       ("cached_runs", "_transcript_path", "_pane_contents", "_ai_title",
-                        "_tmux_server_down")}
+                       ("cached_runs", "cached_foreign_runs", "_transcript_path",
+                        "_pane_contents", "_ai_title", "_tmux_server_down")}
         server._tmux_server_down = lambda: False         # don't shell out to real tmux
+        server.cached_foreign_runs = lambda: []          # nor walk `ps` for Foreign Runs
         server._transcript_path = lambda *a, **k: ""     # empty tail → nothing flushed
         server._ai_title = lambda sid: "fix the cards"
         server._pane_contents = lambda rid: _ASK_PANE
@@ -817,9 +823,11 @@ class ApprovalFocusTests(unittest.TestCase):
 
     def setUp(self):
         self._saved = {n: getattr(server, n) for n in
-                       ("cached_runs", "_tail_rows", "_transcript_path",
-                        "_pane_contents", "_ai_title", "_tmux_server_down")}
+                       ("cached_runs", "cached_foreign_runs", "_tail_rows",
+                        "_transcript_path", "_pane_contents", "_ai_title",
+                        "_tmux_server_down")}
         server._tmux_server_down = lambda: False
+        server.cached_foreign_runs = lambda: []
         server._transcript_path = lambda *a, **k: ""
         server._tail_rows = lambda sid: _APPROVAL_ROWS
         server._pane_contents = lambda rid: _BASH_APPROVAL_PANE
@@ -922,11 +930,14 @@ class BoardPayloadTests(unittest.TestCase):
     deep-link into the Claude app (ADR 0008)."""
 
     def setUp(self):
-        self._saved = (server.cached_runs, server._tmux_server_down)
+        self._saved = (server.cached_runs, server.cached_foreign_runs,
+                       server._tmux_server_down)
         server._tmux_server_down = lambda: False         # don't shell out to real tmux
+        server.cached_foreign_runs = lambda: []          # nor walk `ps` for Foreign Runs
 
     def tearDown(self):
-        server.cached_runs, server._tmux_server_down = self._saved
+        (server.cached_runs, server.cached_foreign_runs,
+         server._tmux_server_down) = self._saved
 
     def test_items_carry_the_bridge_for_the_deep_link(self):
         server.cached_runs = lambda: [{
@@ -966,6 +977,105 @@ class BoardPayloadTests(unittest.TestCase):
         body_down, etag_down = server._board_payload()
         self.assertNotEqual(etag_up, etag_down)
         self.assertNotEqual(body_up, body_down)
+
+
+class ForeignBoardTests(unittest.TestCase):
+    """A **Foreign Run** reaches the Board on its own key — visible, never
+    drivable (ADR 0012). The triage lanes stay Managed-only, so nothing here can
+    be **Blocked**, take the **Focus**, or enter **Rotation**."""
+
+    # Deliberately the hostile shape: `waiting` (the status a permission prompt
+    # leaves — the row the queue would most want) plus a well-formed `id` and
+    # `attach` that the real `_foreign_rows` never produces. If the projection
+    # ever became a copy, these would leak a pane handle onto the Board.
+    FOREIGN = {"id": _RUN, "attach": "tmux attach -t x", "foreign": True, "pid": 400,
+               "sessionId": _LIVE, "title": "an ask typed at the Mac",
+               "dir": "~/projects/mine", "status": "waiting", "remote": True,
+               "bridge": "session_abc", "updatedAt": 5000,
+               "snippet": "the last thing it said", "starting": False}
+
+    def setUp(self):
+        self._saved = {n: getattr(server, n) for n in
+                       ("cached_runs", "cached_foreign_runs", "_tmux_server_down")}
+        server._tmux_server_down = lambda: False
+        server.cached_runs = lambda: []
+        server.cached_foreign_runs = lambda: [dict(self.FOREIGN)]
+
+    def tearDown(self):
+        for n, v in self._saved.items():
+            setattr(server, n, v)
+
+    def test_it_lands_on_its_own_key_and_in_no_triage_lane(self):
+        board = server._board()
+        self.assertEqual([it["sessionId"] for it in board["foreign"]], [_LIVE])
+        for lane in ("upnext", "watching", "snoozed", "dormant"):
+            self.assertEqual(board[lane], [], lane + " must stay Managed-only")
+
+    def test_it_never_takes_the_focus_even_as_the_only_live_run(self):
+        # The empty board stays empty. There is no rendered pane to read this
+        # Run's blocker from and no Respond to answer it with, so a card for it
+        # would be a card you cannot use.
+        self.assertIsNone(server._board()["focus"])
+
+    def test_a_pinned_foreign_session_falls_back_instead_of_focusing_it(self):
+        # ?focus= is matched against the Managed items alone, so a client that
+        # somehow asks to pin a Foreign Run gets the rotation head — here, none.
+        self.assertIsNone(server._board(_LIVE)["focus"])
+
+    def test_the_counts_stay_managed_only(self):
+        # The summary line reads "N need you"; a Foreign Run needs nothing from
+        # the phone, because nothing on the phone can answer it.
+        self.assertEqual(server._board()["counts"],
+                         {"needYou": 0, "watching": 0, "dormant": 0, "snoozed": 0})
+
+    def test_the_row_shows_what_it_can(self):
+        row = server._board()["foreign"][0]
+        self.assertEqual(row["title"], "mine")            # the project, as a queue row titles itself
+        self.assertEqual(row["dir"], "~/projects/mine")
+        self.assertEqual(row["status"], "waiting")
+        self.assertEqual(row["one"], "the last thing it said")
+        self.assertEqual(row["updatedAt"], 5000)
+
+    def test_the_row_carries_no_handle_onto_a_pane(self):
+        # Dropped, not blanked: nothing that drives a Run can be handed this row
+        # even by mistake, and `id` never reaches a client that might post it back.
+        row = server._board()["foreign"][0]
+        self.assertNotIn("runId", row)
+        self.assertNotIn("id", row)
+        self.assertNotIn("attach", row)
+        self.assertNotIn("pid", row)                      # Transfer's handle stays server-side
+
+    def test_the_bridge_rides_along_for_the_deep_link(self):
+        # The one genuine route onto a Foreign Run from a phone: the Remote
+        # Control bridge is Anthropic's cloud, not this terminal.
+        self.assertEqual(server._board()["foreign"][0]["bridge"], "session_abc")
+
+    def test_a_title_falls_back_to_the_opening_ask_without_a_dir(self):
+        server.cached_foreign_runs = lambda: [dict(self.FOREIGN, dir="")]
+        self.assertEqual(server._board()["foreign"][0]["title"], "an ask typed at the Mac")
+
+    def test_newest_activity_first(self):
+        server.cached_foreign_runs = lambda: [
+            dict(self.FOREIGN, sessionId=_GOOD, updatedAt=1000),
+            dict(self.FOREIGN, sessionId=_LIVE, updatedAt=9000),
+        ]
+        self.assertEqual([it["sessionId"] for it in server._board()["foreign"]],
+                         [_LIVE, _GOOD])
+
+    def test_the_etag_moves_when_a_foreign_run_does(self):
+        # The section is quiet, not stale: its state is in the hashed body, so a
+        # Foreign Run going busy still invalidates the client's cached board.
+        _, before = server._board_payload()
+        server.cached_foreign_runs = lambda: [dict(self.FOREIGN, status="busy",
+                                                   updatedAt=6000, snippet="a new tail")]
+        _, after = server._board_payload()
+        self.assertNotEqual(before, after)
+
+    def test_the_etag_moves_when_a_foreign_run_ends(self):
+        _, listed = server._board_payload()
+        server.cached_foreign_runs = lambda: []
+        _, gone = server._board_payload()
+        self.assertNotEqual(listed, gone)
 
 
 class IdConfusionTests(_HttpCase):

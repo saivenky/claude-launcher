@@ -8,6 +8,8 @@
 // Since ADR 0008 the Board is the Launcher's only page, so it also carries
 // intake (dir-launch, resume, task/dispatch buttons — the bottom compose dock),
 // the per-run close (×) and deep-link (↗), and the optimistic launch card.
+// Below all of it, outside the triage surface, sit the Foreign Runs — seen but
+// never drivable (foreignZone, ADR 0012).
 //
 // Rotation is consent-based (CONTEXT.md: Focus, Rotation). Two rules carry it,
 // and between them nothing the Board does can cost you a half-typed reply or
@@ -544,6 +546,57 @@ function qrow(item) {
   return row;
 }
 
+// --- Foreign Runs: visible, never drivable (ADR 0012) -----------------------
+// A `claude` started by hand at the Mac. It has no pane of ours, so there is
+// nothing to Respond into, no window to Attach to and none of ours to close —
+// and it is never Blocked, never the Focus, never in Rotation (CONTEXT.md).
+// That is structural here, not a rule this code remembers: these rows arrive on
+// their own payload key, so every path the Focus discipline reads
+// (data.focus / upnext / watching / snoozed / dormant) is Managed-only and a
+// Foreign Run cannot reach it. Nothing below pins, and the row is a div rather
+// than a .qbody button so there is no tap target to pin *with*.
+//
+// The one action offered is ↗. The Remote Control bridge is Anthropic's cloud,
+// not a terminal, so it reaches a Run the Launcher's own transport cannot. A
+// row without a bridge carries no action at all — which is the honest reading:
+// a Foreign Run sitting on a permission prompt is silent here, deliberately.
+// Every field lands as textContent; only `bridge` becomes structure, and
+// deepLink re-checks it exactly as it does for a Managed row.
+function frow(item) {
+  const row = el("div", "frow");
+  const head = el("div", "fghead");
+  head.append(el("span", "fgbadge", item.status || "running"));
+  head.append(el("span", "fgdir", item.title || item.dir || "claude"));
+  head.append(el("span", "fgage", age(item.updatedAt)));
+  const link = deepLink(item.bridge);
+  if (link) {
+    const a = el("a", "iconbtn", "↗");
+    a.href = link; a.target = "_blank"; a.rel = "noopener";
+    a.title = "open in the Claude app";
+    head.append(a);
+  }
+  row.append(head);
+  if (item.dir) row.append(el("div", "fgpath", item.dir));
+  row.append(el("div", "fgone", item.one || ""));
+  return row;
+}
+
+// Last on the page and visibly not a queue: no lane colour, no count in the
+// summary line, no action but ↗. The note says why in the reading that matters
+// on a phone — this exists, and you cannot answer it from here.
+function foreignZone(items) {
+  if (!items || !items.length) return;
+  const h = el("div", "qhead");
+  h.append(document.createTextNode("elsewhere · started by hand at the Mac"));
+  h.append(el("span", "ct", String(items.length)));
+  zonesWrap.append(h);
+  zonesWrap.append(el("div", "fgnote",
+    "seen, not driven — no reply box, no attach, no close. answer these at the Mac, or via ↗ where the Claude app is bridged."));
+  const box = el("div", "fgbox");
+  items.forEach((it) => box.append(frow(it)));
+  zonesWrap.append(box);
+}
+
 function zone(label, items, count, dimmed) {
   if (!items || !items.length) return;
   const h = el("div", "qhead");
@@ -663,6 +716,7 @@ function render(data) {
   zone("snoozed", data.snoozed, data.snoozed.length, true);
   zone("watching · resurfaces when it needs you", data.watching, data.watching.length, true);
   zone("dormant · parked, still resumable", data.dormant, data.dormant.length, true);
+  foreignZone(data.foreign);
 }
 
 // --- polling: chained setTimeout, ETag revalidate, paused when hidden -------
