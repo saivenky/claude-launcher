@@ -11,4 +11,8 @@ Unrelated to **Transfer**; shipped first because it is small and independent.
 
 **Blocked by:** None
 
-**Status:** ready-for-agent
+**Status:** resolved
+
+## Comments
+
+Shipped in `f93c18b`. Copy only — the toast now reads `copied — paste in a terminal; Ctrl-b d to leave, run keeps going`, and the README's board section gained the two per-run handoffs (`↗` and `❯`), which it had never mentioned.

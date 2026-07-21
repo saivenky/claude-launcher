@@ -12,4 +12,10 @@ Foreign Runs carry Session, dir, status, and last message (all from Claude Code'
 
 **Blocked by:** None
 
-**Status:** ready-for-agent
+**Status:** resolved
+
+## Comments
+
+Shipped in `d6ba445`. The memoized walk is now read through named accessors — `cached_runs()` keeps its Managed-only meaning for every existing caller, `cached_all_runs()` feeds the resume guard, and `_is_managed_run` gates close/Respond/clear server-side. Filtering at the accessor rather than the call site makes the safe reading the default.
+
+Two things the ticket did not anticipate, both recorded in ADR 0012: a `claude` in a tmux pane we did not stamp is Foreign (so Transfer can leave a live *tmux* pane behind, not just an iTerm tab), and `list_runs` had to split its failure modes — a dead tmux server must degrade to "no Managed Runs" rather than blinding the guard, which is precisely when the fork bug would otherwise return.

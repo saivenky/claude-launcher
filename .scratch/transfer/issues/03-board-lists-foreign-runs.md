@@ -13,4 +13,10 @@ The consequence to keep legible: a Foreign Run sitting on a permission prompt is
 
 **Blocked by:** 02
 
-**Status:** ready-for-agent
+**Status:** resolved
+
+## Comments
+
+Shipped in `dbe559d`. Foreign Runs arrive on their own payload key rather than in `items`, which makes "never Blocked, never the Focus, never in Rotation" structural instead of a rule every lane has to remember — the Focus discipline reads focus/upnext/watching/snoozed/dormant, and a Foreign Run is in none of them. The row is a `div` rather than a `.qbody` button, so there is no tap target to pin one with.
+
+The projection is a whitelist, not a copy: `runId`, `attach` and `pid` are dropped rather than blanked. `counts` stays Managed-only.

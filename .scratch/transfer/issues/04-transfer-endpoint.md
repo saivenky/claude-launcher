@@ -13,4 +13,12 @@ Both inputs are already in `~/.claude/sessions/<pid>.json` — cwd and `sessionI
 
 **Blocked by:** 02, 03
 
-**Status:** ready-for-agent
+**Status:** resolved
+
+## Comments
+
+Shipped in `adc3624`, verified end to end against a real hand-started `claude`: it appeared in the quiet section, transferred, and came back as a Managed Run. The iTerm tab survived at a dead shell prompt, exactly as ADR 0012 says it must.
+
+Slice 03 having dropped `pid` from the payload turned out to settle the security question: the client sends only `sessionId`, and the pid is re-derived from a fresh walk, so the set of processes Transfer can kill is exactly the set the Launcher already lists.
+
+Three hazards found during implementation, all now carried in comments at the code: the exit wait needs *both* the process gone and the Session out of `_live_session_ids()` (the guard is fed from `ps`, which can lag `os.kill` — waiting on the weaker condition hands the resume a refusal at the one point there is no way back); every wait pass must re-invalidate the cache; and Transfers are serialised, so a double-tap refuses instead of racing to two Managed Runs on one transcript.

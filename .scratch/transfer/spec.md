@@ -32,9 +32,13 @@ See ADR 0012 for the decisions and rejected alternatives, and CONTEXT.md for
 - A recent-Sessions quick-pick on the resume box. Worth building; not this.
 - Unattended reaping of foreign `claude` processes. Rejected — self-DoS.
 
-## Slices
+## Slices — all shipped
 
-1. `01-attach-hint` — unrelated tidy-up shipped first (see its ticket).
-2. `02-foreign-run-detection` — server-side detection + fork-guard fix.
-3. `03-board-lists-foreign-runs` — the quiet section, outside triage.
-4. `04-transfer-endpoint` — kill → wait → resume, plus the button.
+1. `01-attach-hint` — unrelated tidy-up shipped first (see its ticket). `f93c18b`
+2. `02-foreign-run-detection` — server-side detection + fork-guard fix. `d6ba445`
+3. `03-board-lists-foreign-runs` — the quiet section, outside triage. `dbe559d`
+4. `04-transfer-endpoint` — kill → wait → resume, plus the button. `adc3624`
+
+Verified end to end against a real hand-started `claude`: it surfaced in the
+quiet section, transferred, and came back as a Managed Run. The iTerm tab
+survived at a dead shell prompt, as ADR 0012 says it must.
