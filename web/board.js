@@ -180,15 +180,22 @@ function deepLink(bridge) {
 // So fall back to a synchronous execCommand('copy') via an off-screen textarea,
 // which still lands the string on a real clipboard on an insecure origin — one
 // tap, no prompt() dialog to hand-copy from.
+// Pasting the line drops you into a full-screen TUI with no visible way out —
+// the one place tmux surfaces to someone who may not know it. The toast is the
+// only moment we hold their attention, so it carries the exit key and the
+// reassurance that detaching does not end the Run (destroy-unattached kills the
+// throwaway view, never the window — ADR 0011).
+const ATTACH_HINT = "copied — paste in a terminal; Ctrl-b d to leave, run keeps going";
+
 async function copyAttach(cmd) {
   try {
     if (navigator.clipboard && window.isSecureContext) {
       await navigator.clipboard.writeText(cmd);
-      toast("copied — paste in a terminal");
+      toast(ATTACH_HINT);
       return;
     }
   } catch (_) { /* fall through to the execCommand path */ }
-  if (legacyCopy(cmd)) toast("copied — paste in a terminal");
+  if (legacyCopy(cmd)) toast(ATTACH_HINT);
   else toast("copy failed");
 }
 

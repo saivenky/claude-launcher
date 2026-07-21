@@ -70,6 +70,12 @@ run. A permission menu is read off the rendered pane so its options are the
 real ones. You can also set a per-session **priority**, **snooze** a
 session, or **skip** to the next; those persist across restarts.
 
+Each row carries the two handoffs onto a live run: `↗` deep-links it into
+the Claude app, and `❯` copies a `tmux … new-session` line for a local
+terminal. Paste that in a terminal to drive the run by hand; `Ctrl-b d` to
+leave, and the run keeps going. See
+[ADR 0011](docs/adr/0011-terminal-handoff-attaches-to-the-live-run.md).
+
 Respond types into a live session — and can approve a permission — so it is
 gated by a shared secret: set `CLAUDE_LAUNCHER_TOKEN` and enter it once in
 the browser. Without a token the board is read-only. Before typing, it
