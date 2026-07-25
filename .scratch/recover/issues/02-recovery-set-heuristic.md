@@ -32,4 +32,14 @@ the point of ADR 0013): `G = 15min`, `S = 90min`, `N = 12` (matches
 
 **Blocked by:** 01
 
-**Status:** ready-for-agent
+**Status:** resolved
+
+## Comments
+
+Shipped in `b003441`. Pure `_recovery_set_size(mtimes) -> int` — the cluster is
+provably a prefix of the newest-first list (anchor = row 0, chain only reaches
+older), so a count suffices. Constants `_RECOVERY_GAP=15*60`,
+`_RECOVERY_SPAN=90*60`, `_RECOVERY_MAX=12`. Folded into `/api/recoverable` as
+`preselect: true` on set rows + a top-level `preselectCount`. G and S inclusive
+(strict `>` are the stop conditions). `RecoverySetTests` covers boundaries,
+leash, cap, single-self-select, empty.

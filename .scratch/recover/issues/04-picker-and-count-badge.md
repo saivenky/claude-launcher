@@ -25,4 +25,18 @@ post-reboot Board.
 
 **Blocked by:** 01, 02, 03
 
-**Status:** ready-for-human
+**Status:** resolved
+
+## Comments
+
+Shipped in `811f71a` (`web/board.html` + `web/board.js`, hot-served). Bottom-sheet
+picker overlay; two-line rows (title / dir + right-aligned `age() ago`);
+`preselect` rows pre-checked; full-width `resume N` with a live count; toast
+summary from the result array. Badge is an always-visible pill above the launch
+bar reading `recover · N` (empty set → plain `recover`). **No `watch()` / no
+Focus grab** — recovered Runs join the queue (Rotation); a burst-poll catches
+them reaching `ps`. Gates: 214 Python + 45 JS board tests + ruff, all green;
+`node --check` clean; live smoke on a throwaway port.
+
+Layout still wants a **human taste pass** (badge/pill placement, sheet vs
+dropup, row density, relative-time format) — functional as shipped.

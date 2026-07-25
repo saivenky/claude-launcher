@@ -26,4 +26,18 @@ side; it is a fan-out over the same `launch_run(workdir, resume_id=…)` that
 
 **Blocked by:** 01
 
-**Status:** ready-for-agent
+**Status:** resolved
+
+## Comments
+
+Shipped in `6a16055`. `POST /api/recover` — sequential in-request loop, per
+member re-runs a shared `_resume_guard()` fresh, calls
+`launch_run(resume_id=…)`, appends `{sessionId, ok, runId|message}` in input
+order; `invalidate_runs()` once after. Response is a top-level array, 200 even
+with partial failures; only a malformed body (`sessionIds` missing/not a list)
+is a 400. Ungated (same-origin only, ADR 0007). `RecoverApiTests`.
+
+Judgement: **no lock** (unlike Transfer's `_transfer_lock`) — Recover only
+*creates* Runs, exactly as `/api/resume` does, so a double-tap is no worse than
+double-tapping resume. `_handle_resume` refactored onto `_resume_guard` with
+identical behavior (its 400-vs-500 split preserved).

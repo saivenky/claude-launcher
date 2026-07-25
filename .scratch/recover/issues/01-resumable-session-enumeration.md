@@ -32,4 +32,18 @@ No token gate (read-only, like the board).
 
 **Blocked by:** —
 
-**Status:** ready-for-agent
+**Status:** resolved
+
+## Comments
+
+Shipped in `c4e6750`. `_recoverable_sessions()` + `GET /api/recoverable` —
+session-granular, spans every dir (no `PROJECTS_ROOT` confinement), dead-cwd
+hidden, live Sessions excluded, newest-first, cap 30, scan-bounded at 200.
+Row: `sessionId` / `dir` (tilde'd) / `title` / `mtime`. sha256 ETag like
+`/api/board`. 7 tests.
+
+The title comes from an extended `_first_user_msg` + a new `_is_title_noise`
+(skips `Base directory for this skill…` and bare `/slash` lines). Side effect
+worth knowing: this also fixed the **Board's** own title backstop — Runs that
+used to render `Base directory for this skill…` now fall back to `claude`. A
+behavior change beyond this slice's stated scope; kept as an improvement.

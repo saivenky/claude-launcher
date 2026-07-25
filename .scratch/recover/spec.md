@@ -63,9 +63,15 @@ Session** / **Recover** / **recovery set**.
 - **Auto-recover on boot.** Against the consent ethos; the count badge is the
   whole nudge.
 
-## Slices
+## Slices — all shipped
 
-1. `01-resumable-session-enumeration` — the candidate list + `GET /api/recoverable`.
-2. `02-recovery-set-heuristic` — the recency-cluster pre-tick flags on that list.
-3. `03-recover-endpoint` — `POST /api/recover`, sequential bulk resume, partial-failure tolerant.
-4. `04-picker-and-count-badge` — the intake picker UI and the empty-board count nudge.
+1. `01-resumable-session-enumeration` — candidate list + `GET /api/recoverable`. `c4e6750`
+2. `02-recovery-set-heuristic` — recency-cluster pre-tick, G=15/S=90/cap 12. `b003441`
+3. `03-recover-endpoint` — `POST /api/recover`, sequential, partial-failure tolerant. `6a16055`
+4. `04-picker-and-count-badge` — bottom-sheet picker + count badge, no Focus grab. `811f71a`
+
+Green at ship: 214 Python tests, 45 JS board tests, ruff clean, `node --check`
+clean. **Not yet exercised end-to-end against a live launcher** — the running
+process must restart to load the new `server.py` (`web/` is already hot-served,
+so the UI is live but its endpoints 404 until then). Slice 04's phone layout is
+pending a human taste pass.
