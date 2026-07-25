@@ -514,8 +514,29 @@ def _msg_text(line: str, roles: tuple = ("user", "assistant")) -> str:
     return text.replace("\n", " ")
 
 
+# A skill launch injects its prompt as a first user "message" ("Base directory
+# for this skill: …"), and a bare `/slash-command` invocation lands as one too —
+# neither is the human's opening ask, so neither should title a Run. The command
+# *marker* forms (`<command-name>/foo</command-name>`) and system-reminders start
+# with '<' and are already dropped by _msg_text; this covers the two that survive
+# it. A message that merely *contains* a slash command ("Let's /ship") is a real
+# prompt and is kept.
+_SKILL_PREAMBLE = "Base directory for this skill"
+_BARE_SLASH_RE = re.compile(r"^/[^\s]+$")
+
+
+def _is_title_noise(text: str) -> bool:
+    """True for a user message that is a skill-injected preamble or a bare
+    /slash-command line — not a real prompt, so unfit to title a Session."""
+    return text.startswith(_SKILL_PREAMBLE) or bool(_BARE_SLASH_RE.match(text))
+
+
 def _first_user_msg(session_id: str, base: str = _PROJECTS_STATE) -> str:
-    """Opening user prompt — title fallback when the pane title is generic."""
+    """Opening user prompt — title fallback when the pane title is generic.
+
+    Skips skill preambles and bare /slash-command lines (see _is_title_noise)
+    so the title is the first *real* ask, not the plumbing that started the Run.
+    """
     path = _transcript_path(session_id, base)
     if not path:
         return ""
@@ -523,7 +544,7 @@ def _first_user_msg(session_id: str, base: str = _PROJECTS_STATE) -> str:
         with open(path) as fh:
             for line in fh:
                 t = _msg_text(line, roles=("user",))
-                if t:
+                if t and not _is_title_noise(t):
                     return t[:90]
     except OSError:
         return ""
@@ -647,6 +668,72 @@ def _recent_dirs(base: str = _PROJECTS_STATE) -> list[str]:
         found.append((os.path.getmtime(newest), rel))
     found.sort(key=lambda t: t[0], reverse=True)
     return [rel for _, rel in found[:_RECENT_DIRS_MAX]]
+
+
+# --- Recover: enumerate Resumable Sessions ---------------------------------
+# The read side of Recover (ADR 0013): the candidate list the picker renders.
+# A Resumable Session has a transcript on disk, a cwd that still exists, and no
+# live Run (CONTEXT "Resumable Session"). Unlike _recent_dirs this is
+# Session-granularity — one row per *.jsonl, several per dir — and spans every
+# dir with NO PROJECTS_ROOT confinement (ADR 0002), so ~/obsidian appears. The
+# `…/T/tmp…-vault/` dead-cwd graveyard is hidden entirely, not greyed.
+_RECOVERABLE_MAX = 30        # rows served — a phone-sized, newest-first window
+_RECOVERABLE_SCAN = 200      # project dirs opened — bounds a huge history
+
+
+def _recoverable_sessions(base: str = _PROJECTS_STATE,
+                          live: "set[str] | None" = None) -> list[dict]:
+    """Resumable Sessions, newest-first by transcript mtime — Recover's candidates.
+
+    One row per Session, spanning every dir (no PROJECTS_ROOT filter — ADR 0002).
+    Bounded both ways so a huge history stays cheap: only the newest
+    _RECOVERABLE_SCAN project dirs are inspected (a dir's mtime bumps when a
+    session file lands, mirroring _recent_dirs), their transcripts are ordered by
+    their own mtime and opened newest-first only until _RECOVERABLE_MAX rows fill,
+    and each open reads just the head for the cwd (_cwd_from_transcript). A
+    Session with a live Run is excluded; one whose recorded cwd no longer exists
+    is hidden. Recovery-set pre-tick flags are slice 02 — this is the list only.
+    """
+    if live is None:
+        live = _live_session_ids()
+    try:
+        dirs = [e for e in os.scandir(base) if e.is_dir()]
+    except OSError:
+        return []
+    # Cheap first pass by dir mtime picks which dirs are worth walking; the
+    # ceiling caps cost on a huge history (same heuristic as _recent_dirs).
+    dirs.sort(key=lambda e: e.stat().st_mtime, reverse=True)
+
+    # A stat-only pass gathers every candidate transcript across the scanned
+    # dirs; the file itself is opened only when we reach it in the ranked loop.
+    candidates: list[tuple[float, str, str]] = []   # (mtime, path, sessionId)
+    for e in dirs[:_RECOVERABLE_SCAN]:
+        for path in glob.glob(os.path.join(e.path, "*.jsonl")):
+            session_id = os.path.splitext(os.path.basename(path))[0]
+            # A non-UUID name could never be resumed, and a live Session is not
+            # Resumable — both drop before we pay to read the file.
+            if not _UUID_RE.match(session_id) or session_id in live:
+                continue
+            try:
+                candidates.append((os.path.getmtime(path), path, session_id))
+            except OSError:
+                continue
+    candidates.sort(key=lambda c: c[0], reverse=True)
+
+    rows: list[dict] = []
+    for mtime, path, session_id in candidates:
+        cwd = _cwd_from_transcript(path)
+        if not cwd or not os.path.isdir(cwd):
+            continue   # no cwd recorded, or a dead-cwd Session — hidden entirely
+        rows.append({
+            "sessionId": session_id,
+            "dir": _display_path(cwd),          # ~ for home, as the board renders
+            "title": _first_user_msg(session_id, base) or "claude",
+            "mtime": int(mtime),                # epoch seconds; client renders relative
+        })
+        if len(rows) >= _RECOVERABLE_MAX:
+            break
+    return rows
 
 
 # tmux titles a fresh pane with the host's own name (e.g. "Mac-mini.local", or
@@ -1771,6 +1858,15 @@ def _board_payload(focus_sid: str = "") -> tuple[bytes, str]:
     return body, '"' + hashlib.sha256(body).hexdigest()[:16] + '"'
 
 
+def _recoverable_payload() -> tuple[bytes, str]:
+    """Resumable-Session list + ETag. Served fresh like the board — the set
+    shifts as Runs start/stop and cwds come and go — but is stable within one
+    open, so the ETag still lets the picker's refetch 304 when nothing changed."""
+    body = json.dumps({"sessions": _recoverable_sessions()},
+                      separators=(",", ":")).encode("utf-8")
+    return body, '"' + hashlib.sha256(body).hexdigest()[:16] + '"'
+
+
 WEB_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web")
 _WEB_FILES = {"board.html": "text/html; charset=utf-8",
               "board.js": "text/javascript; charset=utf-8"}
@@ -1854,6 +1950,15 @@ class Handler(BaseHTTPRequestHandler):
             return
         if path == "/api/tasks":
             body, etag = _tasks_payload()
+            if self.headers.get("If-None-Match") == etag:
+                self._send(304, b"", "application/json; charset=utf-8", {"ETag": etag})
+                return
+            self._send(200, body, "application/json; charset=utf-8", {"ETag": etag})
+            return
+        if path == "/api/recoverable":
+            # Read-only, like the board — no token gate. Recover only *lists*
+            # here; the resume it feeds is the gated POST (slice 03).
+            body, etag = _recoverable_payload()
             if self.headers.get("If-None-Match") == etag:
                 self._send(304, b"", "application/json; charset=utf-8", {"ETag": etag})
                 return

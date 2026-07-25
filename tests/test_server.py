@@ -171,6 +171,144 @@ class RecentDirsApiTests(_HttpCase):
         self.assertEqual(headers.get("Cache-Control"), "no-store")
 
 
+_S1 = "a1a1a1a1-1111-1111-1111-111111111111"
+_S2 = "a2a2a2a2-2222-2222-2222-222222222222"
+_SHOME = "b0b0b0b0-0000-0000-0000-000000000000"
+_SLIVE = "cccccccc-3333-3333-3333-333333333333"
+_SDEAD = "dddddddd-4444-4444-4444-444444444444"
+
+
+class RecoverableSessionsTests(unittest.TestCase):
+    """The Recover picker's candidate list (slice 01): Resumable Sessions —
+    transcript on disk + cwd still exists + no live Run — Session-granularity,
+    newest-first, spanning every dir (no PROJECTS_ROOT confinement, ADR 0002)."""
+
+    def setUp(self):
+        self.tmp = os.path.realpath(os.path.join(os.path.dirname(__file__), "_recfix"))
+        self.root = os.path.join(self.tmp, "root")     # a stand-in PROJECTS_ROOT
+        self.state = os.path.join(self.tmp, "state")    # stand-in ~/.claude/projects
+        for sub in ("alpha", "beta"):
+            os.makedirs(os.path.join(self.root, sub), exist_ok=True)
+        self._saved_root = server.PROJECTS_ROOT
+        server.PROJECTS_ROOT = self.root                # must NOT confine the list
+
+    def tearDown(self):
+        server.PROJECTS_ROOT = self._saved_root
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _txn(self, slug, sid, cwd, mtime, texts=("hello",)):
+        """A transcript for `sid` in project dir `slug`, first line carrying
+        `cwd`, `texts` written as successive user messages, stamped `mtime`."""
+        d = os.path.join(self.state, slug)
+        os.makedirs(d, exist_ok=True)
+        p = os.path.join(d, sid + ".jsonl")
+        lines = []
+        for i, t in enumerate(texts):
+            o = {"type": "user", "message": {"content": [{"type": "text", "text": t}]}}
+            if i == 0:
+                o["cwd"] = cwd
+            lines.append(json.dumps(o))
+        with open(p, "w") as fh:
+            fh.write("\n".join(lines) + "\n")
+        os.utime(p, (mtime, mtime))
+        os.utime(d, (mtime, mtime))
+        return p
+
+    def test_session_granularity_dead_cwd_live_and_span(self):
+        home = os.path.expanduser("~")
+        alpha = os.path.join(self.root, "alpha")
+        # Two Sessions in ONE project dir -> two rows (not dir-deduped).
+        self._txn("proj-a", _S1, alpha, 3000)
+        self._txn("proj-a", _S2, alpha, 1000)
+        # A cwd OUTSIDE PROJECTS_ROOT (home) is kept -> spans every dir.
+        self._txn("proj-home", _SHOME, home, 5000)
+        # A Session with a live Run is excluded; a dead-cwd Session is hidden.
+        self._txn("proj-live", _SLIVE, os.path.join(self.root, "beta"), 4500)
+        self._txn("proj-dead", _SDEAD, os.path.join(self.tmp, "ghost"), 4000)
+
+        rows = server._recoverable_sessions(base=self.state, live={_SLIVE})
+        ids = [r["sessionId"] for r in rows]
+        # newest-first by transcript mtime; live + dead-cwd absent entirely.
+        self.assertEqual(ids, [_SHOME, _S1, _S2])
+        self.assertNotIn(_SLIVE, ids)
+        self.assertNotIn(_SDEAD, ids)
+        # both alpha Sessions survive as distinct rows (Session-granularity).
+        self.assertEqual([r["dir"] for r in rows if r["sessionId"] in (_S1, _S2)],
+                         [server._display_path(alpha)] * 2)
+        # home cwd renders tilde-collapsed, as the board shows dirs.
+        self.assertEqual(rows[0]["dir"], "~")
+        self.assertEqual([r["mtime"] for r in rows], [5000, 3000, 1000])
+
+    def test_title_skips_skill_preamble_and_bare_slash(self):
+        alpha = os.path.join(self.root, "alpha")
+        self._txn("proj-t", _S1, alpha, 3000, texts=(
+            "Base directory for this skill: /x/y\n\n# Do Stuff",   # skill preamble
+            "/scheduling",                                          # bare slash-command
+            "actually build the thing",                             # the real ask
+        ))
+        rows = server._recoverable_sessions(base=self.state, live=set())
+        self.assertEqual(rows[0]["title"], "actually build the thing")
+
+    def test_missing_state_dir_is_empty(self):
+        self.assertEqual(
+            server._recoverable_sessions(base=os.path.join(self.tmp, "nope"), live=set()), [])
+
+    def test_capped_at_max(self):
+        alpha = os.path.join(self.root, "alpha")
+        for i in range(server._RECOVERABLE_MAX + 5):
+            sid = f"{i:08d}-5555-5555-5555-555555555555"
+            self._txn(f"proj-{i:02d}", sid, alpha, 1000 + i)
+        rows = server._recoverable_sessions(base=self.state, live=set())
+        self.assertEqual(len(rows), server._RECOVERABLE_MAX)
+
+
+class TitleNoiseTests(unittest.TestCase):
+    def test_is_title_noise(self):
+        self.assertTrue(server._is_title_noise("Base directory for this skill: /a/b"))
+        self.assertTrue(server._is_title_noise("/scheduling"))
+        self.assertTrue(server._is_title_noise("/clear"))
+        # a real prompt that merely contains a slash command is kept
+        self.assertFalse(server._is_title_noise("Let's /ship the release"))
+        self.assertFalse(server._is_title_noise("fix the failing test"))
+
+
+class RecoverableApiTests(_HttpCase):
+    """GET /api/recoverable serves the Resumable-Session list as JSON with an
+    ETag, mirroring /api/board and /api/tasks — read-only, no token gate."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls._saved = server._recoverable_sessions
+        server._recoverable_sessions = lambda *a, **k: [
+            {"sessionId": _S1, "dir": "~/obsidian", "title": "write the note", "mtime": 42}]
+        cls.httpd = ThreadingHTTPServer(("127.0.0.1", 0), server.Handler)
+        cls.port = cls.httpd.server_address[1]
+        cls.thread = threading.Thread(target=cls.httpd.serve_forever, daemon=True)
+        cls.thread.start()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.httpd.shutdown()
+        cls.thread.join(timeout=2)
+        server._recoverable_sessions = cls._saved
+
+    def test_payload_shape_and_etag(self):
+        status, body, headers = self._raw("GET", "/api/recoverable")
+        self.assertEqual(status, 200)
+        self.assertTrue(headers["ETag"])
+        self.assertEqual(json.loads(body), {"sessions": [
+            {"sessionId": _S1, "dir": "~/obsidian", "title": "write the note", "mtime": 42}]})
+
+    def test_if_none_match_returns_304_without_body(self):
+        _, _, headers = self._raw("GET", "/api/recoverable")
+        etag = headers["ETag"]
+        status, body, headers2 = self._raw(
+            "GET", "/api/recoverable", headers={"If-None-Match": etag})
+        self.assertEqual(status, 304)
+        self.assertEqual(body, "")
+        self.assertEqual(headers2["ETag"], etag)
+
+
 class HttpEndpointTests(_HttpCase):
     @classmethod
     def setUpClass(cls):
