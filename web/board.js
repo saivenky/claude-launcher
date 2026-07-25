@@ -1320,6 +1320,13 @@ function syncDockHeight() {
   if (!dockEl || !dockEl.getBoundingClientRect || !document.documentElement) return;
   const h = Math.round(dockEl.getBoundingClientRect().height);
   if (h > 0) document.documentElement.style.setProperty("--dockh", h + "px");
+  // …and the composer's height beside it, for the one thing that stands on the
+  // composer: the swipe hint. A **Blocked** Focus grows this bar by a row of
+  // options, so a constant would bury the hint underneath it precisely when the
+  // options appear. Same instinct as --dockh: measure, never guess.
+  const bar = focusWrap && focusWrap.querySelector && focusWrap.querySelector(".respond");
+  const bh = bar && bar.getBoundingClientRect ? Math.round(bar.getBoundingClientRect().height) : 0;
+  if (bh > 0) document.documentElement.style.setProperty("--barh", bh + "px");
 }
 
 function render(data) {
@@ -1363,6 +1370,7 @@ function render(data) {
   }
 
   renderFocus(f);
+  syncDockHeight();   // the card just changed: --barh follows the composer's height
   zonesWrap.textContent = "";
   // Two boxes, because they answer to different rules at a wide width: the
   // queue steps aside for the rail (board.html) while the Foreign section —

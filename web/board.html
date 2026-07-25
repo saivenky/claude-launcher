@@ -22,7 +22,11 @@ media query at the bottom of this sheet, and nowhere else. */
 /* The intake dock's height. Seeded here so the page is right before any script
 runs, then MEASURED and re-published by board.js (syncDockHeight) — the Recover
 pill grows the dock, and a guessed constant would let the composer sit on it. */
---dockh:68px;}
+--dockh:68px;
+/* The composer's height, measured beside --dockh. Only the swipe hint stands on
+it, and only until the first swipe — but a Blocked Focus grows this bar by a row
+of options, so it has to be measured rather than assumed. */
+--barh:52px;}
 *{box-sizing:border-box}
 body{margin:0;background:var(--bg);color:var(--fg);
 font:14px/1.6 ui-monospace,SFMono-Regular,Menlo,monospace}
@@ -316,13 +320,15 @@ state as everything else at this edge — read up into history and it clears. */
 .edge{position:fixed;top:0;bottom:0;width:3px;z-index:45;background:var(--accent);
 opacity:0;transition:opacity .3s ease;pointer-events:none}
 .edge.l{left:var(--rail)} .edge.r{right:0} .edge.on{opacity:.9}
-/* `left/right/margin:auto` rather than `left:50%;translateX(-50%)`: a fixed box
-shrinks to fit the space between its `left` and the viewport edge, so the
-centred form gave a 390px phone a 195px pill and wrapped this into two lines. */
-.swipehint{position:fixed;left:var(--rail);right:0;margin:0 auto;width:max-content;
-bottom:calc(var(--dockh) + 62px);z-index:29;color:var(--dim);font-size:11px;
-background:var(--panel);border:1px solid var(--line);border-radius:999px;padding:4px 13px;
-max-width:calc(100% - 28px);text-align:center;pointer-events:none;
+/* A strip across the column, not a floating pill. A pill is narrower than the
+line it covers, so the **Scrollback** showed through on both sides of it and the
+whole thing read as a rendering fault rather than a hint.
+Anchored on `--barh` — the composer's MEASURED height (board.js: syncDockHeight)
+— not a guessed offset: a **Blocked** Focus adds a row of options and grows that
+bar, and a constant would put this underneath it exactly when it appears. */
+.swipehint{position:fixed;left:var(--rail);right:0;
+bottom:calc(var(--dockh) + var(--barh));z-index:29;color:var(--dim);font-size:11px;
+background:var(--bg);padding:6px var(--gut) 8px;text-align:center;pointer-events:none;
 transition:transform .2s ease,opacity .2s ease}
 .swipehint[hidden]{display:none}
 .swipehint.hid{transform:translateY(150%);opacity:0}
