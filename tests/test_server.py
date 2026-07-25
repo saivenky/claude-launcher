@@ -457,12 +457,26 @@ class HttpEndpointTests(_HttpCase):
         status, body, headers = self._raw("GET", "/board.js")
         self.assertEqual(status, 200)
         self.assertIn("javascript", headers["Content-Type"])
-        # ADR 0006: exactly one innerHTML *assignment* (the server-escaped
-        # context markdown); every other field stays textContent.
-        self.assertIn("ctx.innerHTML = f.contextHtml", body)
+        # ADR 0006: exactly one innerHTML *assignment* (a **Turn**'s
+        # server-escaped markdown); every other field stays textContent. ADR 0014
+        # widened the exception from one field to N turns — through the same
+        # function, so it is still ONE sink a reviewer has to reason about.
+        self.assertIn("md.innerHTML = t.html", body)
         assigns = [ln for ln in body.splitlines()
                    if ".innerHTML" in ln and "=" in ln and not ln.strip().startswith("//")]
         self.assertEqual(len(assigns), 1)
+
+    def test_the_scrollback_has_no_scroll_box_of_its_own(self):
+        # ADR 0014: `.ctx{max-height:46vh;overflow-y:auto}` letterboxed a long
+        # run-up into ~46% of a phone viewport, inside a second scrollbar. The
+        # **Scrollback** flows into ordinary page scroll instead — no cap, no
+        # nested scroller, and the retired class gone with it.
+        _, body, _ = self._raw("GET", "/")
+        rules = [ln for ln in body.splitlines() if ln.startswith(".sb{")]
+        self.assertEqual(len(rules), 1, "expected one .sb rule")
+        self.assertNotIn("max-height", rules[0])
+        self.assertNotIn("overflow", rules[0])
+        self.assertNotIn(".ctx", body)
 
     def test_retired_inline_page_routes_are_gone(self):
         # The inline launcher, its script, and the old /board alias are removed.
@@ -1327,8 +1341,8 @@ class ApprovalFocusTests(unittest.TestCase):
     says WHAT is being approved (just Yes/No).
 
     Captured live: session d4440820, blocked on `_APPROVAL_CMD`, returned lane
-    'approval' with ask='' and contextHtml=''. Pre-existing board gap, not the
-    tmux swap (`_full_context` reads the transcript, not the pane).
+    'approval' with an empty ask and an empty run-up. Pre-existing board gap, not
+    the tmux swap (`_full_context` reads the transcript, not the pane).
 
     Ticket: .scratch/approval-card-detail/issues/01-approval-cards-show-command.md
     """
@@ -1361,16 +1375,17 @@ class ApprovalFocusTests(unittest.TestCase):
         # Was RED until ticket 01: today ask carries the flushed Bash command, so
         # the card says WHAT is being approved instead of a bare Yes/No.
         focus = server._board()["focus"]
-        shown = f"{focus.get('ask', '')} {focus.get('contextHtml', '')}"
-        self.assertIn("wc -w", shown,
+        self.assertIn("wc -w", focus.get("ask", ""),
                       "approval card must surface the command being approved")
 
     def test_bash_command_rides_the_plaintext_ask_field(self):
         # The command is untrusted transcript text; it goes in `ask` (textContent,
-        # never innerHTML), so contextHtml carries no approval `input`.
+        # never innerHTML), so no innerHTML'd field carries an approval `input` —
+        # since ADR 0014 that means no **Turn**'s `html` either.
         focus = server._board()["focus"]
         self.assertIn("wc -w", focus["ask"])
-        self.assertNotIn("wc -w", focus["contextHtml"])
+        for turn in focus["scrollback"]:
+            self.assertNotIn("wc -w", turn["html"])
         self.assertEqual(focus["lane"], "approval")          # badge unchanged
         self.assertEqual(focus["options"], ["Yes", "No"])    # Yes/No preserved
 
@@ -1396,7 +1411,7 @@ class ApprovalDetailTests(unittest.TestCase):
 
     def _ask_for(self, tool):
         server._tail_rows = lambda sid: self._rows_for(tool)
-        _, ask, _ = server._full_context(_GOOD)
+        ask, _ = server._full_context(_GOOD)
         return ask
 
     def test_edit_shows_the_target_file_and_a_change_summary(self):
@@ -1424,17 +1439,18 @@ class ApprovalDetailTests(unittest.TestCase):
         self.assertTrue(ask.endswith("…"))
         self.assertNotIn("x" * 2000, ask)
 
-    def test_context_prose_above_the_command_is_clipped(self):
+    def test_the_run_up_prose_above_the_command_is_no_longer_returned(self):
+        # That prose used to ride back as ADR 0006's `contextHtml`, clipped to a
+        # budget of its own. It is the **Scrollback** now (ADR 0014), bounded per
+        # turn by _TURN_MAX, so `_full_context` yields the **Ask** and nothing
+        # else — however much prose sits above the command.
         long_prose = "we were " + "y" * 3000
         rows = [{"type": "assistant", "message": {"content": [
             {"type": "text", "text": long_prose},
             {"type": "tool_use", "id": "toolu_x", "name": "Bash",
              "input": {"command": "ls"}}]}}]
         server._tail_rows = lambda sid: rows
-        text, ask, _ = server._full_context(_GOOD)
-        self.assertEqual(ask, "ls")
-        self.assertLessEqual(len(text), server._CTX_MAX + 1)
-        self.assertTrue(text.endswith("…"))
+        self.assertEqual(server._full_context(_GOOD), ("ls", []))
 
 
 class ScrollbackTests(unittest.TestCase):
@@ -1655,10 +1671,11 @@ class FocusScrollbackTests(unittest.TestCase):
         self.assertIn("recent dated notes", focus["scrollback"][0]["html"])
         self.assertEqual(focus["scrollback"][-1]["tools"], ["Bash"])   # the tool-only turn
 
-    def test_context_html_stays_for_todays_client(self):
-        # Deliberate overlap: this slice ships green on its own; a later one
-        # deletes contextHtml (ADR 0014).
-        self.assertIn("contextHtml", server._board()["focus"])
+    def test_context_html_is_gone(self):
+        # The deliberate overlap of the previous slice is over: the client reads
+        # the scrollback now, so the field that carried the single last assistant
+        # message no longer ships (ADR 0014).
+        self.assertNotIn("contextHtml", server._board()["focus"])
 
     def test_the_etag_moves_when_a_turn_is_added(self):
         _, before = server._board_payload()

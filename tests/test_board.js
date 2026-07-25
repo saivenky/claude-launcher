@@ -73,7 +73,11 @@ let world = [];          // [{sessionId, runId, lane, title, updatedAt, pri, one
 // own payload key: they are not lanes, so nothing that orders `world` may ever
 // see one (server.py::_foreign_items, ADR 0012).
 let foreignWorld = [];   // [{sessionId, title, dir, status, bridge, updatedAt, one}]
-const ctxOf = {};        // sessionId -> contextHtml, so a test can change one
+// sessionId -> **Scrollback**: the recent **turns**, oldest first, exactly the
+// shape server.py::_scrollback ships (ADR 0014). A test can swap one Session's.
+const sbOf = {};
+const SB = () => [{role: "user", html: "<p>which one?</p>", tools: []},
+                  {role: "assistant", html: "<p>ctx</p>", tools: []}];
 let etagN = 0;
 const fetched = [];      // every URL board.js asked for
 const respondLog = [];
@@ -89,10 +93,14 @@ function fakeBoard(focusSid) {
   if (!focus) focus = order[0] || null;
   const strip = (s) => ({runId: s.runId, sessionId: s.sessionId, title: s.title, dir: "/p/" + s.title,
                          status: "", bridge: "", updatedAt: s.updatedAt, lane: s.lane, pri: s.pri, one: s.one});
+  // The **Ask** is a property of being **Blocked** and of nothing else: server.py
+  // blanks it off the question/approval lanes (ADR 0014). Mirrored here, or the
+  // "no ask on an idle Focus" test would only be testing the fake.
+  const blocked = focus && (focus.lane === "question" || focus.lane === "approval");
   return {
     focus: focus ? Object.assign(strip(focus), {
-      aiTitle: "about " + focus.title, contextHtml: ctxOf[focus.sessionId] || "<p>ctx</p>",
-      ask: "what now?", options: [], cursor: 0, pendingInput: "", pinned,
+      aiTitle: "about " + focus.title, scrollback: sbOf[focus.sessionId] || SB(),
+      ask: blocked ? "what now?" : "", options: [], cursor: 0, pendingInput: "", pinned,
     }) : null,
     upnext: order.filter((s) => s !== focus).map(strip),
     watching: world.filter((s) => s.lane === "working" && s !== focus).map(strip),
@@ -133,11 +141,16 @@ const alertLog = [];
 let confirmReply = true;
 
 const store = {cl_token: "secret"};   // pre-seeded: Respond is token-gated (ADR 0007)
+// The **Scrollback** has no scroll box of its own any more (ADR 0014 killed the
+// 46vh one), so the reading position the client carries across a rebuild is the
+// PAGE scroll. The stub window keeps it addressable from a test.
+const win = {prompt: () => "secret",
+             confirm: (m) => { confirmLog.push(m); return confirmReply; },
+             alert: (m) => { alertLog.push(m); },
+             scrollY: 0, scrollTo: (x, y) => { win.scrollY = y; }};
 const sandbox = {
   document: doc, console,
-  window: {prompt: () => "secret",
-           confirm: (m) => { confirmLog.push(m); return confirmReply; },
-           alert: (m) => { alertLog.push(m); }},
+  window: win,
   localStorage: {getItem: (k) => (k in store ? store[k] : null), setItem: (k, v) => { store[k] = v; },
                  removeItem: (k) => { delete store[k]; }},
   fetch: fakeFetch, setTimeout, clearTimeout, Date, JSON, Object, Array, Math, String, encodeURIComponent,
@@ -150,7 +163,7 @@ const app = doc.getElementById("app");
 const focusWrap = () => app.children[0];
 const card = () => focusWrap().querySelector(".focus");
 const ti = () => focusWrap().querySelector(".ti");
-const ctxEl = () => focusWrap().querySelector(".ctx");
+const sbEl = () => focusWrap().querySelector(".sb");
 const shownSid = () => {   // the card prints sessionId[:8] in its meta line
   const c = card(); if (!c) return null;
   const meta = c.querySelector(".fmeta");
@@ -212,7 +225,7 @@ const W = "wwwwwwww-3333-3333-3333-333333333333";
   // One ETag covers the whole board, so another Run's churn redraws this page.
   // That redraw must not reach the Focus card.
   ti().value = "half-typed reply";
-  ctxEl().scrollTop = 120;
+  win.scrollY = 120;   // you had read some way down the scrollback
   const node = card();
   world.push(S(W, "working", 1, "worker"));
   world[2].updatedAt = 9999;
@@ -220,16 +233,20 @@ const W = "wwwwwwww-3333-3333-3333-333333333333";
   ok("churn: an unrelated Run's update leaves the card alone", card() === node);
   ok("churn: the half-typed reply survives", ti().value === "half-typed reply",
      "got " + JSON.stringify(ti().value));
-  ok("churn: the context scroll survives", ctxEl().scrollTop === 120, "got " + ctxEl().scrollTop);
+  ok("churn: the reading position survives", win.scrollY === 120, "got " + win.scrollY);
 
   // When the Focus's own data does move, it rebuilds — carrying state across.
-  ctxOf[A] = "<p>new context arrived</p>";
+  sbOf[A] = SB().concat([{role: "assistant", html: "<p>a new turn arrived</p>", tools: []}]);
   await poll();
   ok("own change: the card is rebuilt", card() !== node);
   ok("own change: the reply is carried over", ti().value === "half-typed reply",
      "got " + JSON.stringify(ti().value));
-  ok("own change: the scroll is carried over", ctxEl().scrollTop === 120, "got " + ctxEl().scrollTop);
-  ok("own change: the new context is shown", ctxEl().innerHTML === "<p>new context arrived</p>");
+  // The scrollback lost its own scroller with ADR 0014, so the reading position
+  // to carry is the page's. A poll must never throw you back up a long run-up.
+  ok("own change: the reading position is carried over", win.scrollY === 120, "got " + win.scrollY);
+  ok("own change: the new turn is shown",
+     findAll(sbEl(), "md").slice(-1)[0].innerHTML === "<p>a new turn arrived</p>",
+     JSON.stringify(findAll(sbEl(), "md").map((m) => m.innerHTML)));
 
   // A different Session is a different reply — never inherit the last one's.
   sandbox.setPinned(B);
@@ -237,7 +254,7 @@ const W = "wwwwwwww-3333-3333-3333-333333333333";
   ok("switch: tapping a row moves the Focus", shownSid() === B.slice(0, 8), "got " + shownSid());
   ok("switch: the new card gets a clean box", ti().value === "", "got " + JSON.stringify(ti().value));
   sandbox.setPinned(A); await settle();
-  ti().value = ""; ctxOf[A] = "<p>ctx</p>";
+  ti().value = ""; delete sbOf[A];
 
   // Advance-on-resolve: the one automatic move.
   world.find((s) => s.sessionId === A).lane = "working";
@@ -392,6 +409,73 @@ const W = "wwwwwwww-3333-3333-3333-333333333333";
   await settle();
   ok("transfer: an ordinary refusal stays a toast", alertLog.length === 1,
      JSON.stringify(alertLog));
+
+  // --- The Focus is a Scrollback (ADR 0014) ---------------------------------
+  // The card renders the Session's recent **turns** — what you said, what it did
+  // and what it then said — in place of the single last assistant message.
+  const T = "77777777-5555-5555-5555-555555555555";
+  foreignWorld = [];
+  world = [S(T, "yourmove", 1, "scroll")];
+  sbOf[T] = [
+    {role: "user", html: "<p>consolidate the notes</p>", tools: []},
+    // The tool-only turn, and an injection attempt riding a field that is NOT
+    // the innerHTML'd one.
+    {role: "assistant", html: "", tools: ["Bash", "<img src=x onerror=alert(1)>"]},
+    {role: "assistant", html: "<p>done — <strong>3 files</strong></p>", tools: ["Read"]},
+  ];
+  sandbox.setPinned(T);
+  await settle();
+  const turns = () => findAll(sbEl(), "turn");
+  const hasCls = (n, c) => (" " + n.className + " ").includes(" " + c + " ");
+
+  ok("scrollback: one element per turn, oldest first", turns().length === 3 &&
+     hasCls(turns()[0], "you") && hasCls(turns()[2], "ai"),
+     turns().map((t) => t.className).join(" | "));
+
+  // The ADR 0006 / ADR 0003 split, in one pair of assertions: the ONE field the
+  // server rendered escape-first becomes markup; every other field of the same
+  // turn is untrusted text and cannot become an element.
+  ok("scrollback: a turn's html reaches the DOM as markup (ADR 0006)",
+     findAll(sbEl(), "md")[0].innerHTML === "<p>consolidate the notes</p>",
+     JSON.stringify(findAll(sbEl(), "md").map((m) => m.innerHTML)));
+  const chips = findAll(turns()[1], "tool");
+  ok("scrollback: a turn's other fields cannot inject — textContent, never innerHTML (ADR 0003)",
+     chips.length === 2 && chips[1].textContent === "<img src=x onerror=alert(1)>" &&
+     chips[1].innerHTML === "", JSON.stringify(chips.map((c) => [c.textContent, c.innerHTML])));
+
+  // A working Run emits long stretches of tool calls with no prose. Drawn as
+  // blanks the whole scrollback looks broken.
+  ok("scrollback: a tool-only turn draws its chips and is not blank",
+     turns()[1].textContent.includes("Bash") && hasCls(turns()[1], "toolsonly"),
+     JSON.stringify(turns()[1].textContent));
+  ok("scrollback: the newest assistant turn reads as the live one",
+     hasCls(turns()[2], "live") && !hasCls(turns()[1], "live"));
+
+  // An **Ask** is the blocker of a **Blocked** Run and of nothing else. On an
+  // idle Focus the closing question is already the last turn above.
+  ok("ask: an idle Focus draws no ask block at all", findAll(focusWrap(), "ask").length === 0,
+     JSON.stringify(findAll(focusWrap(), "ask").map((a) => a.textContent)));
+  ok("ask: and no placeholder stands in for it",
+     !card().textContent.includes("no explicit question"), card().textContent);
+
+  world[0].lane = "question";
+  await poll();
+  const askBox = () => findAll(focusWrap(), "ask");
+  ok("ask: a Blocked Focus draws one, carrying the blocker",
+     askBox().length === 1 && askBox()[0].textContent.includes("what now?"),
+     JSON.stringify(askBox().map((a) => a.textContent)));
+
+  // The composer is unconditional (CONTEXT.md: Focus). Responding to a working
+  // Run is not a special case — its input queues until the turn ends.
+  for (const lane of ["yourmove", "question", "working"]) {
+    world[0].lane = lane;
+    await poll();
+    ok("composer: a " + lane + " Focus still offers the reply box", !!ti() &&
+       !!focusWrap().querySelector(".send"));
+  }
+  ok("composer: a working Focus says what happens to what you type",
+     card().textContent.includes("queues until this turn ends"), card().textContent);
+  ok("composer: and nothing is disabled to say it", ti().disabled !== true);
 
   console.log("\n  " + pass + " passed, " + fail + " failed");
   process.exit(fail ? 1 : 0);

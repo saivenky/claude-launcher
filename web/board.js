@@ -1,9 +1,10 @@
 "use strict";
 // Board client. Fetches GET /api/board and renders the curated round-robin.
 // Everything is built with createElement + textContent (never innerHTML for
-// data) — the ONE exception is the focus context, which the server renders as
-// escape-first markdown HTML (see ADR 0006). That single field is greppable
-// below as `.innerHTML =`.
+// data) — the ONE exception is a **Turn**'s `html`, which the server renders as
+// escape-first markdown (see ADR 0006, widened from one field to N by ADR 0014:
+// same function, same guarantee). That single sink is greppable below as
+// `.innerHTML =`, in turnEl().
 //
 // Since ADR 0008 the Board is the Launcher's only page, so it also carries
 // intake (dir-launch, resume, task/dispatch buttons — the bottom compose dock),
@@ -19,7 +20,7 @@
 //      the card in front of you. It moves when you move it — or when it
 //      resolves out from under you (advance-on-resolve, in render).
 //   2. The Focus card is never rebuilt unless its own data moved, and a rebuild
-//      carries the reply box and the context scroll across (renderFocus). One
+//      carries the reply box and your reading position across (renderFocus). One
 //      ETag covers the whole board, so any other Run's churn redraws this page;
 //      that redraw must not reach the card.
 
@@ -61,6 +62,10 @@ const ROW_CLS = {question: "lane-q", approval: "lane-p", yourmove: "lane-m",
                  working: "lane-w", snoozed: "lane-w"};
 const ROW_BADGE = {question: "question", approval: "approval", yourmove: "your move",
                    working: "working", snoozed: "snoozed"};
+
+// **Blocked**: paused awaiting a specific required input from you (CONTEXT.md).
+// The two lanes that have an **Ask**, and the only two that draw one.
+const isBlocked = (f) => f.lane === "question" || f.lane === "approval";
 
 function el(tag, cls, txt) {
   const e = document.createElement(tag);
@@ -553,6 +558,39 @@ async function doRecover() {
   setTimeout(() => { etag = null; poll(); }, 3500);
 }
 
+// One **Turn** of the **Scrollback**: who spoke, its prose, and the names of the
+// tools it invoked. `live` marks the newest assistant turn — the one you are
+// actually answering — so it reads as the head of the run-up, not just the last
+// paragraph of it.
+//
+// ADR 0006's innerHTML exception lives HERE and nowhere else in this file. Only
+// `t.html` is assigned: it is markdown the server already rendered escape-first
+// (`_md_to_html`), so a `<script>` in a transcript arrives as text, never as an
+// element. ADR 0014 widened that exception from one field to N turns — same
+// function, same sink. Every OTHER field of a turn (the role, each tool name) is
+// untrusted transcript text and goes through el() → textContent, per ADR 0003.
+function turnEl(t, live) {
+  const tools = t.tools || [];
+  const toolsOnly = !t.html && tools.length > 0;
+  const wrap = el("div", "turn " + (t.role === "user" ? "you" : "ai") +
+                         (live ? " live" : "") + (toolsOnly ? " toolsonly" : ""));
+  wrap.append(el("div", "who", t.role === "user" ? "you" : "claude"));
+  if (t.html) {
+    const md = el("div", "md");
+    md.innerHTML = t.html;   // server-escaped markdown — see ADR 0006 / 0014
+    wrap.append(md);
+  }
+  // A turn carrying only tools is the COMMON case on a working Run. Rendered as
+  // a blank the whole scrollback looks broken, so it draws dimmed chips instead
+  // (ADR 0014).
+  if (tools.length) {
+    const chips = el("div", "tools");
+    tools.forEach((name) => chips.append(el("span", "tool", name)));
+    wrap.append(chips);
+  }
+  return wrap;
+}
+
 function focusCard(f) {
   const cls = f.lane === "question" ? "focus bq" : f.lane === "approval" ? "focus bp" : "focus";
   const card = el("div", cls);
@@ -571,14 +609,28 @@ function focusCard(f) {
     card.append(about);
   }
 
-  const ctx = el("div", "ctx");
-  ctx.innerHTML = f.contextHtml || "";   // server-escaped markdown — see ADR 0006
-  card.append(ctx);
+  // The **Scrollback**: the Session's recent **turns**, oldest first, in place of
+  // the single last assistant message (ADR 0014). What you said, what it did and
+  // what it then said — the run-up you need in order to answer. It has NO scroll
+  // box of its own; it flows into the page scroll (see `.sb` in board.html).
+  const sb = el("div", "sb");
+  const turns = f.scrollback || [];
+  if (!turns.length) sb.append(el("div", "who", "(nothing in the transcript tail yet)"));
+  turns.forEach((t, i) => sb.append(
+    turnEl(t, t.role === "assistant" && i === turns.length - 1)));
+  card.append(sb);
 
-  const ask = el("div", "ask");
-  ask.append(el("div", "lbl", "the ask"));
-  ask.append(el("div", "qtext", f.ask || "(no explicit question — your move)"));
-  card.append(ask);
+  // An **Ask** is the blocker of a **Blocked** Run and of nothing else
+  // (CONTEXT.md). An idle Run's closing question is now visibly the last turn
+  // above, so the old "(no explicit question — your move)" placeholder was ~62px
+  // of chrome saying nothing; the server sends `ask: ""` off the blocked lanes.
+  // Never draw an empty box.
+  if (isBlocked(f) && f.ask) {
+    const ask = el("div", "ask");
+    ask.append(el("div", "lbl", "the ask"));
+    ask.append(el("div", "qtext", f.ask));
+    card.append(ask);
+  }
 
   if (f.pendingInput) {   // there's already unsent text in this session's box
     const warn = el("div", "pending");
@@ -605,9 +657,19 @@ function focusCard(f) {
     });
     respond.append(opts);
   }
+  // The reply box is unconditional — idle, **Blocked** or working alike
+  // (CONTEXT.md: Focus). Responding to a working Run is not a special case, so
+  // nothing here is disabled; it just says where the text goes, once, next to
+  // the box: Claude Code's native input queue absorbs it until the next turn
+  // (CONTEXT.md: Respond).
+  if (f.lane === "working") {
+    respond.append(el("div", "queued",
+      "⏳ busy — what you send queues until this turn ends"));
+  }
   const row = el("div", "replyrow");
   const ti = el("input", "ti");
-  ti.placeholder = "type your reply…";
+  ti.placeholder = isBlocked(f) ? "answer…"
+    : f.lane === "working" ? "queue a note for the next turn…" : "type your reply…";
   const send = el("button", "send", "respond →");
   // Clear only once the text is actually sent. The box now survives rebuilds,
   // so clearing optimistically (or not at all) would carry a stale value back
@@ -834,18 +896,21 @@ function renderFocus(f) {
 }
 
 // What a rebuild would otherwise cost you: the reply text, the caret, whether
-// the keyboard is up, and where you had scrolled the context.
+// the keyboard is up, and where you had read up to.
+//
+// That reading position used to be `.ctx`'s scrollTop, because the run-up sat in
+// a 46vh scroller of its own. ADR 0014 killed that box, so the **Scrollback**
+// flows into the page and the page scroll IS the reading position — same intent,
+// one level up. A poll must not throw you back to the top of a long run-up.
 function grab(card) {
   const ti = card.querySelector(".ti");
-  const ctx = card.querySelector(".ctx");
   return {text: ti ? ti.value : "", start: ti ? ti.selectionStart : 0,
           end: ti ? ti.selectionEnd : 0, active: !!ti && ti === document.activeElement,
-          scroll: ctx ? ctx.scrollTop : 0};
+          scroll: window.scrollY || 0};
 }
 
 function restore(card, k) {
-  const ctx = card.querySelector(".ctx");
-  if (ctx) ctx.scrollTop = k.scroll;
+  window.scrollTo(0, k.scroll);
   const ti = card.querySelector(".ti");
   if (!ti) return;
   ti.value = k.text;

@@ -1570,10 +1570,11 @@ def _md_to_html(text: str) -> str:
 
 
 # Truncation budgets keep the focus card readable on a phone. A command / file /
-# plan under approval, and the run-up prose above it, are all transcript text we
-# do not own; an over-long one is clipped with an ellipsis.
+# plan under approval is transcript text we do not own; an over-long one is
+# clipped with an ellipsis. (The run-up prose above it had its own budget until
+# ADR 0014 — it is now the **Scrollback**, bounded by _SCROLLBACK_TURNS/_TURN_MAX
+# below instead.)
 _ASK_MAX = 600     # the command / file / plan being approved
-_CTX_MAX = 1200    # the recent conversation context shown above it
 
 # The **Scrollback**'s two bounds, and the only two knobs that decide what
 # `/api/board` costs. ADR 0014 accepted a bigger body on the condition that it
@@ -1618,19 +1619,24 @@ def _approval_detail(tu: dict) -> str:
 
 
 def _full_context(session_id: str, rows: list | None = None) -> tuple:
-    """(context_text, ask, options) from the Session's last assistant turn.
+    """(ask, options) from the Session's last assistant turn.
 
     For an approval the `ask` describes the flushed pending tool_use (the Bash
     command, the Edit/Write target, or the ExitPlanMode plan) — what you're being
-    asked to approve — and the run-up prose above it is clipped. See ADR 0009 and
-    `_approval_detail` for why this is structured data, not a pane scrape.
+    asked to approve. See ADR 0009 and `_approval_detail` for why this is
+    structured data, not a pane scrape.
+
+    It used to return the run-up prose as well, for ADR 0006's single
+    `contextHtml` field; that field is gone (ADR 0014) and the prose is now the
+    **Scrollback**, so the text is only an input to the `?` regex here. The name
+    is ADR 0014's, kept so the ADR still points at real code.
 
     `rows` lets a caller hand in a tail it has already parsed, so the **Ask** and
     the **Scrollback** cost one file read between them (ADR 0014)."""
     rows = _tail_rows(session_id) if rows is None else rows
     la = _last_assistant(rows)
     if not la:
-        return "", "", []
+        return "", []
     text = "\n".join(b.get("text", "") for b in _blocks(la) if b.get("type") == "text").strip()
     qs = re.findall(r"[^\n?]*\?", text)
     ask = qs[-1].strip()[-200:] if qs else ""
@@ -1648,11 +1654,9 @@ def _full_context(session_id: str, rows: list | None = None) -> tuple:
             ask = questions[0]["question"].strip()[:200]
     elif tu:
         # An approval (any non-AskUserQuestion pending tool_use — Bash / Edit /
-        # Write / ExitPlanMode …): surface the concrete blocker as the ask, and
-        # clip the run-up context that renders above it.
+        # Write / ExitPlanMode …): surface the concrete blocker as the ask.
         ask = _approval_detail(tu) or ask
-        text = _clip(text, _CTX_MAX)
-    return text, ask, options
+    return ask, options
 
 
 def _scrollback(rows: list) -> list[dict]:
@@ -1863,7 +1867,7 @@ def _board(focus_sid: str = "") -> dict:
         lane = "snoozed" if snoozed else _lane_of(r)
         one = r.get("snippet", "")
         if lane in ("question", "approval"):
-            _, ask, _ = _full_context(sid)
+            ask, _ = _full_context(sid)
             one = ask or one
         proj = (r.get("dir") or "").rstrip("/").split("/")[-1]
         items.append({"runId": r.get("id"), "sessionId": sid, "title": proj or r.get("title", ""),
@@ -1901,7 +1905,7 @@ def _board(focus_sid: str = "") -> dict:
         # One parse of the tail, two derivations: the **Ask** and the
         # **Scrollback** (ADR 0014 — the scrollback costs no second file read).
         rows = _tail_rows(focus["sessionId"])
-        text, ask, options = _full_context(focus["sessionId"], rows)
+        ask, options = _full_context(focus["sessionId"], rows)
         scrollback = _scrollback(rows)
         cursor = 0
         pane = _pane_contents(focus["runId"])   # one read: box + any selector/widget
@@ -1944,10 +1948,7 @@ def _board(focus_sid: str = "") -> dict:
         if not blocked:
             ask, options, cursor = "", [], 0
         focus = dict(focus, lane=lane, aiTitle=_ai_title(focus["sessionId"]),
-                     scrollback=scrollback,
-                     # contextHtml is superseded by the scrollback and kept only
-                     # so today's client stays working; a later slice deletes it.
-                     contextHtml=_md_to_html(text), ask=ask, options=options,
+                     scrollback=scrollback, ask=ask, options=options,
                      cursor=cursor, pendingInput=pending, pinned=pinned)
     # serverDown distinguishes a dead tmux server (all Runs gone silently) from
     # an ordinary empty board. The web client does not render this yet — plumbing
