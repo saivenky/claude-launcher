@@ -47,7 +47,14 @@ class El {
   get innerHTML() { return this._html; }
   set innerHTML(v) { this._html = String(v); this.children = []; }
   get firstChild() { return this.children[0]; }
-  append(...ns) { for (const n of ns) if (n != null) this.children.push(n); }
+  // `tagName` because the arrow keys that walk the ring stand down while
+  // anything is taking text, and that is what board.js reads to know.
+  get tagName() { return (this.tag || "").toUpperCase(); }
+  // `parent` exists for `closest()` below, which is how board.js decides a
+  // gesture started somewhere the gesture does not live.
+  append(...ns) {
+    for (const n of ns) if (n != null) { if (n instanceof El) n.parent = this; this.children.push(n); }
+  }
   addEventListener(t, fn) { (this.listeners[t] = this.listeners[t] || []).push(fn); }
   dispatch(t, ev) { (this.listeners[t] || []).forEach((fn) => fn(ev || {})); }
   setAttribute(k, v) { this[k] = v; }
@@ -72,6 +79,17 @@ class El {
     };
     return walk(this);
   }
+  // Self-or-ancestor, over a comma-separated list of class and tag selectors —
+  // exactly the shape board.js hands it (SWIPE_BLOCK).
+  closest(sel) {
+    const parts = sel.split(",").map((s) => s.trim()).filter(Boolean);
+    for (let n = this; n; n = n.parent) {
+      for (const p of parts) {
+        if (p[0] === "." ? (" " + n._cls + " ").includes(" " + p.slice(1) + " ") : n.tag === p) return n;
+      }
+    }
+    return null;
+  }
 }
 const doc = {
   activeElement: null,
@@ -92,9 +110,14 @@ const doc = {
 // board.html ships these hidden and gives the dock a class; the stub creates
 // bare, visible elements, so seed both or the client reads an intake that is
 // permanently open and a dock with no box to measure.
-["dockexp", "dirpop", "recoverbar", "recovpanel", "toast"]
+["dockexp", "dirpop", "recoverbar", "recovpanel", "toast", "swipehint"]
   .forEach((id) => { doc.getElementById(id).hidden = true; });
-doc.getElementById("dock").className = "dock";
+// Classes, because a gesture is refused by where it started (board.js::inChrome
+// reads `closest`), and tags, because the arrow keys stand down while an input
+// has focus. board.html says both; the stub makes every by-id node a bare div.
+["dock", "dirpop", "recovpanel", "rail", "swipehint"]
+  .forEach((id) => { doc.getElementById(id).className = id; });
+["dir", "sid"].forEach((id) => { doc.getElementById(id).tag = "input"; });
 
 // --- fake /api/board -------------------------------------------------------
 // Mirrors server.py::_board's focus rule: honour ?focus= when that Session is
@@ -631,6 +654,193 @@ const W = "wwwwwwww-3333-3333-3333-333333333333";
      doc.documentElement.style._p["--dockh"] === "96px",
      JSON.stringify(doc.documentElement.style._p));
 
+  // --- The return path: a ring you can walk (this slice) --------------------
+  // Answering a Run used to drop it three headings down under a label promising
+  // it would resurface "when it needs you". It does not, and the follow-up
+  // thought arrives minutes later — too late for any "keep this card" button,
+  // because you did not have the thought yet. So the Board owes a way BACK:
+  // one ring, walked by a gesture on a phone and by a rail on a monitor, and
+  // setPinned underneath both — never a second mechanism.
+  doc.dispatch("click");        // chrome back up; nothing below is mid-read
+  doc.activeElement = null;
+  layout.cardBottom = 0;
+  win.dispatch("scroll");
+  const G = "99999999-6666-6666-6666-666666666666";
+  world = [S(A, "question", 1, "alpha"), S(B, "yourmove", 1, "bravo"), S(W, "working", 1, "worker")];
+  // A **Foreign Run** on the board throughout: every assertion below is also an
+  // assertion that it is nowhere in the ring (ADR 0012).
+  foreignWorld = [{sessionId: G, title: "byhand", dir: "~/projects/byhand", status: "waiting",
+                   bridge: "", updatedAt: 1000, one: "started by hand at the Mac"}];
+  sandbox.setPinned(A);
+  await settle();
+
+  const rail = () => doc.getElementById("rail");
+  const hint = () => doc.getElementById("swipehint");
+  const railRows = () => findAll(rail(), "qrow");
+  const isNow = (r) => (" " + r.className + " ").includes(" now ");
+  const nowRow = () => railRows().find(isNow);
+  const fdir = () => (card() ? card().querySelector(".fdir").textContent : "");
+  // Pointer, not touch: the prototype's touch-only first cut fired nothing under
+  // a mouse, so the gesture did not exist on a desktop at all.
+  const swipe = (target, dx, dy) => {
+    win.dispatch("pointerdown", {target, clientX: 200, clientY: 400});
+    win.dispatch("pointerup", {target, clientX: 200 + dx, clientY: 400 + dy});
+  };
+
+  ok("hint: one line says the gesture is there — nothing else on the page does",
+     hint().hidden === false, "hidden=" + hint().hidden);
+
+  // The ring is the Board's display order with the Focus spliced into its own
+  // zone: [worker (answered), alpha (the Focus), bravo].
+  swipe(sbEl(), -130, 12);
+  await settle();
+  ok("swipe: a horizontal drag on the Scrollback moves the Focus",
+     shownSid() === B.slice(0, 8), "got " + shownSid());
+  ok("swipe: and moves it the one way anything moves it — setPinned, so ?focus= follows",
+     lastBoardUrl() === "api/board?focus=" + B, "got " + lastBoardUrl());
+  ok("swipe: the edge you moved toward flashes — a gesture leaves no other mark",
+     (" " + doc.getElementById("edger").className + " ").includes(" on "),
+     doc.getElementById("edger").className);
+  ok("swipe: and the toast names where it put you",
+     doc.getElementById("toast").textContent === "→ bravo",
+     JSON.stringify(doc.getElementById("toast").textContent));
+  ok("hint: which retires it for good, on this device",
+     hint().hidden === true && store.cl_swipe === "used", JSON.stringify(store.cl_swipe));
+
+  // The whole point of the slice. `answered · still running` LEADS the ring, so
+  // the Run you replied to sits one step off the head of the queue — back past
+  // alpha and you are on it, with no tap and nothing to have thought of earlier.
+  swipe(sbEl(), 140, -10);
+  await settle();
+  ok("swipe: back the way you came", shownSid() === A.slice(0, 8), "got " + shownSid());
+  swipe(sbEl(), 140, -10);
+  await settle();
+  ok("swipe: and once more is the Run you already answered — the return path",
+     shownSid() === W.slice(0, 8), "got " + shownSid());
+
+  const seen = [];
+  for (let i = 0; i < 5; i++) { swipe(sbEl(), -150, 0); await settle(); seen.push(shownSid()); }
+  ok("ring: it walks every Managed Run and wraps", new Set(seen).size === 3, JSON.stringify(seen));
+  ok("ring: and never lands on a Foreign Run — it is not in the ring at all",
+     !seen.includes(G.slice(0, 8)), JSON.stringify(seen));
+  ok("ring: while that Foreign Run is still listed and transferable",
+     findAll(zones(), "frow").length === 1);
+
+  // A trackpad's two-finger flick is the same gesture on a laptop.
+  let held2 = shownSid();
+  win.dispatch("wheel", {deltaX: 9, deltaY: 240, target: sbEl()});
+  await settle();
+  ok("trackpad: an ordinary vertical scroll is never a move", shownSid() === held2,
+     "got " + shownSid());
+  win.dispatch("wheel", {deltaX: 95, deltaY: 6, target: sbEl()});
+  await settle();
+  ok("trackpad: a horizontal flick moves it", shownSid() !== held2, "still " + shownSid());
+  held2 = shownSid();
+  win.dispatch("wheel", {deltaX: 95, deltaY: 6, target: sbEl()});
+  await settle();
+  ok("trackpad: one flick is one move — the burst of events behind it is ignored",
+     shownSid() === held2, "got " + shownSid());
+
+  // The keyboard does on a desktop what the swipe does on glass.
+  await tick(750);   // the wheel lock is a flick's, not a key's
+  doc.activeElement = null;
+  held2 = shownSid();
+  doc.dispatch("keydown", {key: "ArrowRight"});
+  await settle();
+  ok("keyboard: → walks the ring", shownSid() !== held2, "still " + shownSid());
+  doc.dispatch("keydown", {key: "ArrowLeft"});
+  await settle();
+  ok("keyboard: ← walks it back", shownSid() === held2, "got " + shownSid());
+  doc.getElementById("dir").focus();
+  doc.dispatch("keydown", {key: "ArrowRight"});
+  await settle();
+  ok("keyboard: but the arrows belong to the caret while an input has focus",
+     shownSid() === held2, "got " + shownSid());
+  doc.getElementById("dir").blur();
+  doc.activeElement = null;
+
+  // Where the gesture does not live. Each of these is its own surface with its
+  // own targets, and one of them is the reply box this whole file protects.
+  const guarded = shownSid();
+  const noSwipe = (name, target) => {
+    swipe(target, -170, 0);
+    return name;
+  };
+  for (const [name, node] of [["the composer", card().querySelector(".respond")],
+                              ["the intake dock", doc.getElementById("dock")],
+                              ["the Recover sheet", doc.getElementById("recovpanel")],
+                              ["the dir popup", doc.getElementById("dirpop")],
+                              ["the rail", rail()]]) {
+    noSwipe(name, node);
+    await settle();
+    ok("no swipe from " + name, shownSid() === guarded, "got " + shownSid());
+  }
+
+  ti().value = "half a thought";
+  swipe(sbEl(), -180, 0);
+  await settle();
+  ok("swipe: a half-typed reply is never swiped out from under you",
+     shownSid() === guarded && ti().value === "half a thought",
+     shownSid() + " / " + JSON.stringify(ti().value));
+  ti().value = "";
+
+  // Vertical scrolling has to stay effortless: a **Scrollback** is read by
+  // dragging it up and down, and a horizontal reading that fires too easily
+  // makes that read feel sticky.
+  swipe(sbEl(), 40, 300);
+  await settle();
+  ok("scrolling: a mostly-vertical drag is a read, not a swipe", shownSid() === guarded,
+     "got " + shownSid());
+  swipe(sbEl(), 100, 90);
+  await settle();
+  ok("scrolling: horizontal must out-run vertical outright before it counts",
+     shownSid() === guarded, "got " + shownSid());
+  swipe(sbEl(), 40, 4);
+  await settle();
+  ok("scrolling: and a short slide is slop, not a gesture", shownSid() === guarded,
+     "got " + shownSid());
+
+  // --- The rail: the same ring, spent as width a monitor never misses -------
+  ok("rail: it draws the whole ring, the Focus included", railRows().length === 3,
+     railRows().map((r) => r.textContent).join(" | "));
+  ok("rail: with the current-Run marker on the Run the card is showing",
+     !!nowRow() && nowRow().textContent.includes(fdir()),
+     nowRow() && nowRow().textContent);
+  const wasNow = nowRow().textContent;
+  swipe(sbEl(), -150, 0);
+  await settle();
+  ok("rail: a swipe moves that marker — on a monitor the gesture has a readout",
+     !!nowRow() && nowRow().textContent !== wasNow && nowRow().textContent.includes(fdir()),
+     nowRow() && nowRow().textContent);
+  ok("rail: a Foreign Run is not in it either", !rail().textContent.includes("byhand"),
+     rail().textContent);
+  ok("rail: its rows reach a Run rather than act on one — no ↗ ❯ × strip at 290px",
+     findAll(rail(), "rowact").length === 0);
+  const otherRow = railRows().find((r) => !isNow(r));
+  const target = otherRow.querySelector(".qdir").textContent;
+  otherRow.querySelector(".qbody").dispatch("click");
+  await settle();
+  ok("rail: clicking one moves the Focus, exactly as a row tap does",
+     fdir() === target && !!nowRow() && nowRow().querySelector(".qdir").textContent === target,
+     fdir() + " / " + target);
+
+  // --- The zones below the card: unchanged on a phone, and honest now -------
+  sandbox.setPinned(A);
+  await settle();
+  const heads = () => findAll(zones(), "qhead").map((h) => h.textContent);
+  ok("zones: the phone still gets them under the card — the rail is not its answer",
+     findAll(zones(), "qrow").length >= 2 && heads().length >= 2, JSON.stringify(heads()));
+  ok("relabel: `answered · still running` leads them",
+     heads()[0].startsWith("answered · still running"), JSON.stringify(heads()));
+  ok("relabel: nothing still promises to resurface on its own",
+     heads().every((h) => !h.includes("resurfaces")), JSON.stringify(heads()));
+  const answered = findAll(zones(), "qrow").find((r) => r.textContent.includes("worker"));
+  ok("relabel: and it is not dimmed — you are reading it because it did NOT resurface",
+     !!answered && answered.closest(".dim") === null, answered && answered.className);
+  ok("zones: the Focus is spliced into the RAIL only; these stay the payload's own",
+     findAll(zones(), "qrow").every((r) => !isNow(r)),
+     findAll(zones(), "qrow").map((r) => r.className).join(" | "));
+
   // --- What only the stylesheet can answer ----------------------------------
   // The stub runs no CSS, so everything above proves the client toggles a class.
   // Whether that class actually yields the pixels — and whether the column is
@@ -663,6 +873,28 @@ const W = "wwwwwwww-3333-3333-3333-333333333333";
      /--gut:max\(14px,calc\(50% - var\(--col\)\/2\)\)/.test(HTML));
   ok("column: and the fixed dock snaps to the SAME column, not the viewport edge",
      rule(".dock").includes("var(--gut)"), rule(".dock"));
+
+  // The rail's gate is a media query, so only the sheet can say where it is.
+  const mq = HTML.indexOf("@media(min-width:900px){");
+  const mqBlock = mq > 0 ? HTML.slice(mq, HTML.indexOf("\n}", mq)) : "";
+  ok("rail: it does not exist below 900px — the phone keeps its zones and the swipe",
+     rule(".rail") === "display:none" && /\.rail\{display:block/.test(mqBlock), rule(".rail"));
+  ok("rail: where it does exist the queue steps aside, so the list is never drawn twice",
+     /\.queues\{display:none\}/.test(mqBlock), mqBlock.slice(-120));
+  ok("rail: and the reading column is OFFSET by it, never overlapped",
+     /--rail:290px/.test(mqBlock) &&
+     /--gut:max\(14px,calc\(50% - var\(--rail\)\/2 - var\(--col\)\/2\)\)/.test(mqBlock) &&
+     rule(".wrap").includes("margin-left:var(--rail)") &&
+     rule(".dock").includes("left:var(--rail)"),
+     rule(".wrap") + " || " + rule(".dock"));
+  ok("swipe: the Scrollback keeps the vertical axis and claims only the horizontal",
+     rule(".sb").includes("touch-action:pan-y"), rule(".sb"));
+  ok("swipe: the landing cue is a fixed overlay — a cue may not move the read",
+     rule(".edge").includes("position:fixed") && /\.edge\.on\{opacity/.test(HTML),
+     rule(".edge"));
+  ok("hint: it names the gesture, and clears the read like the rest of this edge",
+     HTML.includes("drag sideways to move between Runs") &&
+     /transform:translateY/.test(rule(".swipehint.hid")), rule(".swipehint.hid"));
 
   console.log("\n  " + pass + " passed, " + fail + " failed");
   process.exit(fail ? 1 : 0);

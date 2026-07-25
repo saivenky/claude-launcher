@@ -28,6 +28,13 @@
 //      carries the reply box and your reading position across (renderFocus). One
 //      ETag covers the whole board, so any other Run's churn redraws this page;
 //      that redraw must not reach the card.
+//   3. There is a way BACK. Answering a Run sends it three headings down the
+//      page, and the thought you want to add arrives minutes later — after any
+//      "keep this card" affordance could have helped, because you did not have
+//      the thought yet. So the Focus walks a ring: a swipe on a phone, a
+//      persistent rail on a monitor (the return path, below). Both end at
+//      setPinned, both are yours to trigger, and neither ever moves the Focus
+//      on its own.
 
 const app = document.getElementById("app");
 const summary = document.getElementById("summary");
@@ -52,6 +59,10 @@ const recovSubEl = document.getElementById("recovsub");
 const recovListEl = document.getElementById("recovlist");
 const recovGoEl = document.getElementById("recovgo");
 const recovCloseEl = document.getElementById("recovclose");
+const railEl = document.getElementById("rail");           // the >=900px queue
+const edgeLEl = document.getElementById("edgel");         // the swipe's landing
+const edgeREl = document.getElementById("edger");         // cue, one per side
+const hintEl = document.getElementById("swipehint");
 
 // #app is split in two, once, up front: the Focus card gets its own container so
 // redrawing the queue below can never touch it. That redraw is what used to eat
@@ -749,10 +760,17 @@ function focusCard(f) {
   return card;
 }
 
-function qrow(item) {
+// `compact` is the rail's row: 290px has no room for the ↗ ❯ × strip, and the
+// rail is for *getting to* a Run, not for acting on one from a distance — the
+// card and the page's own zones still carry every action.
+// `.now` is the Focus, which the rail (and only the rail) draws as a row: it is
+// what makes the swipe legible on a monitor.
+function qrow(item, opts) {
   // The row was one big <button>; it is now a div with a tap-to-focus body plus
   // separate action buttons (a button can't nest the × / ↗ buttons — ADR 0008).
-  const row = el("div", "qrow " + (ROW_CLS[item.lane] || "lane-w"));
+  const o = opts || {};
+  const row = el("div", "qrow " + (ROW_CLS[item.lane] || "lane-w") +
+                        (pinned && item.sessionId === pinned ? " now" : ""));
   const body = el("button", "qbody");
   body.append(el("span", "qbadge", ROW_BADGE[item.lane] || ""));
   const dir = el("span", "qdir");
@@ -762,7 +780,7 @@ function qrow(item) {
   body.append(el("span", "qone", item.one || ""));
   body.addEventListener("click", () => setPinned(item.sessionId));
   row.append(body);
-  row.append(rowActions(item));
+  if (!o.compact) row.append(rowActions(item));
   return row;
 }
 
@@ -852,28 +870,149 @@ async function transferRun(item, btn) {
 // summary line, nothing to answer. The note says why in the reading that matters
 // on a phone — this exists, you cannot answer it from here, and there is one way
 // to change that.
-function foreignZone(items) {
+function foreignZone(parent, items) {
   if (!items || !items.length) return;
   const h = el("div", "qhead");
   h.append(document.createTextNode("elsewhere · started by hand at the Mac"));
   h.append(el("span", "ct", String(items.length)));
-  zonesWrap.append(h);
-  zonesWrap.append(el("div", "fgnote",
+  parent.append(h);
+  parent.append(el("div", "fgnote",
     "seen, not driven — no reply box, no attach, no close. transfer one to end it and pick the session up here, or answer it at the Mac (↗ where the Claude app is bridged)."));
   const box = el("div", "fgbox");
   items.forEach((it) => box.append(frow(it)));
-  zonesWrap.append(box);
+  parent.append(box);
 }
 
-function zone(label, items, count, dimmed) {
+// One builder, two surfaces: the page's zones and the rail's. `opts` carries
+// {dim, mine, sub, compact} — see ringGroups, which is where the labels live.
+function zone(parent, label, items, count, opts) {
   if (!items || !items.length) return;
-  const h = el("div", "qhead");
+  const o = opts || {};
+  const h = el("div", "qhead" + (o.mine ? " mine" : ""));
   h.append(document.createTextNode(label));
   h.append(el("span", "ct", String(count != null ? count : items.length)));
-  zonesWrap.append(h);
-  const box = el("div", dimmed ? "dim" : null);
-  items.forEach((it) => box.append(qrow(it)));
-  zonesWrap.append(box);
+  parent.append(h);
+  if (o.sub) parent.append(el("div", "qsub", o.sub));
+  const box = el("div", o.dim ? "dim" : null);
+  items.forEach((it) => box.append(qrow(it, o)));
+  parent.append(box);
+}
+
+// --- The return path: one ring, two ways to walk it -------------------------
+// The ring is the Board's own display order, and the **answered · still
+// running** zone leads it — that is where the Run you just replied to went, and
+// coming back to it is the whole point. The **Focus** is spliced into the zone
+// its lane belongs to, because the server hands it over on its own key and it
+// is therefore in none of them; without that the rail would show every Run
+// except the one you are looking at, and the ring would have a hole where you
+// are standing.
+//
+// A **Foreign Run** IS NEVER IN IT, and not by a filter: the ring reads
+// `focus` / `watching` / `upnext` / `snoozed` / `dormant`, and a Foreign Run
+// arrives on `foreign`, which nothing here touches. It has no **rendered pane**
+// to read a blocker from and no **Respond** to answer with, so a Focus on one
+// would be a card you cannot use (ADR 0012, CONTEXT.md).
+let boardData = null;   // the last payload rendered — what the ring is read from
+
+function ringGroups(withFocus) {
+  const d = boardData || {};
+  const groups = [
+    {key: "watching", label: "answered · still running", items: (d.watching || []).slice(),
+     mine: true,
+     sub: "you replied and they are still working — nothing resurfaces on its own, so this is the way back to one"},
+    {key: "upnext", label: "up next · curated round-robin", items: (d.upnext || []).slice()},
+    {key: "snoozed", label: "snoozed", items: (d.snoozed || []).slice(), dim: true},
+    {key: "dormant", label: "dormant · parked, still resumable", items: (d.dormant || []).slice(),
+     dim: true},
+  ];
+  const f = withFocus ? d.focus : null;
+  if (f) {
+    // By lane, which is all the payload says. `yourmove` covers both the
+    // rotation head and a dormant Run you pinned; the two are told apart
+    // server-side by age alone and the difference is not worth a field.
+    const home = f.lane === "working" ? "watching" : f.lane === "snoozed" ? "snoozed" : "upnext";
+    const g = groups.find((x) => x.key === home) || groups[1];
+    spliceFocus(g, f);
+  }
+  return groups;
+}
+
+// THE RING MUST KEEP ONE SHAPE AS THE FOCUS MOVES THROUGH IT. The Focus arrives
+// on its own payload key, so every zone is missing it and it has to be put
+// back — and putting it back at the *head* of its zone, the obvious thing, is
+// what makes a swipe oscillate: the order depends on which Run is focused, so
+// two Runs hand each other back and forth and a third is never reached.
+//
+// So it goes in at the index the Board's own sort would have given it
+// (server.py::_board), which does not know what the Focus is. `sortsBefore`
+// only has to agree with the order the zone already arrived in — the other
+// rows are never re-sorted, so their order stays exactly the server's.
+const sortsBefore = {
+  // blocked before idle, then priority, then age — oldest-first while blocked
+  // (you have waited longest), newest-first otherwise. The server's `order` key.
+  upnext: (f, it) => {
+    const fb = isBlocked(f) ? 0 : 1, ib = isBlocked(it) ? 0 : 1;
+    if (fb !== ib) return fb < ib;
+    const fp = f.pri === undefined ? 1 : f.pri, ip = it.pri === undefined ? 1 : it.pri;
+    if (fp !== ip) return fp < ip;
+    return fb === 0 ? (f.updatedAt || 0) <= (it.updatedAt || 0)
+                    : (f.updatedAt || 0) >= (it.updatedAt || 0);
+  },
+  // Newest activity first — the server's key for `watching` and `dormant`
+  // alike. `snoozed` is the one it cannot reproduce (the server orders that by
+  // snooze expiry, which the payload does not carry); recency stands in, and
+  // the cost is the Focus sitting a row from where it belongs in a zone you
+  // parked on purpose.
+  rest: (f, it) => (f.updatedAt || 0) >= (it.updatedAt || 0),
+};
+
+function spliceFocus(group, f) {
+  const before = group.key === "upnext" ? sortsBefore.upnext : sortsBefore.rest;
+  const items = group.items;
+  let i = 0;
+  while (i < items.length && !before(f, items[i])) i++;
+  group.items = items.slice(0, i).concat([f], items.slice(i));
+}
+
+// The ring as sessionIds, in the order the rail draws them.
+function ringOrder() {
+  const out = [];
+  for (const g of ringGroups(true)) {
+    for (const it of g.items) {
+      if (it.sessionId && out.indexOf(it.sessionId) < 0) out.push(it.sessionId);
+    }
+  }
+  return out;
+}
+
+function ringItem(sid) {
+  for (const g of ringGroups(true)) {
+    const hit = g.items.find((it) => it.sessionId === sid);
+    if (hit) return hit;
+  }
+  return null;
+}
+
+// The wide half of the return path: 290px of width a monitor never misses,
+// carrying the whole ring, always. No tap to open it and no gesture to know
+// about — on a big screen the Run you want is simply on screen. Below 900px it
+// is `display:none` and the phone keeps its zones and the swipe (board.html).
+// `.qrow.now` marks the Focus, so the gesture has a readout here: swipe, and
+// the accent moves.
+function renderRail() {
+  if (!railEl) return;
+  railEl.textContent = "";
+  const n = ringOrder().length;
+  const head = el("div", "railhead");
+  head.append(el("b", null, "◆ board"));
+  head.append(el("span", null, n + (n === 1 ? " run" : " runs")));
+  railEl.append(head);
+  for (const g of ringGroups(true)) {
+    // No sub-line and no action strip at 290px — the rail is for reaching a
+    // Run, and the page's own zones still say everything else.
+    zone(railEl, g.label, g.items, g.items.length,
+         {dim: g.dim, mine: g.mine, compact: true});
+  }
 }
 
 // --- The Focus card: the one piece of DOM holding state you would miss -------
@@ -1022,6 +1161,7 @@ function applyChrome() {
   setHid(card && card.querySelector(".fhead"), chromeHid);
   setHid(card && card.querySelector(".respond"), chromeHid);
   setHid(dockEl, chromeHid && !intakeOpen());
+  setHid(hintEl, chromeHid);   // the swipe hint shares this edge; so does it
 }
 
 function setChrome(hid, y) {
@@ -1054,6 +1194,125 @@ function showChrome() {
   setChrome(false, window.scrollY || 0);
 }
 
+// --- The swipe: the narrow half of the return path --------------------------
+// POINTER events, never touch-only. The prototype's first cut listened on
+// `touchstart`/`touchend`, which fires nothing under a mouse: on a desktop the
+// gesture did not exist at all, and the design could not be judged there. One
+// pointer listener covers finger, mouse and pen. A trackpad's two-finger flick
+// arrives as `wheel` instead and ←/→ is the same move on a keyboard, so all
+// three are wired — they are one gesture, not three features.
+//
+// THE THRESHOLDS ARE ABOUT VERTICAL SCROLLING. A **Scrollback** is read by
+// dragging it up and down, and a horizontal reading that fires too easily makes
+// that read feel sticky — which costs far more than a missed swipe. So a drag
+// must travel >70px sideways AND out-run its own vertical travel by 1.8x before
+// it counts. Both numbers came off a real phone (prototype/focus-layout).
+const SWIPE_MIN = 70;      // px of horizontal travel before a drag is a gesture
+const SWIPE_BIAS = 1.8;    // ...and how far it must out-run the vertical
+const WHEEL_MIN = 42;      // one trackpad flick's deltaX
+const WHEEL_BIAS = 1.6;
+const WHEEL_LOCK = 700;    // a flick is many wheel events — take the first only
+const EDGE_FLASH = 320;
+
+// Where the gesture is NOT: the composer (you are typing into it), the intake
+// dock, the Recover sheet, the dir popup — each its own surface with its own
+// targets — the rail (a list you scroll), and any input or markdown table that
+// scrolls on an axis of its own.
+const SWIPE_BLOCK = ".respond,.dock,.recovpanel,.dirpop,.rail,input,textarea,table";
+function inChrome(node) {
+  return !!(node && node.closest && node.closest(SWIPE_BLOCK));
+}
+
+// A gesture leaves no mark, so say where it landed: the edge you moved toward
+// flashes, and the toast names the Run. On a phone that is the only feedback
+// there is; on a monitor the rail's `.now` says it too.
+function flashEdge(dir) {
+  const n = dir > 0 ? edgeREl : edgeLEl;
+  if (!n) return;
+  const base = "edge " + (dir > 0 ? "r" : "l");
+  n.className = base + " on";
+  clearTimeout(n._flash);
+  n._flash = setTimeout(() => { n.className = base; }, EDGE_FLASH);
+}
+
+// Nothing on the page says the gesture exists, so one dim line does — until the
+// first time it is used, remembered per device. It rides the chrome state like
+// everything else at this edge (applyChrome), so a read is never nagged.
+// Both localStorage calls are wrapped: reaching it AT ALL throws where cookies
+// are blocked, and this one runs at load — an unhandled throw here would take
+// the whole Board down for the sake of a hint.
+let swipeUsed = false;
+try { swipeUsed = localStorage.getItem("cl_swipe") === "used"; } catch (e) { /* no store */ }
+function markSwipeUsed() {
+  if (swipeUsed) return;
+  swipeUsed = true;
+  try { localStorage.setItem("cl_swipe", "used"); } catch (e) { /* hint returns next load */ }
+  syncHint();
+}
+function syncHint() {
+  if (!hintEl) return;
+  hintEl.hidden = swipeUsed || !boardData || !boardData.focus || ringOrder().length < 2;
+}
+
+// Move the Focus one step around the ring. This is **Rotation** by your consent
+// and nothing else (CONTEXT.md): a gesture you made, exactly like a row tap.
+// Nothing here is automatic, and it does not touch advanceWhenFree.
+function swipeFocus(dir) {
+  const ring = ringOrder();
+  if (ring.length < 2) { toast("nothing else on the Board to move to"); return; }
+  // A gesture is easy to make by accident; a half-typed reply is not cheap to
+  // lose. So the Focus does not move while there is one — the same rule the
+  // deferred advance obeys, for the same reason (replyEngaged).
+  if (replyEngaged()) { toast("finish or clear the reply first — the Focus stays put"); return; }
+  const i = ring.indexOf(pinned);
+  const next = ring[((i < 0 ? 0 : i) + dir + ring.length) % ring.length];
+  if (!next || next === pinned) return;
+  markSwipeUsed();
+  flashEdge(dir);
+  const it = ringItem(next);
+  toast("→ " + ((it && (it.title || it.dir)) || "run"));
+  setPinned(next);   // the ONE mechanism that moves the Focus. Never a second.
+}
+
+let dragX = 0, dragY = 0, dragging = false;
+window.addEventListener("pointerdown", (e) => {
+  dragging = !inChrome(e.target);
+  dragX = e.clientX || 0;
+  dragY = e.clientY || 0;
+});
+window.addEventListener("pointerup", (e) => {
+  if (!dragging) return;
+  dragging = false;
+  const dx = (e.clientX || 0) - dragX, dy = (e.clientY || 0) - dragY;
+  if (Math.abs(dx) > SWIPE_MIN && Math.abs(dx) > Math.abs(dy) * SWIPE_BIAS) {
+    swipeFocus(dx < 0 ? 1 : -1);
+  }
+});
+window.addEventListener("pointercancel", () => { dragging = false; });
+
+// The trackpad. Passive: this never preventDefaults, it only reads a flick that
+// the page has no horizontal axis to spend anyway.
+let wheelLock = 0;
+window.addEventListener("wheel", (e) => {
+  if (inChrome(e.target)) return;
+  const dx = e.deltaX || 0, dy = e.deltaY || 0;
+  if (Math.abs(dx) < WHEEL_MIN || Math.abs(dx) < Math.abs(dy) * WHEEL_BIAS) return;
+  if (Date.now() < wheelLock) return;
+  wheelLock = Date.now() + WHEEL_LOCK;
+  swipeFocus(dx > 0 ? 1 : -1);
+}, {passive: true});
+
+// The keyboard. Ignored the moment anything is taking text — the reply box, the
+// dir field, the resume field, a task's seed box — where an arrow key means
+// "move the caret" and must go on meaning it.
+document.addEventListener("keydown", (e) => {
+  if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
+  const t = document.activeElement;
+  if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable)) return;
+  if (recoverOpen) return;   // the picker owns the screen while it is open
+  swipeFocus(e.key === "ArrowRight" ? 1 : -1);
+});
+
 // Publish the dock's real height for the composer to stand on. Re-measured every
 // moment the dock can change height: on load, on resize, when the intake opens
 // or closes, and when the Recover pill appears or goes.
@@ -1064,6 +1323,7 @@ function syncDockHeight() {
 }
 
 function render(data) {
+  boardData = data;  // the ring reads this — set before anything draws from it
   reconcile(data);   // clear any optimistic card whose real Run has surfaced
   const c = data.counts || {};
   summary.textContent = "";
@@ -1104,11 +1364,21 @@ function render(data) {
 
   renderFocus(f);
   zonesWrap.textContent = "";
-  zone("up next · curated round-robin", data.upnext, data.upnext.length);
-  zone("snoozed", data.snoozed, data.snoozed.length, true);
-  zone("watching · resurfaces when it needs you", data.watching, data.watching.length, true);
-  zone("dormant · parked, still resumable", data.dormant, data.dormant.length, true);
-  foreignZone(data.foreign);
+  // Two boxes, because they answer to different rules at a wide width: the
+  // queue steps aside for the rail (board.html) while the Foreign section —
+  // which is not a queue, is not in the ring, and is not the rail's business —
+  // stays in the flow at every width (ADR 0012).
+  const queues = el("div", "queues");
+  const foreigns = el("div", "foreigns");
+  zonesWrap.append(queues, foreigns);
+  // The zones, in the ring's order. `answered · still running` LEADS and is not
+  // dimmed: it used to read "watching · resurfaces when it needs you", three
+  // headings down and greyed, which was backwards — if you are reading this
+  // list the Run did not resurface, and you came looking for it.
+  for (const g of ringGroups(false)) zone(queues, g.label, g.items, g.items.length, g);
+  foreignZone(foreigns, data.foreign);
+  renderRail();
+  syncHint();
 }
 
 // --- polling: chained setTimeout, ETag revalidate, paused when hidden -------
