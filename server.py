@@ -736,6 +736,49 @@ def _recoverable_sessions(base: str = _PROJECTS_STATE,
     return rows
 
 
+# --- Recover: the recovery set (slice 02, ADR 0013) ------------------------
+# The Launcher's pre-tick guess at what was live at the last restart: a recency
+# cluster over the candidate list's transcript mtimes, recomputed fresh each
+# open and never persisted (that is the whole point of ADR 0013). It ONLY
+# pre-ticks checkboxes — it resumes nothing; the human edits the ticks first.
+# Anchoring on the newest *candidate* (not the newest Session) self-heals: a
+# resumed member goes live, leaves the candidate set, and the anchor slides to
+# the next still-dead one, so the rest of the batch keeps pre-ticking.
+_RECOVERY_GAP = 15 * 60      # G: max gap between adjacent members, seconds
+_RECOVERY_SPAN = 90 * 60     # S: max total span anchor->oldest, seconds
+_RECOVERY_MAX = 12           # N: pre-tick cap that fits a phone (== _RECENT_DIRS_MAX)
+
+
+def _recovery_set_size(mtimes: list[int]) -> int:
+    """How many of the newest candidates form the recovery set.
+
+    `mtimes` are the candidate transcript mtimes in the served order — newest
+    first (as _recoverable_sessions returns them). The set is always a prefix
+    of that list (the anchor is the top row; the chain only reaches older), so
+    a single count says which rows pre-tick: rows[:k].
+
+    The recency cluster (ADR 0013): anchor on the newest candidate, then chain
+    newest->older while each successive gap to the last member added stays
+    within G, halting the moment the total span (anchor - oldest) would exceed
+    S, and never returning more than N. Empty list -> 0; a lone candidate -> 1
+    (it is its own anchor, a cluster of one). Both G and S are inclusive at the
+    boundary (gap == G chains, span == S stays); only strictly exceeding stops.
+    """
+    if not mtimes:
+        return 0
+    anchor = mtimes[0]
+    k = 1                                          # the anchor always pre-ticks
+    for prev, cur in zip(mtimes, mtimes[1:]):
+        if k >= _RECOVERY_MAX:                     # cap (N) — phone-fit backstop
+            break
+        if prev - cur > _RECOVERY_GAP:             # gap (G) to the last member added
+            break
+        if anchor - cur > _RECOVERY_SPAN:          # span leash (S) anchor->oldest
+            break
+        k += 1
+    return k
+
+
 # tmux titles a fresh pane with the host's own name (e.g. "Mac-mini.local", or
 # its short form "Mac-mini") until `claude` overrides it via a title escape
 # sequence. That default is not a Run title, so it is treated as no title —
@@ -1861,8 +1904,17 @@ def _board_payload(focus_sid: str = "") -> tuple[bytes, str]:
 def _recoverable_payload() -> tuple[bytes, str]:
     """Resumable-Session list + ETag. Served fresh like the board — the set
     shifts as Runs start/stop and cwds come and go — but is stable within one
-    open, so the ETag still lets the picker's refetch 304 when nothing changed."""
-    body = json.dumps({"sessions": _recoverable_sessions()},
+    open, so the ETag still lets the picker's refetch 304 when nothing changed.
+
+    The recovery set (slice 02) rides along: `_recovery_set_size` clusters the
+    candidate mtimes, the top `preselectCount` rows gain `preselect: true` for
+    the picker to pre-tick, and the count feeds the intake badge (slice 04).
+    One call feeds the whole picker."""
+    sessions = _recoverable_sessions()
+    count = _recovery_set_size([row["mtime"] for row in sessions])
+    for row in sessions[:count]:
+        row["preselect"] = True
+    body = json.dumps({"sessions": sessions, "preselectCount": count},
                       separators=(",", ":")).encode("utf-8")
     return body, '"' + hashlib.sha256(body).hexdigest()[:16] + '"'
 

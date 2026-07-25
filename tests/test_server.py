@@ -262,6 +262,60 @@ class RecoverableSessionsTests(unittest.TestCase):
         self.assertEqual(len(rows), server._RECOVERABLE_MAX)
 
 
+class RecoverySetTests(unittest.TestCase):
+    """The recovery-set recency cluster (slice 02, ADR 0013): a pure function
+    over candidate mtimes (newest-first) returning how many of the top rows
+    pre-tick. Constants: G = gap, S = span leash, N = cap."""
+
+    def test_empty_list_selects_none(self):
+        self.assertEqual(server._recovery_set_size([]), 0)
+
+    def test_single_candidate_is_its_own_anchor(self):
+        # a lone candidate is the anchor -> a cluster of one, always pre-ticked
+        self.assertEqual(server._recovery_set_size([1_000]), 1)
+
+    def test_anchor_on_newest_and_tight_chain(self):
+        # gaps well within G, span within S -> the whole prefix pre-ticks
+        self.assertEqual(server._recovery_set_size([10_000, 9_500, 9_000, 8_600]), 4)
+
+    def test_gap_at_G_included_over_G_excluded(self):
+        G = server._RECOVERY_GAP
+        self.assertEqual(server._recovery_set_size([2_000, 2_000 - G]), 2)       # == G kept
+        self.assertEqual(server._recovery_set_size([2_000, 2_000 - G - 1]), 1)   # > G stops
+        # a gap over G mid-chain halts the chain right there (anchor + 1)
+        self.assertEqual(
+            server._recovery_set_size([3_000, 3_000 - G, 3_000 - G - (G + 1)]), 2)
+
+    def test_gap_is_measured_to_previous_member_not_anchor(self):
+        G = server._RECOVERY_GAP
+        # 2nd gap is 800s (< G) though the 3rd row sits G+800 (> G) from the
+        # anchor -> kept, proving rule 2 chains off the last member, not anchor.
+        self.assertEqual(
+            server._recovery_set_size([3_000, 3_000 - G, 3_000 - G - 800]), 3)
+
+    def test_span_leash_cuts_an_otherwise_chained_tail(self):
+        # every adjacent gap is a comfortable 800s (< G) so the CHAIN never
+        # breaks; only the span leash (S) stops it, mid-run.
+        mtimes = [100_000 - 800 * i for i in range(12)]
+        # span first exceeds S=5400 at the 8th row (800*7=5600); the 7 rows up
+        # to 800*6=4800 stay.
+        self.assertEqual(server._recovery_set_size(mtimes), 7)
+
+    def test_span_at_S_included_over_S_excluded(self):
+        S, G = server._RECOVERY_SPAN, server._RECOVERY_GAP
+        self.assertEqual(S, 6 * G)                          # reach exactly S in 6 hops
+        at_S = [10_000 - G * i for i in range(7)]           # spans 0..S, last == S
+        self.assertEqual(server._recovery_set_size(at_S), 7)    # row at span S kept
+        over_S = at_S + [at_S[-1] - G]                      # next row: span S+G
+        self.assertEqual(server._recovery_set_size(over_S), 7)  # > S dropped
+
+    def test_cap_at_N(self):
+        # a long tight chain (60s gaps, span stays under S for all rows) is
+        # capped at N regardless of how many candidates still qualify.
+        mtimes = [100_000 - 60 * i for i in range(server._RECOVERY_MAX + 8)]
+        self.assertEqual(server._recovery_set_size(mtimes), server._RECOVERY_MAX)
+
+
 class TitleNoiseTests(unittest.TestCase):
     def test_is_title_noise(self):
         self.assertTrue(server._is_title_noise("Base directory for this skill: /a/b"))
@@ -296,8 +350,10 @@ class RecoverableApiTests(_HttpCase):
         status, body, headers = self._raw("GET", "/api/recoverable")
         self.assertEqual(status, 200)
         self.assertTrue(headers["ETag"])
+        # slice 02: the lone candidate is its own anchor -> pre-ticked, count 1.
         self.assertEqual(json.loads(body), {"sessions": [
-            {"sessionId": _S1, "dir": "~/obsidian", "title": "write the note", "mtime": 42}]})
+            {"sessionId": _S1, "dir": "~/obsidian", "title": "write the note",
+             "mtime": 42, "preselect": True}], "preselectCount": 1})
 
     def test_if_none_match_returns_304_without_body(self):
         _, _, headers = self._raw("GET", "/api/recoverable")
