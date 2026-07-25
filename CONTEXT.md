@@ -153,20 +153,47 @@ longer inline server-side — is the stable contract.
 _Avoid_: dashboard, list (it is more than a list now), inbox, feed
 
 **Focus**:
-The single **Run** the **Board** shows in full — its run-up context, the
-ask, the reply box — as opposed to the queued rows. At most one. *You* choose
-it: a row tap, or the first actionable Run when you hold none. It stays yours
-until you move it or it resolves. Urgency orders the queue, never the Focus —
-a newly-**Blocked** Run joins the queue; it does not take the Focus from you.
+The single **Run** the **Board** shows in full — its **scrollback**, its
+**ask** when it has one, and the reply box — as opposed to the queued rows. At
+most one. *You* choose it: a row tap, a swipe, or the first actionable Run when
+you hold none. It stays yours until you move it or it resolves. Urgency orders
+the queue, never the Focus — a newly-**Blocked** Run joins the queue; it does
+not take the Focus from you.
 _Avoid_: card (the Focus's rendering, not the concept), selection, current,
 active, top
 
+**Scrollback**:
+The recent **turns** of the Focus's **Session**, newest last — what the Focus
+shows in place of a single message. A *window on the transcript*, not the
+transcript itself: it is a bounded tail, and a **Foreign Run**'s Session has
+one just as a Managed Run's does, because it is read from the transcript and
+not from a pane. Distinct from the **rendered pane**, which is the live TUI
+and the only place a permission prompt exists (ADR 0009).
+_Avoid_: history, log, transcript (the file on disk — the scrollback is a
+read of its tail), context (was the old single-message field; see ADR 0014)
+
+**Turn**:
+One entry in a **Scrollback**: something you sent, or one assistant reply,
+with the names of any tools that reply invoked. The unit the scrollback is
+counted and clipped in.
+_Avoid_: message (a turn may carry only tool calls and no prose), exchange
+(that is a pair), event
+
+**Ask**:
+The specific input a **Blocked** **Run** needs from you — the concrete
+blocker, sourced from the **rendered pane** when the transcript does not carry
+it (ADR 0009). A property of being Blocked and of nothing else: an **idle** Run
+has no Ask, and prose ending in a question mark is not one, because it is
+already the last **turn** of the **scrollback**.
+_Avoid_: question (only one of its two shapes — the other is an approval),
+prompt (overloaded by Claude Code's own permission prompt)
+
 **Rotation**:
 How the **Focus** advances through the queue — consent-based. It moves only
-when you act (tap a row, skip) or when the Focus you hold *resolves*: goes
-**working** because you **Respond**, is closed, or stops being **Blocked**.
-Nothing else moves it. The "curated round-robin" names this queue's order,
-not a clock — you walk it at your pace.
+when you act (tap a row, swipe, skip) or when the Focus you hold *resolves*:
+goes **working** because you **Respond**, is closed, or stops being
+**Blocked**. Nothing else moves it. The "curated round-robin" names this
+queue's order, not a clock — you walk it at your pace.
 _Avoid_: round-robin (the queue's order, not the advance rule), auto-advance,
 cycle, refresh
 
@@ -278,6 +305,13 @@ _Avoid_: access, availability
 - A **Board** holds exactly one **Focus**; every other actionable **Run**
   queues behind it by urgency. A **Blocked** Run outranks the queue, not the
   Focus
+- A **Focus** always offers a reply box — **idle**, **Blocked** or **working**
+  alike. Only an **Ask** is conditional, because only a **Blocked** Run has
+  one. Responding to a working Run is not a special case: its input queues
+  until the turn ends
+- A **Scrollback** is made of **turns** and belongs to a **Session**, so it
+  survives its **Run** exactly as the Session does — **resume** a Session and
+  the scrollback is still there. It is a bounded tail, never the whole thread
 - **Rotation** advances the **Focus** only on your action or when the Focus
   resolves. New work surfaces as a count on the queue — never by replacing
   what you are reading or typing in
@@ -296,6 +330,13 @@ _Avoid_: access, availability
 > **Respond** into. **Transfer** it — that kills it and **resumes** the same
 > **Session** as a Managed Run you can drive. You'll lose whatever turn was
 > in flight, and iTerm keeps a dead tab until you close it."
+
+> **A:** "The Run's idle and it asked me something at the end — why is there no
+> **ask** on the card?"
+> **B:** "Because it isn't **Blocked**. An **Ask** is the blocker of a Blocked
+> Run, and the Launcher reads it off the **rendered pane** when the transcript
+> hasn't got it. Prose ending in a `?` is just the last **turn** — it's already
+> on screen in the **scrollback**, so a strip would say it twice."
 
 > **A:** "Tapping × killed my session."
 > **B:** "It ended the **Run**. The **Session** is on disk; **resume** it
@@ -336,6 +377,15 @@ _Avoid_: access, availability
   made of. The narrower definition made every `claude` outside the Launcher
   nameless, which is why the one-live-Run-per-Session guard silently stopped
   holding.
+- "context" named the **Focus**'s reading surface while that surface was one
+  message (the `contextHtml` field of ADR 0006) — retired in favour of
+  **Scrollback** once it became many **turns** (ADR 0014). The word was always
+  doing two jobs: this repo's *domain* context and the Focus's run-up. Only the
+  first survives.
+- "the ask" was used for any question a **Run** left hanging — resolved and
+  narrowed to **Blocked** Runs only. The prose-`?` heuristic that fed it on an
+  **idle** Run produced a second copy of the last **turn**, not new
+  information, so an idle Run has no **Ask** at all.
 - "depend on Tailscale" was used to mean the whole tool — resolved:
   Tailscale is only the **Launcher transport**; the **Remote Control
   bridge** is unaffected.
