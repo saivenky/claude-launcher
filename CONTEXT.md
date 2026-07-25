@@ -54,6 +54,38 @@ Start a new **Run** on an existing **Session** (via
 Run, which is the **Remote Control bridge**'s job, not the Launcher's.
 _Avoid_: reopen, restore, continue (overloaded by `claude --continue`)
 
+**Resumable Session**:
+A **Session** with a transcript on disk *and* a working directory that still
+exists, but no live **Run** — one the Launcher can bring back. The rows the
+**Recover** picker lists. A Session whose cwd is gone is not resumable (there
+is nowhere to `cd`), and a Session with a live Run is not either (the
+one-live-Run-per-Session guard refuses it).
+_Avoid_: closed session (a Run can be absent for reasons other than closing),
+dead session (the Session is never dead — only its Run)
+
+**Recover**:
+Discover and **resume** — as Managed Runs, in bulk — the **Resumable
+Sessions** that were live before a restart. The discovery-and-bulk sibling of
+**Resume**: where Resume takes one `sessionId` you already know, Recover lists
+Resumable Sessions newest-first and pre-selects the **recovery set**, so one
+tap brings a whole batch back. It resumes each member exactly as Resume does —
+a new **Run** per Session — and nothing of the old Run comes with it: any
+in-flight turn from before the restart is already lost (as with **Transfer**).
+Only the Sessions are reopened; no prior *state* is restored.
+_Avoid_: restore / reopen (nothing of the old Run's state returns), bulk
+resume (names the mechanism, not the restart intent), restart (the trigger,
+not the act)
+
+**Recovery set**:
+The subset of **Resumable Sessions** the Launcher judges were live at the last
+restart, pre-ticked in the **Recover** picker: a recency-cluster anchored on
+the newest Resumable Session, chaining to older ones while each gap stays
+within a tolerance, leashed to a total span. A *heuristic over transcript
+mtimes, not a record* — the Launcher keeps no memory of what was live (ADR
+0013) — so it is a best guess, freely editable before you resume.
+_Avoid_: restart batch (informal only — the set is the named thing),
+live-at-restart set (wordy)
+
 **Transfer**:
 End a **Foreign Run** and **Resume** its **Session** as a Managed Run — one
 tap, one atomic operation. What moves is *custody of the Session*, not a
@@ -109,7 +141,7 @@ The single screen — the Launcher's only page — that aggregates every live
 **Run**, holds one at a time as the **Focus** while the rest queue by
 urgency (**Blocked** first, with its concrete blocker), lets you **Respond**
 to the Focus inline, and carries the full **intake** and lifecycle
-surface: launch, **resume**, close, the one-tap **Task** / **Dispatch**
+surface: launch, **resume**, **recover**, close, the one-tap **Task** / **Dispatch**
 buttons, and the two per-Run handoffs — the `↗` deep-link to the **Remote
 Control bridge** and the `❯` **Attach** line for a local terminal. It
 supersedes the legacy inline launcher page (once served at `/` alongside
@@ -140,7 +172,8 @@ cycle, refresh
 
 **Intake**:
 Starting new work from the **Board** — a generic dir **launch**, a
-**resume** by `sessionId`, or a one-tap **Task** / **Dispatch**. The
+**resume** by `sessionId`, a **Recover** of the Sessions live before a
+restart, or a one-tap **Task** / **Dispatch**. The
 *create* side of the Board, as opposed to the *triage* side (**Observe** /
 **Respond**) that acts on work already running.
 _Avoid_: launch (only one of intake's shapes), compose, new session
@@ -201,6 +234,18 @@ _Avoid_: access, availability
   already has one, so a transcript is never forked. The guard must count
   **Foreign Runs** too: a Session live in another terminal is just as forkable
   as one live in a tmux window
+- **Recover** is a bulk **Resume** and nothing more: it creates only Managed
+  Runs, never touches a Session's file, and obeys the same one-live-Run guard
+  per member. A member whose resume fails — its cwd vanished, say — is skipped;
+  the rest still come back
+- A **Resumable Session** has no live Run; resuming it, by **Resume** or
+  **Recover**, makes it live and drops it from the picker. A **Foreign Run**
+  makes its Session *not* Resumable — the resume guard already counts it
+  (ADR 0012)
+- After a machine restart no **Run** survives, so every Session that had one
+  becomes **Resumable**. The **recovery set** is the Launcher's guess at which
+  of those were *live at the restart* — a heuristic over transcript mtimes, not
+  a record; the Launcher never persists the live set (ADR 0013)
 - Every **Run** is either Managed or **Foreign**, and only the Launcher's own
   act of starting it decides which. A Managed Run never becomes Foreign; a
   Foreign Run becomes Managed only by being **transferred**, which replaces it
@@ -297,3 +342,8 @@ _Avoid_: access, availability
 - "no install" was used to mean lighter overall — flagged: it constrains
   only the *phone* side; the Mac still runs **Launcher** code (and any
   transport's native bits).
+- "recover" reads as *restore prior state* — flagged and narrowed: **Recover**
+  reopens **Sessions**; it does not bring back a Run's in-flight turn, which is
+  lost at the restart exactly as it is under **Transfer**. It is a
+  discovery-and-bulk **Resume**, never a state-restoration. If a future reader
+  expects the old turn to return, this is the line that says it does not.
