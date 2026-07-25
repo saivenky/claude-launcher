@@ -37,6 +37,14 @@ const dplusEl = document.getElementById("dplus");
 const dockexpEl = document.getElementById("dockexp");
 const tasksEl = document.getElementById("tasks");
 const taskslblEl = document.getElementById("taskslbl");
+const recoverbarEl = document.getElementById("recoverbar");
+const recoverBtnEl = document.getElementById("recover");
+const recovPanelEl = document.getElementById("recovpanel");
+const recovTitleEl = document.getElementById("recovtitle");
+const recovSubEl = document.getElementById("recovsub");
+const recovListEl = document.getElementById("recovlist");
+const recovGoEl = document.getElementById("recovgo");
+const recovCloseEl = document.getElementById("recovclose");
 
 // #app is split in two, once, up front: the Focus card gets its own container so
 // redrawing the queue below can never touch it. That redraw is what used to eat
@@ -408,6 +416,141 @@ async function loadTasks() {
     box.append(btnrow);
     tasksEl.append(box);
   }
+}
+
+// --- Recover: the intake picker + empty-board count badge (slice 04) --------
+// A discovery-and-bulk Resume (CONTEXT.md: Recover). GET /api/recoverable lists
+// the Resumable Sessions newest-first and flags the recovery set (`preselect`);
+// its `preselectCount` rides the intake pill as a nudge — the eye-catcher on the
+// empty post-reboot Board. No auto-open, no auto-resume (ADR 0013, consent
+// ethos): the count is a nudge, not an action. You tap → the picker opens
+// pre-ticked → you confirm.
+//
+// THE ONE BEHAVIOURAL CONTRAST WITH resumeSession(): a recovered Run is NEVER
+// watch()'d into Focus. Recover fans out a batch; they join the queue as a count
+// and you pick what to open (Rotation — new work never steals the Focus). Only
+// single paste-resume, which names one Session deliberately, focuses its Run.
+let recoverEtag = null;
+let recoverSessions = [];   // last-fetched Resumable-Session rows (newest-first)
+let recoverPreselect = 0;   // size of the recovery set — the badge count
+let recoverOpen = false;
+let pickerRows = [];        // [{session, cb}] — live, to read the ticked set
+
+async function loadRecoverable() {
+  let data;
+  try {
+    const r = await fetch("api/recoverable", recoverEtag ? {headers: {"If-None-Match": recoverEtag}} : {});
+    if (r.status === 304) return;   // unchanged since last look — badge stands
+    recoverEtag = r.headers.get("ETag");
+    data = await r.json();
+  } catch (e) { return; }
+  recoverSessions = data.sessions || [];
+  recoverPreselect = data.preselectCount || 0;
+  renderRecoverBadge();
+  if (recoverOpen) renderRecoverList();   // keep an open picker current
+}
+
+// The pill is present whenever anything is resumable; it carries the count only
+// when the recovery set is non-empty (`recover · N`), else reads plain `recover`
+// and opens the full list (spec: uncounted-but-present).
+function renderRecoverBadge() {
+  const n = recoverSessions.length;
+  recoverbarEl.hidden = n === 0;
+  if (n === 0) { if (recoverOpen) closeRecover(); return; }
+  recoverBtnEl.textContent = recoverPreselect > 0 ? ("recover · " + recoverPreselect) : "recover";
+}
+
+function openRecover() {
+  recoverOpen = true;
+  recovPanelEl.hidden = false;
+  renderRecoverList();
+  loadRecoverable();   // the badge's snapshot may be stale — refresh on open
+}
+
+function closeRecover() {
+  recoverOpen = false;
+  recovPanelEl.hidden = true;
+}
+
+// Row: dir · title · relative-last-active (spec) — title on top, `dir · age`
+// below, so the mtime that explains the pre-tick is always visible. `preselect`
+// rows come pre-ticked; the rest tickable. All fields land as textContent.
+function renderRecoverList() {
+  recovTitleEl.textContent = recoverPreselect > 0
+    ? ("recover · " + recoverPreselect + " live at the restart") : "recover";
+  recovSubEl.textContent = recoverPreselect > 0
+    ? "ticked are the Launcher's guess at what was live — a heuristic, edit freely."
+    : "pick the sessions to bring back.";
+  recovListEl.textContent = "";
+  pickerRows = [];
+  if (!recoverSessions.length) {
+    recovListEl.append(el("div", "recovempty", "nothing resumable right now."));
+    updateRecoverGo();
+    return;
+  }
+  for (const s of recoverSessions) {
+    const row = el("label", "recovrow");
+    const cb = el("input");
+    cb.type = "checkbox";
+    cb.checked = s.preselect === true;
+    cb.addEventListener("change", updateRecoverGo);
+    const mid = el("div", "recovmid");
+    mid.append(el("div", "recovtitle2", s.title || "claude"));
+    mid.append(el("div", "recovdir", s.dir || ""));
+    const when = s.mtime ? age(s.mtime * 1000) + " ago" : "";   // mtime is epoch SECONDS
+    row.append(cb, mid, el("div", "recovtime", when));
+    recovListEl.append(row);
+    pickerRows.push({session: s, cb});
+  }
+  updateRecoverGo();
+}
+
+// The Resume action's N tracks the ticked count live.
+function updateRecoverGo() {
+  const n = pickerRows.filter((r) => r.cb.checked).length;
+  recovGoEl.textContent = "resume " + n;
+  recovGoEl.disabled = n === 0;
+}
+
+// POST the ticked sessionIds; summarise the per-member result array; close;
+// refresh. /api/recover returns a TOP-LEVEL ARRAY (not the {ok,…} object
+// postJSON wraps), so it gets its own fetch. No watch()/Focus of any returned
+// runId — see the note atop this section.
+async function doRecover() {
+  const ids = pickerRows.filter((r) => r.cb.checked).map((r) => r.session.sessionId);
+  if (!ids.length) { toast("nothing ticked"); return; }
+  recovGoEl.disabled = true;
+  recovGoEl.textContent = "resuming…";
+  let results;
+  try {
+    const r = await fetch("api/recover", {
+      method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({sessionIds: ids}),
+    });
+    results = await r.json().catch(() => null);
+    if (!r.ok || !Array.isArray(results)) {
+      toast("recover failed (" + r.status + ")");
+      updateRecoverGo();
+      return;
+    }
+  } catch (e) {
+    toast("recover unreachable");
+    updateRecoverGo();
+    return;
+  }
+  const okd = results.filter((x) => x && x.ok);
+  const bad = results.filter((x) => !x || !x.ok);
+  let msg = okd.length + " resumed";
+  if (bad.length) msg += ", " + bad.length + " skipped: " + ((bad[0] && bad[0].message) || "");
+  toast(msg);
+  closeRecover();
+  // Recovered Runs surface on the next poll and JOIN THE QUEUE — no watch(), so
+  // no optimistic card and, deliberately, no Focus grab (Rotation). Burst a few
+  // polls to catch them reaching `ps` (1-3s), same gap a launch leaves.
+  loadRecoverable();   // the picker's list just shrank
+  etag = null; poll();
+  setTimeout(() => { etag = null; poll(); }, 1500);
+  setTimeout(() => { etag = null; poll(); }, 3500);
 }
 
 function focusCard(f) {
@@ -798,6 +941,10 @@ async function poll() {
     if (r.status === 304) { schedule(); return; }
     etag = r.headers.get("ETag");
     render(await r.json());
+    // The live set just moved (a Run started or ended), so what is Resumable
+    // moved too — refresh the recover count. ETag-cheap: a 304 when nothing
+    // changed. Only on a real board change, never on the 304 above.
+    loadRecoverable();
   } catch (e) {
     toast("board unreachable");
   }
@@ -823,11 +970,18 @@ dirEl.addEventListener("input", () => renderPop(dirEl.value));
 // only fires when you leave the field; the delay lets a pending tap land first.
 dirEl.addEventListener("blur", () => setTimeout(hidePop, 120));
 sidEl.addEventListener("keydown", (e) => { if (e.key === "Enter") resumeSession(); });
+recoverBtnEl.addEventListener("click", openRecover);
+recovCloseEl.addEventListener("click", closeRecover);
+recovGoEl.addEventListener("click", doRecover);
+// Tap the dimmed backdrop (never the sheet) to dismiss, and Escape to match.
+recovPanelEl.addEventListener("click", (e) => { if (e.target === recovPanelEl) closeRecover(); });
+document.addEventListener("keydown", (e) => { if (e.key === "Escape" && recoverOpen) closeRecover(); });
 
 document.addEventListener("visibilitychange", () => {
   if (document.hidden) clearTimeout(timer);
-  else { poll(); loadTasks(); }
+  else { poll(); loadTasks(); loadRecoverable(); }
 });
 
 loadTasks();
+loadRecoverable();
 poll();
