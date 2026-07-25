@@ -164,7 +164,12 @@ it. It also rides the same chrome state as the Focus's own bars — read up into
 history and the whole bottom edge clears, so the run-up gets the pixels. */
 .dock{position:fixed;left:0;right:0;bottom:0;z-index:30;
 padding:10px var(--gut) calc(10px + env(safe-area-inset-bottom,0px));
-background:linear-gradient(180deg,transparent,var(--bg) 26%);
+/* Solid, not the old fade-to-bg gradient. The composer now stands on this at
+`bottom:var(--dockh)`, and --dockh measures the dock's WHOLE box — including the
+gradient's transparent top quarter. That left a band between the two bars with
+nothing behind it, so the **Scrollback** scrolled through the gap in a stripe.
+Nothing needs to fade behind a bar that another bar is sitting on. */
+background:var(--bg);
 transition:transform .2s ease,opacity .2s ease}
 .dock.hid{transform:translateY(110%);opacity:0}
 .dockbar{display:flex;align-items:center;gap:8px;background:var(--panel);border:1px solid var(--line);
