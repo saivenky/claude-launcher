@@ -1928,7 +1928,20 @@ def _board(focus_sid: str = "") -> dict:
         # turn, which the **Scrollback** now shows — a second copy, not new
         # information. Gated HERE, after the rendered pane has had its chance to
         # upgrade the lane to `question`, so a real blocker is never dropped.
-        if lane not in ("question", "approval"):
+        #
+        # Against the *underlying* lane, not the displayed one: snooze masks the
+        # real lane outright (`lane = "snoozed" if snoozed else _lane_of(r)`), so
+        # a snoozed Run that is genuinely Blocked would otherwise lose its
+        # blocker the moment you pinned it as the Focus — which is exactly when
+        # you meant to answer it. Snooze orders the queue; it does not decide
+        # whether a Run is Blocked.
+        # `status == "waiting"` is precisely what `_lane_of` tests to return
+        # question/approval, and it is already on the item — so this reads the
+        # underlying lane without the second transcript read `_lane_of` would
+        # cost, keeping the Ask and the Scrollback to one parse between them.
+        blocked = lane in ("question", "approval") or (
+            lane == "snoozed" and focus.get("status") == "waiting")
+        if not blocked:
             ask, options, cursor = "", [], 0
         focus = dict(focus, lane=lane, aiTitle=_ai_title(focus["sessionId"]),
                      scrollback=scrollback,

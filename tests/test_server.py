@@ -1619,6 +1619,29 @@ class FocusScrollbackTests(unittest.TestCase):
         # …and the sentence is not lost: it is the last turn on screen.
         self.assertIn("bounded tail or the whole thread?", focus["scrollback"][-1]["html"])
 
+    def test_a_snoozed_run_that_is_blocked_keeps_its_ask(self):
+        # Snooze masks the real lane outright (`lane = "snoozed" if snoozed else
+        # _lane_of(r)`), so gating the Ask on the *displayed* lane would strip
+        # the blocker from a Blocked Run the moment you pinned it — which is the
+        # one moment you meant to answer it. Snooze orders the queue; it does not
+        # decide whether a Run is Blocked (CONTEXT.md, **Ask**).
+        self._be_blocked()
+        server._SNOOZE[_GOOD] = self.now + 60_000
+        try:
+            focus = server._board(_GOOD)["focus"]
+            self.assertEqual(focus["lane"], "snoozed")
+            self.assertTrue(focus["ask"], "a snoozed-but-Blocked Focus lost its blocker")
+        finally:
+            server._SNOOZE.pop(_GOOD, None)
+
+    def test_a_snoozed_run_that_is_idle_still_has_no_ask(self):
+        # The other half: snooze does not manufacture an Ask either.
+        server._SNOOZE[_GOOD] = self.now + 60_000
+        try:
+            self.assertEqual(server._board(_GOOD)["focus"]["ask"], "")
+        finally:
+            server._SNOOZE.pop(_GOOD, None)
+
     def test_a_blocked_focus_still_gets_its_ask(self):
         self._be_blocked()
         focus = server._board()["focus"]
