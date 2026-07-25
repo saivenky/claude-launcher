@@ -1618,7 +1618,7 @@ def _approval_detail(tu: dict) -> str:
     return name        # any other tool put up for approval — name it, never blank
 
 
-def _full_context(session_id: str, rows: list | None = None) -> tuple:
+def _ask_of(session_id: str, rows: list | None = None) -> tuple:
     """(ask, options) from the Session's last assistant turn.
 
     For an approval the `ask` describes the flushed pending tool_use (the Bash
@@ -1628,8 +1628,11 @@ def _full_context(session_id: str, rows: list | None = None) -> tuple:
 
     It used to return the run-up prose as well, for ADR 0006's single
     `contextHtml` field; that field is gone (ADR 0014) and the prose is now the
-    **Scrollback**, so the text is only an input to the `?` regex here. The name
-    is ADR 0014's, kept so the ADR still points at real code.
+    **Scrollback**, so the text is only an input to the `?` regex here. It was
+    called `_full_context` until it stopped returning any — "context" is
+    retired as a name for the Focus's reading surface (CONTEXT.md, *Flagged
+    ambiguities*), and a function keeping the word while returning only the
+    **Ask** is the exact drift that list exists to catch.
 
     `rows` lets a caller hand in a tail it has already parsed, so the **Ask** and
     the **Scrollback** cost one file read between them (ADR 0014)."""
@@ -1664,7 +1667,7 @@ def _scrollback(rows: list) -> list[dict]:
     reads (ADR 0014). One turn is `{"role", "html", "tools"}`.
 
     Takes an already-parsed tail rather than a `sessionId`, because it shares its
-    parse with `_full_context`: one file read per poll feeds both the scrollback
+    parse with `_ask_of`: one file read per poll feeds both the scrollback
     and the **Ask**. It is a bounded window on the transcript, never the whole
     thread — `_SCROLLBACK_TURNS` turns, each clipped to `_TURN_MAX`.
 
@@ -1818,7 +1821,7 @@ def _pane_question(text: str) -> str:
     """The prompt read off an AskUserQuestion widget: the lines between its
     checkbox header and the first following numbered option (blank lines and
     the box-art notes panel skipped). Used only when the tool_use hasn't flushed
-    to the transcript yet, so the structured question in `_full_context` is
+    to the transcript yet, so the structured question in `_ask_of` is
     unavailable. Anchored on the LAST header — earlier frames are stale."""
     lines = text.split("\n")
     hdr = next((i for i in range(len(lines) - 1, -1, -1)
@@ -1867,7 +1870,7 @@ def _board(focus_sid: str = "") -> dict:
         lane = "snoozed" if snoozed else _lane_of(r)
         one = r.get("snippet", "")
         if lane in ("question", "approval"):
-            ask, _ = _full_context(sid)
+            ask, _ = _ask_of(sid)
             one = ask or one
         proj = (r.get("dir") or "").rstrip("/").split("/")[-1]
         items.append({"runId": r.get("id"), "sessionId": sid, "title": proj or r.get("title", ""),
@@ -1905,7 +1908,7 @@ def _board(focus_sid: str = "") -> dict:
         # One parse of the tail, two derivations: the **Ask** and the
         # **Scrollback** (ADR 0014 — the scrollback costs no second file read).
         rows = _tail_rows(focus["sessionId"])
-        ask, options = _full_context(focus["sessionId"], rows)
+        ask, options = _ask_of(focus["sessionId"], rows)
         scrollback = _scrollback(rows)
         cursor = 0
         pane = _pane_contents(focus["runId"])   # one read: box + any selector/widget

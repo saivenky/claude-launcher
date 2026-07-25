@@ -1313,7 +1313,7 @@ _APPROVAL_ROWS = [
         {"type": "text", "text": "look at my recent dated notes over the past 5 "
                                  "days. see if there's anything that looks like it "
                                  "should be consolidated."}]}},
-    # last assistant turn is a bare Bash tool_use — no prose, so _full_context's
+    # last assistant turn is a bare Bash tool_use — no prose, so _ask_of's
     # text/ask both come back empty. The tool_use has no matching tool_result, so
     # it is the pending (flushed) blocker.
     {"type": "assistant", "message": {"content": [
@@ -1342,7 +1342,7 @@ class ApprovalFocusTests(unittest.TestCase):
 
     Captured live: session d4440820, blocked on `_APPROVAL_CMD`, returned lane
     'approval' with an empty ask and an empty run-up. Pre-existing board gap, not
-    the tmux swap (`_full_context` reads the transcript, not the pane).
+    the tmux swap (`_ask_of` reads the transcript, not the pane).
 
     Ticket: .scratch/approval-card-detail/issues/01-approval-cards-show-command.md
     """
@@ -1391,7 +1391,7 @@ class ApprovalFocusTests(unittest.TestCase):
 
 
 # Approval tool_uses other than Bash. Each leaves a FLUSHED pending tool_use
-# (ADR 0009); the card reads its `input`, not the pane. _lane_of + _full_context
+# (ADR 0009); the card reads its `input`, not the pane. _lane_of + _ask_of
 # are exercised directly with a stubbed transcript tail.
 class ApprovalDetailTests(unittest.TestCase):
     def setUp(self):
@@ -1411,7 +1411,7 @@ class ApprovalDetailTests(unittest.TestCase):
 
     def _ask_for(self, tool):
         server._tail_rows = lambda sid: self._rows_for(tool)
-        ask, _ = server._full_context(_GOOD)
+        ask, _ = server._ask_of(_GOOD)
         return ask
 
     def test_edit_shows_the_target_file_and_a_change_summary(self):
@@ -1442,7 +1442,7 @@ class ApprovalDetailTests(unittest.TestCase):
     def test_the_run_up_prose_above_the_command_is_no_longer_returned(self):
         # That prose used to ride back as ADR 0006's `contextHtml`, clipped to a
         # budget of its own. It is the **Scrollback** now (ADR 0014), bounded per
-        # turn by _TURN_MAX, so `_full_context` yields the **Ask** and nothing
+        # turn by _TURN_MAX, so `_ask_of` yields the **Ask** and nothing
         # else — however much prose sits above the command.
         long_prose = "we were " + "y" * 3000
         rows = [{"type": "assistant", "message": {"content": [
@@ -1450,7 +1450,7 @@ class ApprovalDetailTests(unittest.TestCase):
             {"type": "tool_use", "id": "toolu_x", "name": "Bash",
              "input": {"command": "ls"}}]}}]
         server._tail_rows = lambda sid: rows
-        self.assertEqual(server._full_context(_GOOD), ("ls", []))
+        self.assertEqual(server._ask_of(_GOOD), ("ls", []))
 
 
 class ScrollbackTests(unittest.TestCase):
@@ -1566,7 +1566,7 @@ class ScrollbackTests(unittest.TestCase):
 
 
 # An idle Focus whose last turn happens to end in a `?`. The prose-`?` regex in
-# `_full_context` would restate it as an **Ask**, but the turn is now visibly the
+# `_ask_of` would restate it as an **Ask**, but the turn is now visibly the
 # last row of the **Scrollback** — so an idle Run has no Ask at all (CONTEXT.md).
 _IDLE_ROWS = [
     {"type": "user", "message": {"content": "which one should we ship?"}},

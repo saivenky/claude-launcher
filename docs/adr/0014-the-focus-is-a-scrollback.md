@@ -42,7 +42,7 @@ moves on every new turn, so the payload was never stable across a working Run â€
 the 304s that matter are the ones on an *idle* Focus, and those still hold,
 because an idle Session's tail does not change. What actually grows is body
 size, and that is bounded on purpose: a fixed turn count, each turn clipped,
-read from the same `_TAIL_WINDOW` tail `_full_context` already reads. No new
+read from the same `_TAIL_WINDOW` tail `_ask_of` already reads. No new
 file I/O â€” the tail is parsed once and yields both the scrollback and the
 **Ask**.
 
