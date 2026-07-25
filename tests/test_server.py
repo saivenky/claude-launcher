@@ -1437,6 +1437,214 @@ class ApprovalDetailTests(unittest.TestCase):
         self.assertTrue(text.endswith("…"))
 
 
+class ScrollbackTests(unittest.TestCase):
+    """The **Scrollback** — the recent **turns** of the Focus's Session, oldest
+    first (ADR 0014). Built from an already-parsed tail, so these exercise
+    `_scrollback` directly on transcript rows."""
+
+    def test_turns_arrive_oldest_first_with_their_role(self):
+        turns = server._scrollback([
+            {"type": "user", "message": {"content": [{"type": "text", "text": "first"}]}},
+            {"type": "assistant", "message": {"content": [{"type": "text", "text": "second"}]}},
+        ])
+        self.assertEqual([t["role"] for t in turns], ["user", "assistant"])
+        self.assertIn("first", turns[0]["html"])
+        self.assertIn("second", turns[-1]["html"])
+
+    def test_escaping_is_total(self):
+        # THE load-bearing test (ADR 0006): the client innerHTMLs every turn's
+        # html, so transcript markup must arrive as TEXT, never as an element.
+        # ADR 0014 widens that exception from one field to N — same function,
+        # same guarantee, so the same test has to hold per turn.
+        hostile = ("here is <script>alert(1)</script> and an <img src=x onerror=y> "
+                   "with `<b>ticks</b>` and a | pipe |")
+        turns = server._scrollback([
+            {"type": "assistant", "message": {"content": [
+                {"type": "text", "text": hostile}]}}])
+        html = turns[0]["html"]
+        self.assertNotIn("<script>", html)
+        self.assertNotIn("<img", html)
+        self.assertIn("&lt;script&gt;alert(1)&lt;/script&gt;", html)
+        self.assertIn("&lt;img src=x onerror=y&gt;", html)
+        self.assertIn("<code>&lt;b&gt;ticks&lt;/b&gt;</code>", html)   # inline code, escaped
+        self.assertIn("| pipe |", html)                                # no stray table
+
+    def test_a_tool_only_turn_survives_as_a_turn(self):
+        # The COMMON case on a working Run: long stretches of tool_use with no
+        # prose. Dropped, the scrollback would look broken; it renders as chips.
+        turns = server._scrollback([
+            {"type": "assistant", "message": {"content": [
+                {"type": "tool_use", "id": "t1", "name": "Bash", "input": {"command": "ls"}},
+                {"type": "tool_use", "id": "t2", "name": "Read", "input": {}}]}}])
+        self.assertEqual(len(turns), 1)
+        self.assertEqual(turns[0]["tools"], ["Bash", "Read"])
+        self.assertEqual(turns[0]["html"], "")
+
+    def test_prose_and_tools_ride_the_same_turn(self):
+        turns = server._scrollback([
+            {"type": "assistant", "message": {"content": [
+                {"type": "text", "text": "let me look"},
+                {"type": "tool_use", "id": "t1", "name": "Grep", "input": {}}]}}])
+        self.assertEqual(len(turns), 1)
+        self.assertIn("let me look", turns[0]["html"])
+        self.assertEqual(turns[0]["tools"], ["Grep"])
+
+    def test_a_tool_result_row_is_not_a_human_turn(self):
+        turns = server._scrollback([
+            {"type": "user", "message": {"content": [
+                {"type": "tool_result", "tool_use_id": "t1", "content": "total 4"}]}},
+            {"type": "assistant", "message": {"content": [{"type": "text", "text": "done"}]}},
+        ])
+        self.assertEqual([t["role"] for t in turns], ["assistant"])
+
+    def test_sidechain_rows_are_dropped(self):
+        # A sidechain is a subagent's own thread, not this Session's turns.
+        turns = server._scrollback([
+            {"type": "assistant", "isSidechain": True,
+             "message": {"content": [{"type": "text", "text": "subagent chatter"}]}},
+            {"type": "user", "message": {"content": [{"type": "text", "text": "mine"}]}},
+        ])
+        self.assertEqual(len(turns), 1)
+        self.assertIn("mine", turns[0]["html"])
+
+    def test_a_plain_string_user_message_is_a_turn(self):
+        # message.content is a bare string as often as it is a block list.
+        turns = server._scrollback([
+            {"type": "user", "message": {"content": "just text, no blocks"}}])
+        self.assertEqual(len(turns), 1)
+        self.assertEqual(turns[0]["role"], "user")
+        self.assertIn("just text, no blocks", turns[0]["html"])
+
+    def test_angle_wrapped_plumbing_rows_are_dropped(self):
+        turns = server._scrollback([
+            {"type": "user", "message": {"content": "<command-name>/write-plan</command-name>"}},
+            {"type": "user", "message": {"content": [
+                {"type": "text", "text": "<system-reminder>be terse</system-reminder>"}]}},
+            {"type": "user", "message": {"content": "a real ask"}},
+        ])
+        self.assertEqual(len(turns), 1)
+        self.assertIn("a real ask", turns[0]["html"])
+
+    def test_a_turn_with_neither_prose_nor_tools_is_dropped(self):
+        turns = server._scrollback([
+            {"type": "assistant", "message": {"content": [{"type": "text", "text": "   "}]}},
+            {"type": "system", "message": {"content": [{"type": "text", "text": "noise"}]}},
+        ])
+        self.assertEqual(turns, [])
+
+    def test_the_turn_count_is_bounded_to_the_newest(self):
+        rows = [{"type": "assistant", "message": {"content": [
+            {"type": "text", "text": f"turn {i}"}]}} for i in range(40)]
+        turns = server._scrollback(rows)
+        self.assertEqual(len(turns), server._SCROLLBACK_TURNS)
+        self.assertIn("turn 39", turns[-1]["html"])                     # newest last
+        self.assertIn(f"turn {40 - server._SCROLLBACK_TURNS}", turns[0]["html"])
+
+    def test_each_turn_is_clipped(self):
+        long_prose = "z" * (server._TURN_MAX * 3)
+        turns = server._scrollback([
+            {"type": "assistant", "message": {"content": [
+                {"type": "text", "text": long_prose}]}}])
+        self.assertLessEqual(len(turns[0]["html"]), server._TURN_MAX + 10)   # + <p>…</p>
+        self.assertTrue(turns[0]["html"].endswith("…</p>"))
+
+
+# An idle Focus whose last turn happens to end in a `?`. The prose-`?` regex in
+# `_full_context` would restate it as an **Ask**, but the turn is now visibly the
+# last row of the **Scrollback** — so an idle Run has no Ask at all (CONTEXT.md).
+_IDLE_ROWS = [
+    {"type": "user", "message": {"content": "which one should we ship?"}},
+    {"type": "assistant", "message": {"content": [
+        {"type": "text", "text": "Both work. Do you want the bounded tail or the whole thread?"}]}},
+]
+
+
+class FocusScrollbackTests(unittest.TestCase):
+    """`/api/board`'s focus carries the **Scrollback**, and the **Ask** is a
+    property of being **Blocked** and of nothing else (ADR 0014)."""
+
+    def setUp(self):
+        self._saved = {n: getattr(server, n) for n in
+                       ("cached_runs", "cached_foreign_runs", "_tail_rows",
+                        "_transcript_path", "_pane_contents", "_ai_title",
+                        "_tmux_server_down")}
+        self.reads = []
+        self.now = time.time() * 1000        # fresh, so the idle Run doesn't dorm
+        server._tmux_server_down = lambda: False
+        server.cached_foreign_runs = lambda: []
+        server._transcript_path = lambda *a, **k: ""
+        server._ai_title = lambda sid: "ship the scrollback"
+        self._be_idle()
+
+    def tearDown(self):
+        for n, v in self._saved.items():
+            setattr(server, n, v)
+
+    def _run(self, status):
+        return [{"id": _RUN, "sessionId": _GOOD, "title": "x", "dir": "~/projects/x",
+                 "status": status, "bridge": "", "updatedAt": self.now, "snippet": ""}]
+
+    def _tail(self, rows):
+        def read(sid):
+            self.reads.append(sid)
+            return rows
+        server._tail_rows = read
+
+    def _be_idle(self):
+        self._tail(_IDLE_ROWS)
+        server._pane_contents = lambda rid: ""
+        server.cached_runs = lambda: self._run("idle")
+
+    def _be_blocked(self):
+        self._tail(_APPROVAL_ROWS)
+        server._pane_contents = lambda rid: _BASH_APPROVAL_PANE
+        server.cached_runs = lambda: self._run("waiting")
+
+    def test_the_focus_carries_its_turns_oldest_first(self):
+        focus = server._board()["focus"]
+        self.assertEqual([t["role"] for t in focus["scrollback"]], ["user", "assistant"])
+        self.assertIn("which one should we ship?", focus["scrollback"][0]["html"])
+
+    def test_the_scrollback_costs_no_second_read_of_the_tail(self):
+        # ADR 0014: the tail is parsed once and yields both the scrollback and
+        # the Ask. An idle Run touches _tail_rows for nothing else.
+        server._board()
+        self.assertEqual(self.reads, [_GOOD])
+
+    def test_an_idle_focus_ending_in_a_question_has_no_ask(self):
+        focus = server._board()["focus"]
+        self.assertEqual(focus["lane"], "yourmove")
+        self.assertEqual(focus["ask"], "")
+        self.assertEqual(focus["options"], [])
+        # …and the sentence is not lost: it is the last turn on screen.
+        self.assertIn("bounded tail or the whole thread?", focus["scrollback"][-1]["html"])
+
+    def test_a_blocked_focus_still_gets_its_ask(self):
+        self._be_blocked()
+        focus = server._board()["focus"]
+        self.assertEqual(focus["lane"], "approval")
+        self.assertIn("wc -w", focus["ask"])
+        self.assertEqual(focus["options"], ["Yes", "No"])
+
+    def test_a_blocked_focus_carries_a_scrollback_too(self):
+        self._be_blocked()
+        focus = server._board()["focus"]
+        self.assertIn("recent dated notes", focus["scrollback"][0]["html"])
+        self.assertEqual(focus["scrollback"][-1]["tools"], ["Bash"])   # the tool-only turn
+
+    def test_context_html_stays_for_todays_client(self):
+        # Deliberate overlap: this slice ships green on its own; a later one
+        # deletes contextHtml (ADR 0014).
+        self.assertIn("contextHtml", server._board()["focus"])
+
+    def test_the_etag_moves_when_a_turn_is_added(self):
+        _, before = server._board_payload()
+        self._tail(_IDLE_ROWS + [{"type": "assistant", "message": {"content": [
+            {"type": "text", "text": "one more turn"}]}}])
+        _, after = server._board_payload()
+        self.assertNotEqual(before, after)
+
+
 class BoardPayloadTests(unittest.TestCase):
     """The Board's item dict now carries `bridge` so the client can build the
     deep-link into the Claude app (ADR 0008)."""

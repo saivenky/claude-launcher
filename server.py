@@ -1575,6 +1575,15 @@ def _md_to_html(text: str) -> str:
 _ASK_MAX = 600     # the command / file / plan being approved
 _CTX_MAX = 1200    # the recent conversation context shown above it
 
+# The **Scrollback**'s two bounds, and the only two knobs that decide what
+# `/api/board` costs. ADR 0014 accepted a bigger body on the condition that it
+# stays bounded on purpose: at most _SCROLLBACK_TURNS turns, each clipped to
+# _TURN_MAX characters of prose (so a worst case of ~56KB before markup). If the
+# body ever becomes the problem, CUT THESE — do not split the scrollback back
+# out onto a second endpoint; that is the design ADR 0014 rejected.
+_SCROLLBACK_TURNS = 14   # how many recent **turns** of the Session the Focus shows
+_TURN_MAX = 4000         # per-turn clip on one turn's prose
+
 
 def _clip(s: str, n: int) -> str:
     s = (s or "").strip()
@@ -1608,14 +1617,17 @@ def _approval_detail(tu: dict) -> str:
     return name        # any other tool put up for approval — name it, never blank
 
 
-def _full_context(session_id: str) -> tuple:
+def _full_context(session_id: str, rows: list | None = None) -> tuple:
     """(context_text, ask, options) from the Session's last assistant turn.
 
     For an approval the `ask` describes the flushed pending tool_use (the Bash
     command, the Edit/Write target, or the ExitPlanMode plan) — what you're being
     asked to approve — and the run-up prose above it is clipped. See ADR 0009 and
-    `_approval_detail` for why this is structured data, not a pane scrape."""
-    rows = _tail_rows(session_id)
+    `_approval_detail` for why this is structured data, not a pane scrape.
+
+    `rows` lets a caller hand in a tail it has already parsed, so the **Ask** and
+    the **Scrollback** cost one file read between them (ADR 0014)."""
+    rows = _tail_rows(session_id) if rows is None else rows
     la = _last_assistant(rows)
     if not la:
         return "", "", []
@@ -1641,6 +1653,47 @@ def _full_context(session_id: str) -> tuple:
         ask = _approval_detail(tu) or ask
         text = _clip(text, _CTX_MAX)
     return text, ask, options
+
+
+def _scrollback(rows: list) -> list[dict]:
+    """The recent **turns** of a **Session**, oldest first — what the **Focus**
+    reads (ADR 0014). One turn is `{"role", "html", "tools"}`.
+
+    Takes an already-parsed tail rather than a `sessionId`, because it shares its
+    parse with `_full_context`: one file read per poll feeds both the scrollback
+    and the **Ask**. It is a bounded window on the transcript, never the whole
+    thread — `_SCROLLBACK_TURNS` turns, each clipped to `_TURN_MAX`.
+
+    `html` is `_md_to_html` of the turn's text blocks, so every turn is rendered
+    escape-first exactly as ADR 0006's single `contextHtml` was: the client
+    `innerHTML`s N strings instead of one, through the same function, adding no
+    new sink. `tools` names the tools that turn invoked; a turn carrying only
+    tools is the COMMON case on a working Run and survives with empty `html`
+    (the client draws chips), because rendered as a blank the scrollback would
+    look broken. Only a turn with neither prose nor tools is dropped.
+    """
+    turns = []
+    for o in rows:
+        # A sidechain row belongs to a subagent's own thread, not to this
+        # Session's turns.
+        if o.get("isSidechain") or o.get("type") not in ("user", "assistant"):
+            continue
+        blocks = _blocks(o)
+        raw = (o.get("message") or {}).get("content")
+        if not blocks and isinstance(raw, str) and raw.strip():
+            blocks = [{"type": "text", "text": raw}]   # a user turn may be a bare string
+        text = "\n".join(b.get("text", "") for b in blocks if b.get("type") == "text").strip()
+        tools = [b.get("name", "?") for b in blocks if b.get("type") == "tool_use"]
+        if o["type"] == "user" and not text and any(b.get("type") == "tool_result" for b in blocks):
+            continue                        # a tool return is not a human turn
+        if text.startswith("<") and text.endswith(">"):
+            continue                        # <command-name> / <system-reminder> plumbing
+        if not text and not tools:
+            continue
+        turns.append({"role": o["type"],
+                      "html": _md_to_html(_clip(text, _TURN_MAX)) if text else "",
+                      "tools": tools})
+    return turns[-_SCROLLBACK_TURNS:]
 
 
 def _lane_of(run: dict) -> str:
@@ -1845,7 +1898,11 @@ def _board(focus_sid: str = "") -> dict:
     dormant = [it for it in dormant if it is not focus]
     snoozed = [it for it in snoozed if it is not focus]
     if focus:
-        text, ask, options = _full_context(focus["sessionId"])
+        # One parse of the tail, two derivations: the **Ask** and the
+        # **Scrollback** (ADR 0014 — the scrollback costs no second file read).
+        rows = _tail_rows(focus["sessionId"])
+        text, ask, options = _full_context(focus["sessionId"], rows)
+        scrollback = _scrollback(rows)
         cursor = 0
         pane = _pane_contents(focus["runId"])   # one read: box + any selector/widget
         sel = _parse_selector(pane)             # a numbered menu (permission or question)
@@ -1866,7 +1923,17 @@ def _board(focus_sid: str = "") -> dict:
         # A menu or widget owns the screen — there is no free-text input box to
         # mistake its body for unsent text (that false ⚠ was the original bug).
         pending = "" if (sel or widget) else _pane_input(pane)
+        # An **Ask** is the blocker of a **Blocked** Run and nothing else
+        # (CONTEXT.md). On an idle Run the prose-`?` regex only restates the last
+        # turn, which the **Scrollback** now shows — a second copy, not new
+        # information. Gated HERE, after the rendered pane has had its chance to
+        # upgrade the lane to `question`, so a real blocker is never dropped.
+        if lane not in ("question", "approval"):
+            ask, options, cursor = "", [], 0
         focus = dict(focus, lane=lane, aiTitle=_ai_title(focus["sessionId"]),
+                     scrollback=scrollback,
+                     # contextHtml is superseded by the scrollback and kept only
+                     # so today's client stays working; a later slice deletes it.
                      contextHtml=_md_to_html(text), ask=ask, options=options,
                      cursor=cursor, pendingInput=pending, pinned=pinned)
     # serverDown distinguishes a dead tmux server (all Runs gone silently) from
