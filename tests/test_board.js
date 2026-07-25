@@ -15,7 +15,21 @@ const fs = require("fs");
 const vm = require("vm");
 const path = require("path");
 
-const SRC = fs.readFileSync(path.join(path.resolve(__dirname, ".."), "web/board.js"), "utf8");
+const ROOT = path.resolve(__dirname, "..");
+const SRC = fs.readFileSync(path.join(ROOT, "web/board.js"), "utf8");
+// The stylesheet is read too, at the bottom. The stub DOM runs no CSS, so a DOM
+// assertion can only prove the client toggled a class — never that hiding the
+// chrome actually yielded the pixels. Only board.html can say that.
+const HTML = fs.readFileSync(path.join(ROOT, "web/board.html"), "utf8");
+
+// --- stub layout -----------------------------------------------------------
+// board.js reads exactly two boxes: the Focus card's, to decide whether the end
+// of the read is below the fold (readingUp), and the intake dock's, to publish
+// the height the composer stands on (syncDockHeight). The stub lays out those
+// two and nothing else — enough to drive the scroll-chrome rule, nowhere near
+// enough to pretend CSS ran.
+const layout = {cardBottom: 0, dockHeight: 0};
+const rect = (b) => ({top: 0, left: 0, right: 0, width: 0, bottom: b, height: b});
 
 // --- stub DOM: only the surface board.js actually touches -------------------
 class El {
@@ -40,6 +54,12 @@ class El {
   focus() { doc.activeElement = this; }
   blur() { if (doc.activeElement === this) doc.activeElement = null; this.dispatch("blur", {}); }
   setSelectionRange(a, b) { this.selectionStart = a; this.selectionEnd = b; }
+  getBoundingClientRect() {
+    const cls = " " + this._cls + " ";
+    if (cls.includes(" focus ")) return rect(layout.cardBottom);
+    if (cls.includes(" dock ")) return rect(layout.dockHeight);
+    return rect(0);
+  }
   querySelector(sel) {   // class selectors only — all board.js asks for
     const cls = sel.slice(1);
     const walk = (n) => {
@@ -57,11 +77,24 @@ const doc = {
   activeElement: null,
   hidden: true,   // stops schedule() firing background polls; the tests drive poll() by hand
   _byId: {},
+  // Only `--dockh` is ever written here (board.js::syncDockHeight); the tests
+  // read it back to prove the dock's height is measured, not guessed.
+  documentElement: {style: {_p: {}, setProperty(k, v) { doc.documentElement.style._p[k] = v; }}},
   getElementById(id) { return doc._byId[id] || (doc._byId[id] = new El("div")); },
   createElement(t) { return new El(t); },
   createTextNode(t) { return {__text: String(t)}; },
-  addEventListener() {},
+  // Recorded rather than dropped: the escape hatch that brings hidden chrome
+  // back is a document-level click, and a test has to be able to fire it.
+  _lis: {},
+  addEventListener(t, fn) { (doc._lis[t] = doc._lis[t] || []).push(fn); },
+  dispatch(t, ev) { (doc._lis[t] || []).forEach((fn) => fn(ev || {})); },
 };
+// board.html ships these hidden and gives the dock a class; the stub creates
+// bare, visible elements, so seed both or the client reads an intake that is
+// permanently open and a dock with no box to measure.
+["dockexp", "dirpop", "recoverbar", "recovpanel", "toast"]
+  .forEach((id) => { doc.getElementById(id).hidden = true; });
+doc.getElementById("dock").className = "dock";
 
 // --- fake /api/board -------------------------------------------------------
 // Mirrors server.py::_board's focus rule: honour ?focus= when that Session is
@@ -144,10 +177,17 @@ const store = {cl_token: "secret"};   // pre-seeded: Respond is token-gated (ADR
 // The **Scrollback** has no scroll box of its own any more (ADR 0014 killed the
 // 46vh one), so the reading position the client carries across a rebuild is the
 // PAGE scroll. The stub window keeps it addressable from a test.
+// innerHeight + the recorded scroll/resize listeners are what let a test drive
+// the scroll-driven chrome: the client hides it when the end of the read sits
+// below this fold (board.js::readingUp).
 const win = {prompt: () => "secret",
              confirm: (m) => { confirmLog.push(m); return confirmReply; },
              alert: (m) => { alertLog.push(m); },
-             scrollY: 0, scrollTo: (x, y) => { win.scrollY = y; }};
+             scrollY: 0, scrollTo: (x, y) => { win.scrollY = y; },
+             innerHeight: 800,
+             _lis: {},
+             addEventListener(t, fn) { (win._lis[t] = win._lis[t] || []).push(fn); },
+             dispatch(t, ev) { (win._lis[t] || []).forEach((fn) => fn(ev || {})); }};
 const sandbox = {
   document: doc, console,
   window: win,
@@ -476,6 +516,153 @@ const W = "wwwwwwww-3333-3333-3333-333333333333";
   ok("composer: a working Focus says what happens to what you type",
      card().textContent.includes("queues until this turn ends"), card().textContent);
   ok("composer: and nothing is disabled to say it", ti().disabled !== true);
+
+  // --- The chrome is a scroll position, not a mode (ADR 0014's Context) -----
+  // The Focus's header and its composer are worth pixels only at the live end of
+  // the **Scrollback**. Scroll up into history and they get out of the read's
+  // way; come back near the bottom and they return.
+  world[0].lane = "yourmove";
+  sandbox.setPinned(T);        // also cancels the advance the composer loop armed
+  await settle();
+  doc.activeElement = null;
+  layout.cardBottom = 0;
+  win.dispatch("scroll");
+
+  const fhead = () => card() && card().querySelector(".fhead");
+  const respond = () => card() && card().querySelector(".respond");
+  const dock = () => doc.getElementById("dock");
+  const hid = (n) => !!n && (" " + (n.className || "") + " ").includes(" hid ");
+  // The client hides the chrome on consecutive travel UP (back into history) and
+  // hands it back on travel down — or outright, at the end of the read. A
+  // **Scrollback** is oldest-first, so "not near the bottom" alone would hide it
+  // for the whole of a first read; travel is what the client actually watches.
+  const scrollTo = (y) => { win.scrollY = y; win.dispatch("scroll"); };
+  const readUp = () => { scrollTo(1600); scrollTo(1200); };
+  const readDown = () => { scrollTo(1200); scrollTo(1600); };
+
+  ok("chrome: at the live end of the scrollback it is all up",
+     !hid(fhead()) && !hid(respond()) && !hid(dock()));
+
+  layout.cardBottom = 2400;    // the end of the read is far below an 800px fold
+  readDown();
+  ok("chrome: reading DOWN a long run-up keeps it up — that is the way to the answer",
+     !hid(fhead()) && !hid(respond()) && !hid(dock()));
+
+  readUp();
+  ok("chrome: scrolling up into history slides the Focus's header away", hid(fhead()));
+  ok("chrome: and the composer with it", hid(respond()));
+  ok("chrome: the intake dock rides the same state — the bottom edge is one thing",
+     hid(dock()));
+  ok("chrome: hiding never unbuilds the composer — the same box is still there",
+     !!ti() && ti() === respond().querySelector(".ti"));
+
+  layout.cardBottom = 700;     // the end of the read is back on screen
+  scrollTo(1190);              // a nudge further UP: the end of the read wins anyway
+  ok("chrome: returning near the bottom brings all three back",
+     !hid(fhead()) && !hid(respond()) && !hid(dock()));
+
+  // The escape hatch, and its limit: a tap is a nudge, not a latch.
+  layout.cardBottom = 2400;
+  readUp();
+  ok("escape hatch: hidden to begin with", hid(respond()));
+  doc.dispatch("click");
+  ok("escape hatch: interacting with the page restores the chrome without a scroll",
+     !hid(fhead()) && !hid(respond()) && !hid(dock()));
+  scrollTo(win.scrollY - 200);
+  ok("escape hatch: and another step back into history takes it away again",
+     hid(respond()));
+
+  // A scroll may no more snatch the keyboard away than a poll may.
+  doc.dispatch("click");
+  ti().focus();
+  readUp();
+  ok("chrome: an active reply keeps its box, however far up the read you are",
+     !hid(respond()));
+  ti().blur();
+  readUp();
+  ok("chrome: letting go of the box hands the pixels back to the read", hid(respond()));
+
+  // The state that must survive a poll, now with a third thing in it: a
+  // half-typed reply, a reading position, AND a chrome state that still agrees
+  // with where the reader is.
+  ti().value = "still writing this";
+  win.scrollY = 640;
+  const heldCard = card();
+  sbOf[T] = sbOf[T].concat([{role: "assistant", html: "<p>and another turn</p>", tools: []}]);
+  await poll();
+  ok("rebuild: the card is rebuilt when its own data moves", card() !== heldCard);
+  ok("rebuild: the half-typed reply still survives", ti().value === "still writing this",
+     "got " + JSON.stringify(ti().value));
+  ok("rebuild: the reading position still survives", win.scrollY === 640, "got " + win.scrollY);
+  ok("rebuild: and the chrome is left where the reader left it, on the new nodes",
+     hid(fhead()) && hid(respond()) && hid(dock()));
+
+  // A different Session is a different read: you have travelled nowhere in it
+  // yet, so it opens with the chrome up however deep the last one was.
+  world.push(S(B, "question", 1, "bravo2"));
+  sandbox.setPinned(B);
+  await settle();
+  ok("switch: a new Session opens with the chrome up, wherever the page sits",
+     !hid(fhead()) && !hid(respond()) && !hid(dock()), card() && card().className);
+  sandbox.setPinned(T);
+  await settle();
+
+  // --- The intake dock still works, and is not occluded by the composer -----
+  readUp();
+  ok("intake: the dock clears the bottom edge with the rest while you read", hid(dock()));
+  doc.getElementById("dplus").dispatch("click");
+  ok("intake: ＋ still opens the expanded dock (resume + tasks, ADR 0008)",
+     doc.getElementById("dockexp").hidden === false);
+  ok("intake: an intake you have opened is never slid out from under you", !hid(dock()));
+  ok("intake: while the Focus's own chrome still gets out of the read's way", hid(respond()));
+  doc.getElementById("dplus").dispatch("click");
+  ok("intake: closing it hands the dock back to the chrome state", hid(dock()));
+
+  doc.dispatch("click");
+  doc.getElementById("dir").value = "sandbox";
+  doc.getElementById("launch").dispatch("click");
+  await settle();
+  ok("intake: and dir-launch still posts — the hot path ADR 0008 measured",
+     fetched.includes("api/launch"), JSON.stringify(fetched.slice(-3)));
+
+  layout.dockHeight = 96;   // e.g. the Recover pill is up: the dock is taller
+  win.dispatch("resize");
+  ok("bottom edge: the dock's height is measured and published, never guessed",
+     doc.documentElement.style._p["--dockh"] === "96px",
+     JSON.stringify(doc.documentElement.style._p));
+
+  // --- What only the stylesheet can answer ----------------------------------
+  // The stub runs no CSS, so everything above proves the client toggles a class.
+  // Whether that class actually yields the pixels — and whether the column is
+  // bounded — lives in board.html, so these read it.
+  const esc = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const rule = (sel) => {
+    const m = new RegExp("^" + esc(sel) + "\\{([^}]*)\\}", "m").exec(HTML);
+    return m ? m[1] : "(no rule for " + sel + ")";
+  };
+  const HIDS = [".fhead.hid", ".respond.hid", ".dock.hid"];
+
+  ok("no layout reserved: the chrome is sticky, so the turns scroll UNDER it",
+     rule(".fhead").includes("position:sticky") && rule(".respond").includes("position:sticky"),
+     rule(".fhead") + " || " + rule(".respond"));
+  ok("no layout reserved: hiding is a transform — never a display or height reflow",
+     HIDS.every((s) => /transform:translateY/.test(rule(s))) &&
+     !HIDS.some((s) => /display:none|height:0|max-height/.test(rule(s))),
+     HIDS.map(rule).join(" || "));
+  ok("bottom edge: the composer stacks ON the dock rather than across it",
+     rule(".respond").includes("bottom:var(--dockh)") && rule(".dock").includes("bottom:0"),
+     rule(".respond"));
+  const rm = HTML.indexOf("@media(prefers-reduced-motion:reduce){");
+  ok("chrome: the slide respects prefers-reduced-motion (the .spin precedent)",
+     rm > 0 && HTML.slice(rm, rm + 220).includes(".fhead,.respond,.dock{transition:none}"),
+     HTML.slice(rm, rm + 220));
+
+  ok("column: one bounded reading column, wider than the old 640px phone width",
+     /--col:740px/.test(HTML) && rule(".wrap").includes("var(--gut)"), rule(".wrap"));
+  ok("column: which collapses to today's 14px gutters on a phone — nothing changes there",
+     /--gut:max\(14px,calc\(50% - var\(--col\)\/2\)\)/.test(HTML));
+  ok("column: and the fixed dock snaps to the SAME column, not the viewport edge",
+     rule(".dock").includes("var(--gut)"), rule(".dock"));
 
   console.log("\n  " + pass + " passed, " + fail + " failed");
   process.exit(fail ? 1 : 0);

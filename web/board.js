@@ -12,6 +12,11 @@
 // Below all of it, outside the triage surface, sit the Foreign Runs — seen,
 // never driven, and transferable in one tap (foreignZone, ADR 0012).
 //
+// The whole page is one bounded reading column (board.html: --col / --gut), and
+// the chrome around the Focus — its header, its composer, and the intake dock
+// they share the bottom edge with — follows the scroll rather than a mode. See
+// the chrome section below (syncChrome).
+//
 // Rotation is consent-based (CONTEXT.md: Focus, Rotation). Two rules carry it,
 // and between them nothing the Board does can cost you a half-typed reply or
 // your place in the context:
@@ -35,6 +40,7 @@ const dirRootEl = document.getElementById("dirroot");
 const launchEl = document.getElementById("launch");
 const resumeEl = document.getElementById("resume");
 const dplusEl = document.getElementById("dplus");
+const dockEl = document.getElementById("dock");
 const dockexpEl = document.getElementById("dockexp");
 const tasksEl = document.getElementById("tasks");
 const taskslblEl = document.getElementById("taskslbl");
@@ -315,6 +321,8 @@ function reconcile(data) {
 function setDock(open) {
   dockexpEl.hidden = !open;
   dplusEl.setAttribute("aria-expanded", open ? "true" : "false");
+  syncDockHeight();   // the panel changed the dock's height
+  applyChrome();      // an intake that just closed may slide away with the rest
 }
 
 // The launch input's quick-pick: the folders you've recently run Claude in
@@ -461,8 +469,9 @@ async function loadRecoverable() {
 function renderRecoverBadge() {
   const n = recoverSessions.length;
   recoverbarEl.hidden = n === 0;
-  if (n === 0) { if (recoverOpen) closeRecover(); return; }
+  if (n === 0) { if (recoverOpen) closeRecover(); syncDockHeight(); return; }
   recoverBtnEl.textContent = recoverPreselect > 0 ? ("recover · " + recoverPreselect) : "recover";
+  syncDockHeight();   // the pill just grew (or shrank) the dock the composer stands on
 }
 
 function openRecover() {
@@ -686,6 +695,12 @@ function focusCard(f) {
   row.append(ti, send);
   respond.append(row);
 
+  // The per-run action strip. It is built here with the composer but appended to
+  // the CARD, not to `.respond`: the composer is docked to the bottom edge now
+  // (see the chrome section below) and a full strip of buttons riding that edge
+  // would spend the pixels this whole layout exists to recover. These are the
+  // rare, deliberate actions — they sit in the flow at the end of the read,
+  // where you arrive just before the box.
   const actions = el("div", "actions");
   const pri = el("span", "prisel");
   pri.append(document.createTextNode("⚑ priority "));
@@ -728,9 +743,9 @@ function focusCard(f) {
   const close = el("button", "ghost", "× close");
   close.addEventListener("click", () => closeRun(f));
   actions.append(close);
-  respond.append(actions);
 
-  card.append(respond);
+  card.append(actions);
+  card.append(respond);   // last child — the docked composer (board.html: .respond)
   return card;
 }
 
@@ -888,11 +903,22 @@ function renderFocus(f) {
   focusWrap.textContent = "";
   if (!f) {
     focusWrap.append(el("div", "empty", "All clear — nothing needs you right now."));
+    chromeHid = false;   // no read to get out of the way of — hand the dock back
+    applyChrome();
     return;
   }
   const card = focusCard(f);
   focusWrap.append(card);
   if (keep) restore(card, keep);
+  // Chrome across a rebuild. A rebuild of the SAME Focus re-APPLIES the state it
+  // already had rather than re-deriving it: restore() carried the reading
+  // position over unchanged, so the state that matched it still matches — and a
+  // turn arriving while you sit reading must not yank the composer away from
+  // someone who has not moved. A *different* Session is a different read and
+  // starts with the chrome up, wherever the page happens to sit: you have
+  // travelled nowhere in it yet, so there is no history to be up in.
+  if (!keep) { chromeHid = false; chromeAnchor = window.scrollY || 0; }
+  applyChrome();
 }
 
 // What a rebuild would otherwise cost you: the reply text, the caret, whether
@@ -925,6 +951,113 @@ function restore(card, k) {
 function replyEngaged() {
   const ti = focusWrap.querySelector(".ti");
   return !!ti && (ti === document.activeElement || ti.value.trim() !== "");
+}
+
+// --- Scroll-driven chrome: reading and answering are scroll positions --------
+// ADR 0014 measured the problem: on a 390×844 phone the chrome around the read
+// took half the viewport. Slice 02 gave the **Scrollback** the page scroll; this
+// is the other half — the chrome that is worth pixels only at the live end of it
+// stops being worth them the moment you scroll up into history.
+//
+// No mode and no toggle: the scroll position IS the mode. Scroll up and the
+// Focus's header and its composer slide away; travel back down, or reach the end
+// of the read, and they return. They slide with a `transform` on
+// `position:sticky` elements (board.html), so hidden chrome reserves NOTHING —
+// the **turns** scroll under it, and hiding hands those pixels straight to the
+// read. A max-height hide would reflow the whole scrollback and give the reader
+// nothing until it landed.
+//
+// WHY TRAVEL AND NOT JUST "AM I NEAR THE BOTTOM". The prototype could ask only
+// that, because it auto-scrolled a fresh Focus to its newest **turn**. This
+// Board does not: a **Scrollback** is oldest-first and you land at the top of it
+// and read down, so "not near the bottom" would mean the chrome was hidden the
+// entire way through a first read, and on every page load. Travel says the thing
+// that is actually true — moving up is going back into history, moving down is
+// going toward the answer — and the end of the read still wins outright.
+//
+// THE BOTTOM EDGE IS SHARED, AND THAT IS RESOLVED BY STACKING. The intake dock
+// is fixed there (ADR 0008) and the composer now wants the same edge. Neither is
+// traded away: the dock keeps `bottom:0`, because ADR 0008 measured dir-launch
+// as the hot path and intake must stay one visible tap, and the composer sits
+// directly on top of it at `bottom:var(--dockh)`. `--dockh` is measured rather
+// than guessed (syncDockHeight) because the **Recover** pill grows the dock, and
+// a stale constant would put the composer over it. The two then ride ONE chrome
+// state, so the bottom edge is either both bars or none of it — never a composer
+// parked across a dock. Read up into history and the whole edge clears.
+const CHROME_SLACK = 140;   // px the end of the read must sit below the fold
+                            // before there is any history to be up in
+const CHROME_STEP = 24;     // px of travel one way before it counts as a move
+
+let chromeHid = false;
+let chromeAnchor = 0;       // the scroll position the current run of travel began
+                            // at, so the step is consecutive travel, not drift
+
+// Is the end of the read below the fold? The card's own chrome is sticky and so
+// contributes nothing here: this measures the turns, the **Ask** and the pending
+// warning — everything you actually scroll through.
+function readingUp() {
+  const card = focusWrap.querySelector(".focus");
+  if (!card || !card.getBoundingClientRect) return false;
+  // Never slide the box out from under an active reply. Same instinct as
+  // advanceWhenFree: the keyboard is up and the caret is in it, so a scroll must
+  // no more snatch it away than a poll may.
+  const ti = card.querySelector(".ti");
+  if (ti && ti === document.activeElement) return false;
+  return card.getBoundingClientRect().bottom > (window.innerHeight || 0) + CHROME_SLACK;
+}
+
+function setHid(node, hid) {
+  if (!node) return;
+  const base = (node.className || "").split(" ").filter((c) => c && c !== "hid").join(" ");
+  node.className = hid ? base + " hid" : base;
+}
+
+// An intake you have already opened is never slid out from under you.
+function intakeOpen() {
+  return dockexpEl.hidden === false || dirpopEl.hidden === false || recoverOpen;
+}
+
+function applyChrome() {
+  const card = focusWrap.querySelector(".focus");
+  setHid(card && card.querySelector(".fhead"), chromeHid);
+  setHid(card && card.querySelector(".respond"), chromeHid);
+  setHid(dockEl, chromeHid && !intakeOpen());
+}
+
+function setChrome(hid, y) {
+  chromeAnchor = y;
+  if (hid === chromeHid) return;
+  chromeHid = hid;
+  applyChrome();
+}
+
+function syncChrome() {
+  const y = window.scrollY || 0;
+  // The end of the read is on screen, or there is no read: you are at the answer
+  // point and the chrome is up, whatever direction you arrived from. This is the
+  // "returns near the bottom" half, and it covers a Focus short enough never to
+  // scroll at all.
+  if (!readingUp()) { setChrome(false, y); return; }
+  const d = y - chromeAnchor;
+  if (chromeHid ? d > CHROME_STEP : d < -CHROME_STEP) setChrome(!chromeHid, y);
+  else if (chromeHid ? d < 0 : d > 0) chromeAnchor = y;   // still going the way
+                                                          // this state expects
+}
+
+// The escape hatch: interacting with the page brings the chrome back without
+// making you scroll for it. A nudge, not a latch — re-anchored here, so another
+// step back up into history takes it away again.
+function showChrome() {
+  setChrome(false, window.scrollY || 0);
+}
+
+// Publish the dock's real height for the composer to stand on. Re-measured every
+// moment the dock can change height: on load, on resize, when the intake opens
+// or closes, and when the Recover pill appears or goes.
+function syncDockHeight() {
+  if (!dockEl || !dockEl.getBoundingClientRect || !document.documentElement) return;
+  const h = Math.round(dockEl.getBoundingClientRect().height);
+  if (h > 0) document.documentElement.style.setProperty("--dockh", h + "px");
 }
 
 function render(data) {
@@ -1042,11 +1175,21 @@ recovGoEl.addEventListener("click", doRecover);
 recovPanelEl.addEventListener("click", (e) => { if (e.target === recovPanelEl) closeRecover(); });
 document.addEventListener("keydown", (e) => { if (e.key === "Escape" && recoverOpen) closeRecover(); });
 
+// The chrome follows the scroll; a tap anywhere is the escape hatch that brings
+// it back without one. `click`, not `pointerdown`: a pointerdown is also how a
+// scroll gesture STARTS, so the hatch would flash the chrome in and the scroll
+// would take it straight back out. No exclusion list is needed either — hidden
+// chrome is off-screen and cannot be the thing you tapped.
+window.addEventListener("scroll", syncChrome, {passive: true});
+window.addEventListener("resize", () => { syncDockHeight(); syncChrome(); });
+document.addEventListener("click", showChrome);
+
 document.addEventListener("visibilitychange", () => {
   if (document.hidden) clearTimeout(timer);
   else { poll(); loadTasks(); loadRecoverable(); }
 });
 
+syncDockHeight();
 loadTasks();
 loadRecoverable();
 poll();

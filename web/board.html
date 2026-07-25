@@ -3,11 +3,24 @@
 <title>claude board</title>
 <style>
 :root{--bg:#0c0e11;--panel:#14181d;--panel2:#0a0c0f;--fg:#dde3e9;--dim:#6b7681;
---line:#232a31;--accent:#e6b450;--q:#7fd1c4;--p:#e6b450;--m:#8ab4f8;--w:#5b646d;--red:#e06c75;}
+--line:#232a31;--accent:#e6b450;--q:#7fd1c4;--p:#e6b450;--m:#8ab4f8;--w:#5b646d;--red:#e06c75;
+/* --- the reading column ---
+ONE bounded column for every surface on this page: the Board's header, the Focus
+card, the queue, the Foreign Runs, and the fixed intake dock alike. Nothing here
+was ever laid out for a wide screen — 640px of transcript reads short, and the
+dock spanning viewport-edge-to-edge under a centred card made a monitor look
+like a stretched phone. 740px is what a prototype on real turns settled on.
+`--gut` is the whole trick: on a phone `max()` pins it to today's 14px, so the
+phone is pixel-identical to before; past ~768px it becomes the centring margin. */
+--col:740px;--gut:max(14px,calc(50% - var(--col)/2));
+/* The intake dock's height. Seeded here so the page is right before any script
+runs, then MEASURED and re-published by board.js (syncDockHeight) — the Recover
+pill grows the dock, and a guessed constant would let the composer sit on it. */
+--dockh:68px;}
 *{box-sizing:border-box}
 body{margin:0;background:var(--bg);color:var(--fg);
 font:14px/1.6 ui-monospace,SFMono-Regular,Menlo,monospace}
-.wrap{max-width:640px;margin:0 auto;padding:14px 14px 96px}
+.wrap{padding:14px var(--gut) calc(var(--dockh) + 28px)}
 header{display:flex;align-items:baseline;gap:10px;padding-bottom:12px}
 h1{font-size:14px;margin:0;letter-spacing:.5px}
 .sub{color:var(--dim);font-size:12px;margin-left:auto}
@@ -15,11 +28,24 @@ h1{font-size:14px;margin:0;letter-spacing:.5px}
 
 .empty{border:1px dashed var(--line);border-radius:10px;padding:26px 16px;text-align:center;color:var(--dim)}
 
+/* No `overflow:hidden` any more: it would clip the sticky chrome below out of
+existence. The card's own children carry the corners instead. */
 .focus{background:var(--panel);border:1px solid var(--line);border-top:2px solid var(--m);
-border-radius:10px;overflow:hidden;--lane:var(--m)}
+border-radius:10px;--lane:var(--m)}
 .focus.bq{border-top-color:var(--q);--lane:var(--q)}
 .focus.bp{border-top-color:var(--p);--lane:var(--p)}
-.fhead{display:flex;align-items:center;gap:8px;padding:11px 14px;border-bottom:1px solid var(--line)}
+
+/* --- the Focus's chrome: pixels only where it earns them ---
+The header and the composer are `position:sticky`, so the **turns** scroll UNDER
+them rather than around them, and `.hid` slides each one out with a transform.
+That pairing is the whole point: hidden chrome must reserve NO layout and hand
+its pixels straight to the read. A `max-height`/`display:none` hide cannot —
+it reflows the entire **Scrollback** and gives the reader nothing until it
+lands. Who wears `.hid` and when is board.js::syncChrome. */
+.fhead{display:flex;align-items:center;gap:8px;padding:11px 14px;border-bottom:1px solid var(--line);
+position:sticky;top:0;z-index:2;background:var(--panel);border-radius:9px 9px 0 0;
+transition:transform .2s ease,opacity .2s ease}
+.fhead.hid{transform:translateY(-110%);opacity:0}
 .fdir{font-weight:600;font-size:14px}
 .fbadge{font-size:10px;text-transform:uppercase;letter-spacing:.7px;color:var(--m);
 border:1px solid var(--line);border-radius:4px;padding:1px 6px}
@@ -65,7 +91,16 @@ background:rgba(224,108,117,.08)}
 .ask{padding:12px 16px;background:var(--panel2)}
 .ask .lbl{font-size:10px;letter-spacing:1px;text-transform:uppercase;color:var(--accent)}
 .ask .qtext{font-size:13.5px;margin-top:4px;color:#fff}
-.respond{padding:12px 16px}
+/* The composer, docked. It sits ON TOP of the intake dock (`--dockh`), never
+over it — see the shared-bottom-edge note in board.js. `.actions` moved out of
+it and back into the card's flow, so the bar that follows you down the page is
+just the reply row: a full action strip riding the bottom edge would spend the
+pixels this slice exists to recover. */
+.respond{padding:10px 16px;position:sticky;bottom:var(--dockh);z-index:2;
+background:var(--panel);border-top:1px solid var(--line);border-radius:0 0 9px 9px;
+box-shadow:0 -10px 20px -12px rgba(0,0,0,.75);
+transition:transform .2s ease,opacity .2s ease}
+.respond.hid{transform:translateY(calc(100% + var(--dockh)));opacity:0}
 /* A working Focus keeps its reply box; this says where the text goes. */
 .queued{display:flex;align-items:center;gap:6px;color:var(--m);font-size:11px;margin:0 2px 7px}
 .opts{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px}
@@ -77,7 +112,10 @@ padding:5px 12px;font:inherit;font-size:13px;cursor:pointer}
 border-radius:7px;padding:8px 10px;font:inherit;font-size:13px}
 .send{background:var(--accent);color:#000;border:0;border-radius:7px;padding:8px 16px;
 font:inherit;font-size:13px;font-weight:700;cursor:pointer}
-.actions{display:flex;align-items:center;gap:8px;margin-top:9px}
+/* In the card's flow, above the docked composer — not inside it. It wraps now,
+which it has to: the card lost `overflow:hidden` (see .focus), and this row of
+six controls was only ever fitting a phone by being clipped by it. */
+.actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:2px 16px 11px}
 .grow{flex:1}
 .prisel{font-size:11.5px;color:var(--dim);cursor:pointer}.prisel b{color:var(--accent)}
 .ghost{background:transparent;border:1px solid var(--line);color:var(--dim);border-radius:6px;
@@ -99,14 +137,20 @@ padding:9px 11px;margin-bottom:6px;color:var(--fg);font:inherit}
 .flag{color:var(--accent)}
 .dim{opacity:.5}
 .note{color:var(--dim);font-size:11px;margin-top:22px;border-top:1px solid var(--line);padding-top:10px}
-#toast{position:fixed;left:50%;bottom:82px;transform:translateX(-50%);background:var(--panel);
+/* Clears the dock plus a one-line composer, so feedback never lands on the box
+you are about to type in next. */
+#toast{position:fixed;left:50%;bottom:calc(var(--dockh) + 62px);transform:translateX(-50%);background:var(--panel);
 border:1px solid var(--line);color:var(--fg);padding:8px 14px;border-radius:8px;font-size:12px;z-index:40}
 
-/* --- intake dock + per-run actions + optimistic card (ADR 0008) --- */
+/* --- intake dock + per-run actions + optimistic card (ADR 0008) ---
+The dock keeps the bottom edge it has always had; the composer stacks on top of
+it. It also rides the same chrome state as the Focus's own bars — read up into
+history and the whole bottom edge clears, so the run-up gets the pixels. */
 .dock{position:fixed;left:0;right:0;bottom:0;z-index:30;
-padding:10px 14px calc(10px + env(safe-area-inset-bottom,0px));
-background:linear-gradient(180deg,transparent,var(--bg) 26%)}
-.dock>*{max-width:640px;margin:0 auto}
+padding:10px var(--gut) calc(10px + env(safe-area-inset-bottom,0px));
+background:linear-gradient(180deg,transparent,var(--bg) 26%);
+transition:transform .2s ease,opacity .2s ease}
+.dock.hid{transform:translateY(110%);opacity:0}
 .dockbar{display:flex;align-items:center;gap:8px;background:var(--panel);border:1px solid var(--line);
 border-radius:10px;padding:7px 9px;box-shadow:0 6px 22px rgba(0,0,0,.45)}
 .dplus{flex:0 0 auto;width:32px;height:32px;background:var(--panel2);border:1px solid var(--line);
@@ -141,7 +185,8 @@ border-top:2px solid var(--dim);border-radius:10px;padding:12px 14px;margin-bott
 .spin{flex:0 0 auto;width:11px;height:11px;border:2px solid var(--line);border-top-color:var(--accent);
 border-radius:50%;animation:spin 1s linear infinite}
 @keyframes spin{to{transform:rotate(360deg)}}
-@media(prefers-reduced-motion:reduce){.spin{animation:none}}
+@media(prefers-reduced-motion:reduce){.spin{animation:none}
+.fhead,.respond,.dock{transition:none}}
 .qbody{flex:1;min-width:0;display:flex;align-items:center;gap:9px;background:transparent;border:0;
 color:inherit;font:inherit;text-align:left;padding:0;cursor:pointer}
 .rowact{flex:0 0 auto;display:flex;gap:6px;margin-left:4px}
@@ -194,7 +239,7 @@ cursor:pointer;box-shadow:0 6px 22px rgba(0,0,0,.45)}
 .recovpanel{position:fixed;inset:0;z-index:50;display:flex;align-items:flex-end;justify-content:center;
 background:rgba(0,0,0,.6)}
 .recovpanel[hidden]{display:none}
-.recovsheet{width:100%;max-width:640px;background:var(--panel);border:1px solid var(--line);
+.recovsheet{width:100%;max-width:var(--col);background:var(--panel);border:1px solid var(--line);
 border-radius:14px 14px 0 0;max-height:86vh;display:flex;flex-direction:column;box-shadow:0 -6px 30px rgba(0,0,0,.5)}
 .recovhead{display:flex;align-items:center;gap:8px;padding:14px 16px 6px}
 .recovheadt{font-weight:700;font-size:14px;letter-spacing:.3px}
@@ -223,7 +268,7 @@ font:inherit;font-size:14px;font-weight:700;cursor:pointer}
 <div class=note>one card at a time, rest queued by urgency · new work waits its turn, it never cuts in · the card moves when you do.</div>
 <noscript>This board needs JavaScript to reach the live session API.</noscript>
 </div>
-<div class=dock>
+<div class=dock id=dock>
   <div class=dockexp id=dockexp hidden>
     <label class=dlbl>resume a session</label>
     <div class=drow><span class=dprompt>$ cl --resume </span><input class=dinp id=sid placeholder=sessionId autocomplete=off aria-label="session id to resume"><button class=dgo id=resume>resume</button></div>
