@@ -23,6 +23,7 @@ _GOOD = "AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA"     # transcript + existing cwd
 _LIVE = "BBBBBBBB-BBBB-BBBB-BBBB-BBBBBBBBBBBB"     # Session with a live Run
 _GONE = "CCCCCCCC-CCCC-CCCC-CCCC-CCCCCCCCCCCC"     # transcript, but cwd deleted
 _UNKNOWN = "DDDDDDDD-DDDD-DDDD-DDDD-DDDDDDDDDDDD"  # no transcript
+_GOOD2 = "EEEEEEEE-EEEE-EEEE-EEEE-EEEEEEEEEEEE"    # a second resumable Session
 
 
 class _HttpCase(unittest.TestCase):
@@ -434,7 +435,7 @@ class HttpEndpointTests(_HttpCase):
             server.DEFAULT_DIR = old_default
 
     def test_get_on_post_endpoint_is_405(self):
-        for path in ("/api/launch", "/api/resume", "/api/close", "/api/transfer"):
+        for path in ("/api/launch", "/api/resume", "/api/recover", "/api/close", "/api/transfer"):
             with self.subTest(path=path):
                 status, _, headers = self._raw("GET", path)
                 self.assertEqual(status, 405)
@@ -1658,6 +1659,116 @@ class IdConfusionTests(_HttpCase):
         self.assertEqual(status, 400)
         self.assertIn("invalid session id", body["message"])
         self.assertEqual(self.calls, [])
+
+
+class RecoverApiTests(_HttpCase):
+    """POST /api/recover: a sequential, partial-failure-tolerant bulk resume
+    (slice 03). Re-runs Resume's guards fresh per member and returns a
+    per-Session result array in input order — no real tmux/claude is spawned.
+
+    _LIVE is live (fails the one-live-Run guard), _GONE's cwd is gone, _UNKNOWN
+    has no transcript; _GOOD and _GOOD2 are resumable."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls._saved = {"launch": server.launch_run, "list": server.list_runs,
+                      "transcript": server._transcript_path, "cwd": server._session_cwd,
+                      "invalidate": server.invalidate_runs}
+        cls.launched = []          # resume_ids launch_run was called with, in order
+        cls.invalidations = 0
+
+        def fake_launch(workdir, prompt=None, task_id=None, resume_id=None):
+            cls.launched.append(resume_id)
+            return f"run-{len(cls.launched)}"
+
+        def counting_invalidate():
+            cls.invalidations += 1
+
+        server.launch_run = fake_launch
+        server.invalidate_runs = counting_invalidate
+        # _LIVE has a live Managed Run, so _live_session_ids() == {_LIVE}.
+        server.list_runs = lambda: [{"id": _RUN, "sessionId": _LIVE}]
+        server._transcript_path = lambda sid, *a, **k: (
+            "/x/" + sid + ".jsonl" if sid in (_GOOD, _GOOD2, _LIVE, _GONE) else "")
+        server._session_cwd = lambda sid, *a, **k: (
+            "/no/such/dir/xyz" if sid == _GONE else os.path.dirname(__file__))
+        cls.httpd = ThreadingHTTPServer(("127.0.0.1", 0), server.Handler)
+        cls.port = cls.httpd.server_address[1]
+        cls.thread = threading.Thread(target=cls.httpd.serve_forever, daemon=True)
+        cls.thread.start()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.httpd.shutdown()
+        cls.thread.join(timeout=2)
+        server.launch_run = cls._saved["launch"]
+        server.list_runs = cls._saved["list"]
+        server._transcript_path = cls._saved["transcript"]
+        server._session_cwd = cls._saved["cwd"]
+        server.invalidate_runs = cls._saved["invalidate"]
+
+    def setUp(self):
+        type(self).launched.clear()
+        type(self)._saved["invalidate"]()   # clear the memoized walk for a fresh guard
+        type(self).invalidations = 0         # count only the POST's own invalidation
+
+    def test_all_valid_batch_resumes_each_in_order(self):
+        status, body = self._post("/api/recover", {"sessionIds": [_GOOD, _GOOD2]})
+        self.assertEqual(status, 200)
+        self.assertEqual(body, [
+            {"sessionId": _GOOD, "ok": True, "runId": "run-1"},
+            {"sessionId": _GOOD2, "ok": True, "runId": "run-2"},
+        ])
+        self.assertEqual(self.launched, [_GOOD, _GOOD2])   # once per valid member, in order
+        self.assertEqual(self.invalidations, 1)            # once total, after the loop
+
+    def test_mixed_batch_skips_failures_and_keeps_going(self):
+        ids = [_GOOD, _LIVE, _GOOD2, "not-a-uuid", _GONE, _UNKNOWN]
+        status, body = self._post("/api/recover", {"sessionIds": ids})
+        self.assertEqual(status, 200)                      # partial failure is still 200
+        self.assertEqual(body, [
+            {"sessionId": _GOOD, "ok": True, "runId": "run-1"},
+            {"sessionId": _LIVE, "ok": False, "message": "already live"},
+            {"sessionId": _GOOD2, "ok": True, "runId": "run-2"},
+            {"sessionId": "not-a-uuid", "ok": False, "message": "invalid session id"},
+            {"sessionId": _GONE, "ok": False, "message": "session's dir is gone"},
+            {"sessionId": _UNKNOWN, "ok": False, "message": "no such session"},
+        ])
+        self.assertEqual(self.launched, [_GOOD, _GOOD2])   # only the valid members spawned
+        self.assertEqual(self.invalidations, 1)            # still once total, not per member
+
+    def test_non_string_members_are_failed_rows_not_a_400(self):
+        status, body = self._post("/api/recover", {"sessionIds": [123, {"x": 1}, _GOOD]})
+        self.assertEqual(status, 200)
+        self.assertEqual(body, [
+            {"sessionId": "", "ok": False, "message": "invalid session id"},
+            {"sessionId": "", "ok": False, "message": "invalid session id"},
+            {"sessionId": _GOOD, "ok": True, "runId": "run-1"},
+        ])
+        self.assertEqual(self.launched, [_GOOD])
+
+    def test_empty_list_is_an_empty_array_200(self):
+        status, body = self._post("/api/recover", {"sessionIds": []})
+        self.assertEqual(status, 200)
+        self.assertEqual(body, [])
+        self.assertEqual(self.launched, [])
+
+    def test_missing_sessionIds_is_a_400(self):
+        status, body = self._post("/api/recover", {})
+        self.assertEqual(status, 400)
+        self.assertIn("must be a list", body["message"])
+        self.assertEqual(self.launched, [])
+
+    def test_non_list_sessionIds_is_a_400(self):
+        status, body = self._post("/api/recover", {"sessionIds": _GOOD})
+        self.assertEqual(status, 400)
+        self.assertIn("must be a list", body["message"])
+        self.assertEqual(self.launched, [])
+
+    def test_cross_origin_is_blocked(self):
+        status, _ = self._post("/api/recover", {"sessionIds": [_GOOD]}, origin=False)
+        self.assertEqual(status, 403)
+        self.assertEqual(self.launched, [])
 
 
 class RunParseTests(unittest.TestCase):

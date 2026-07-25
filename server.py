@@ -1012,6 +1012,31 @@ def _live_session_ids() -> set[str]:
     return {sid for r in cached_all_runs() if (sid := r.get("sessionId"))}
 
 
+def _resume_guard(session_id: str) -> tuple[str, str]:
+    """Re-run Resume's guards against *current* state and resolve the dir to
+    resume in. Returns (workdir, "") to proceed, or ("", message) to refuse.
+
+    The single source of the resume guard sequence — a valid UUID, a transcript
+    on disk, no live Run on that Session (Managed or Foreign — _live_session_ids
+    counts both), and a cwd that still exists — shared by /api/resume (one
+    Session) and /api/recover (a batch). Checked at call time, never trusting a
+    picker's earlier GET: a dir can vanish or a Session go live in between. It
+    resolves the dir but does NOT spawn — the caller owns launch_run and its
+    tmux-error handling, so /api/resume keeps its 500-on-tmux / 400-on-guard
+    split and the batch can fold a member's tmux error into a failed row.
+    """
+    if not _UUID_RE.match(session_id):
+        return "", "invalid session id"
+    if not _transcript_path(session_id):
+        return "", "no such session"
+    if session_id in _live_session_ids():
+        return "", "already live"
+    workdir = _session_cwd(session_id)
+    if not workdir or not os.path.isdir(workdir):
+        return "", "session's dir is gone"
+    return workdir, ""
+
+
 def _is_managed_run(run_id: str) -> bool:
     """True only for a live **Managed Run** — one the Launcher started, so one
     with a pane to reach into.
@@ -1925,7 +1950,7 @@ _WEB_FILES = {"board.html": "text/html; charset=utf-8",
 
 
 MAX_BODY_BYTES = 4096
-_API_POSTS = ("/api/launch", "/api/resume", "/api/close", "/api/transfer",
+_API_POSTS = ("/api/launch", "/api/resume", "/api/recover", "/api/close", "/api/transfer",
               "/api/respond", "/api/clear", "/api/priority", "/api/snooze")
 
 
@@ -2073,6 +2098,8 @@ class Handler(BaseHTTPRequestHandler):
             self._handle_transfer(body)
         elif path == "/api/resume":
             self._handle_resume(body)
+        elif path == "/api/recover":
+            self._handle_recover(body)
         elif path == "/api/respond":
             self._handle_respond(body)
         elif path == "/api/clear":
@@ -2226,18 +2253,9 @@ class Handler(BaseHTTPRequestHandler):
 
     def _handle_resume(self, body: dict) -> None:
         session_id = self._str(body, "sessionId")
-        if not _UUID_RE.match(session_id):
-            self._fail(400, "invalid session id")
-            return
-        if not _transcript_path(session_id):
-            self._fail(400, "no such session")
-            return
-        if session_id in _live_session_ids():
-            self._fail(400, "already live")
-            return
-        workdir = _session_cwd(session_id)
-        if not workdir or not os.path.isdir(workdir):
-            self._fail(400, "session's dir is gone")
+        workdir, message = _resume_guard(session_id)
+        if not workdir:
+            self._fail(400, message)
             return
         try:
             run_id = launch_run(workdir, resume_id=session_id)
@@ -2246,6 +2264,46 @@ class Handler(BaseHTTPRequestHandler):
             return
         invalidate_runs()
         self._json(200, {"ok": True, "runId": run_id, "message": f"resumed {session_id}"})
+
+    def _handle_recover(self, body: dict) -> None:
+        """**Recover** (ADR 0013): resume a batch of Sessions as Managed Runs,
+        one at a time, returning a per-Session result in input order.
+
+        A fan-out over the same guard + launch_run /api/resume runs for one
+        Session, made partial-failure tolerant: each member's guards are
+        re-checked fresh (a dir can vanish or a Session go live since the
+        picker's GET), and a member that fails — bad id, no transcript, dir
+        gone, already live, tmux error — is reported and skipped, never fatal to
+        the rest. Sequential on purpose: the server is threaded, so N parallel
+        resumes would race on tmux window creation.
+
+        No Focus is grabbed — the endpoint only returns the new Run ids; the
+        client leaves them in the queue (Rotation: new work never steals the
+        Focus). The request is refused (400) only when it is structurally
+        malformed — `sessionIds` missing or not a list; a non-string or
+        non-UUID *member* is a failed row, not a 400. The runs cache is
+        invalidated once after the loop, never per member.
+        """
+        session_ids = body.get("sessionIds")
+        if not isinstance(session_ids, list):
+            self._fail(400, "sessionIds must be a list")
+            return
+        results = []
+        for sid in session_ids:
+            session_id = sid.strip() if isinstance(sid, str) else ""
+            workdir, message = _resume_guard(session_id)
+            if not workdir:
+                results.append({"sessionId": session_id, "ok": False, "message": message})
+                continue
+            try:
+                run_id = launch_run(workdir, resume_id=session_id)
+            except subprocess.CalledProcessError as e:
+                results.append({"sessionId": session_id, "ok": False,
+                                "message": f"tmux failed: {e}"})
+                continue
+            results.append({"sessionId": session_id, "ok": True, "runId": run_id})
+        invalidate_runs()   # once after the loop, never per member
+        self._json(200, results)
 
     def _handle_close(self, body: dict) -> None:
         if not close_run(self._str(body, "runId")):
