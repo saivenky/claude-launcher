@@ -21,7 +21,9 @@ pill grows the dock, and a guessed constant would let the composer sit on it. */
 body{margin:0;background:var(--bg);color:var(--fg);
 font:14px/1.6 ui-monospace,SFMono-Regular,Menlo,monospace}
 .wrap{padding:14px var(--gut) calc(var(--dockh) + 28px)}
-header{display:flex;align-items:baseline;gap:10px;padding-bottom:12px}
+/* The summary is four counts and a separator each; on a 390px phone it does not
+fit beside the title, and an unwrapped flex row pushed it off the right edge. */
+header{display:flex;align-items:baseline;gap:4px 10px;padding-bottom:12px;flex-wrap:wrap}
 h1{font-size:14px;margin:0;letter-spacing:.5px}
 .sub{color:var(--dim);font-size:12px;margin-left:auto}
 .sub b{color:var(--accent)}
@@ -73,12 +75,23 @@ chips, never a blank row. */
 .tools{display:flex;flex-wrap:wrap;gap:5px;margin-top:7px}
 .tool{font-size:10px;color:var(--dim);border:1px solid var(--line);border-radius:5px;padding:1px 6px}
 .turn.toolsonly{opacity:.55}
+/* A **Turn** is arbitrary transcript prose: file paths, URLs, long inline code.
+The box this replaced was `overflow-y:auto`, which quietly contained overflow on
+BOTH axes — dropping the scroll box dropped that containment too, and a single
+unbreakable token (`docs/plans/2026-07-24-processing-ui-plan.md`) was enough to
+push the whole page wider than the phone and strand the dock off-screen. The
+scrollback wraps hard; only a table is allowed to scroll, on its own axis. */
+.sb,.turn,.md{min-width:0;overflow-wrap:anywhere}
 /* markdown rendered server-side, escape-first (ADR 0006) */
 .md h3,.md h4,.md h5,.md h6{font-size:12px;letter-spacing:.4px;color:var(--accent);margin:14px 0 6px}
 .md p{margin:8px 0} .md strong{color:#fff}
 .md code{background:var(--panel2);border:1px solid var(--line);border-radius:4px;padding:0 4px;font-size:12px;color:var(--q)}
 .md ul{margin:6px 0;padding-left:18px} .md li{margin:3px 0}
-.md table{border-collapse:collapse;margin:8px 0;font-size:12px;width:100%}
+/* A table cannot wrap its way narrow, so it is the one thing that keeps a
+scrollbar — its own, on its own axis, instead of the whole page's. */
+.md table{border-collapse:collapse;margin:8px 0;font-size:12px;width:100%;
+display:block;overflow-x:auto;max-width:100%}
+.md td,.md th{overflow-wrap:normal}
 .md th,.md td{border:1px solid var(--line);padding:3px 7px;text-align:left}
 .md th{color:var(--dim)}
 .md>:first-child{margin-top:0} .md>:last-child{margin-bottom:0}
@@ -108,8 +121,11 @@ transition:transform .2s ease,opacity .2s ease}
 padding:5px 12px;font:inherit;font-size:13px;cursor:pointer}
 .opt:hover{border-color:var(--accent);color:var(--accent)}
 .replyrow{display:flex;gap:6px}
-.ti{flex:1;background:var(--panel2);border:1px solid var(--line);color:var(--fg);
+/* `flex:1` alone keeps `min-width:auto`, so the input refused to shrink below
+its placeholder and shoved `respond →` off the right edge of a 390px phone. */
+.ti{flex:1;min-width:0;background:var(--panel2);border:1px solid var(--line);color:var(--fg);
 border-radius:7px;padding:8px 10px;font:inherit;font-size:13px}
+.send{flex:0 0 auto}
 .send{background:var(--accent);color:#000;border:0;border-radius:7px;padding:8px 16px;
 font:inherit;font-size:13px;font-weight:700;cursor:pointer}
 /* In the card's flow, above the docked composer — not inside it. It wraps now,

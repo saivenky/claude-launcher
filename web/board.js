@@ -1032,7 +1032,10 @@ function setChrome(hid, y) {
 }
 
 function syncChrome() {
-  const y = window.scrollY || 0;
+  // Clamped: iOS rubber-band drives scrollY negative past the top and beyond the
+  // maximum at the bottom, and the spring back reads here as real travel — enough
+  // of it to trip CHROME_STEP and flap the bars while the finger is still.
+  const y = Math.max(0, window.scrollY || 0);
   // The end of the read is on screen, or there is no read: you are at the answer
   // point and the chrome is up, whatever direction you arrived from. This is the
   // "returns near the bottom" half, and it covers a Focus short enough never to
