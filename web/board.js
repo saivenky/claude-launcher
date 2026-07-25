@@ -68,8 +68,35 @@ const hintEl = document.getElementById("swipehint");
 // redrawing the queue below can never touch it. That redraw is what used to eat
 // a half-typed reply — see renderFocus().
 const focusWrap = el("div");
-const zonesWrap = el("div");
+const zonesWrap = el("div", "zones");
 app.append(focusWrap, zonesWrap);
+
+// --- the queue sheet (narrow only; the rail is the wide half) ---------------
+// A phone has no 290px to spend on a permanent rail, and stacking the queue
+// under the **Scrollback** puts it at the end of an unbounded read — the
+// further you read, the further away the rest of the Board gets. So at this
+// width the same list is a sheet over the read, opened from the count in the
+// Focus's sticky header. At >=900px the CSS returns .zones to ordinary flow and
+// none of this state is reachable, because the button that sets it is hidden.
+let queueOpen = false;
+const scrimEl = document.getElementById("zscrim");
+
+function queueCount() {
+  if (!boardData) return 0;
+  return ringGroups(false).reduce((n, g) => n + g.items.length, 0);
+}
+
+function setQueueOpen(open) {
+  queueOpen = open;
+  // Same className idiom as setHid — the one class-toggle vocabulary this file
+  // uses, so there is nothing here a reader has to learn twice.
+  const base = (zonesWrap.className || "").split(" ").filter((c) => c && c !== "open").join(" ");
+  zonesWrap.className = open ? base + " open" : base;
+  if (scrimEl) scrimEl.hidden = !open;
+}
+
+if (scrimEl) scrimEl.addEventListener("click", () => setQueueOpen(false));
+document.addEventListener("keydown", (e) => { if (e.key === "Escape") setQueueOpen(false); });
 
 const LANE_LABEL = {question: "blocked · question", approval: "blocked · approval",
                     yourmove: "your move", working: "working", snoozed: "snoozed"};
@@ -618,8 +645,26 @@ function focusCard(f) {
   const head = el("div", "fhead");
   head.append(el("span", "fdir", f.title || f.dir || "claude"));
   head.append(el("span", "fbadge", LANE_LABEL[f.lane] || f.lane));
-  head.append(el("span", "fmeta", (f.sessionId || "").slice(0, 8) + " · " +
-    (LANE_NOUN[f.lane] || "") + " " + age(f.updatedAt)));
+  head.append(el("span", "grow"));
+  // Split, because this strip is now four things wide on a 390px phone and the
+  // sessionId is the one nobody reads there — CSS drops it under 560px rather
+  // than let the title and the badge wrap to two lines each.
+  head.append(el("span", "fsid", (f.sessionId || "").slice(0, 8)));
+  head.append(el("span", "fmeta", (LANE_NOUN[f.lane] || "") + " " + age(f.updatedAt)));
+  // The queue's way in on a phone. It lives HERE, in the one strip that stays on
+  // screen while you read, because the queue is a sheet at this width rather
+  // than a stack under an unbounded **Scrollback** (board.html: .zones). CSS
+  // hides it at >=900px, where the rail is already showing the same list.
+  const qn = queueCount();
+  if (qn) {
+    // Accented only when something in there actually needs you — the count is
+    // the Board's whole triage signal while the queue itself is out of sight.
+    const urgent = ((boardData || {}).counts || {}).needYou > 1;
+    const qb = el("button", "zbtn" + (urgent ? " hot" : ""), qn + " queued ▾");
+    qb.setAttribute("aria-haspopup", "dialog");
+    qb.addEventListener("click", () => setQueueOpen(true));
+    head.append(qb);
+  }
   card.append(head);
 
   if (f.aiTitle) {
@@ -1406,6 +1451,10 @@ function boardUrl() {
 // Choosing a card (a row tap, `skip →`, or the advance handing one on).
 function setPinned(sid) {
   pinned = sid;
+  // Every route to a new Focus lands here — a row in the sheet, a row in the
+  // rail, a swipe, `skip →` — so the sheet is put away here rather than on the
+  // tap. Landing a Focus is the only reason it was open.
+  setQueueOpen(false);
   heldLane = null;          // whatever lane it is in is a baseline, not a resolve
   advanceWhenFree = null;   // choosing cancels a pending advance
   clearTimeout(advanceT);

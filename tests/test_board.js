@@ -227,10 +227,10 @@ const focusWrap = () => app.children[0];
 const card = () => focusWrap().querySelector(".focus");
 const ti = () => focusWrap().querySelector(".ti");
 const sbEl = () => focusWrap().querySelector(".sb");
-const shownSid = () => {   // the card prints sessionId[:8] in its meta line
+const shownSid = () => {   // the card prints sessionId[:8] in its own .fsid span
   const c = card(); if (!c) return null;
-  const meta = c.querySelector(".fmeta");
-  return meta ? meta.textContent.slice(0, 8) : null;
+  const sid = c.querySelector(".fsid");
+  return sid ? sid.textContent.slice(0, 8) : null;
 };
 const lastBoardUrl = () => [...fetched].reverse().find((u) => u.startsWith("api/board"));
 const zones = () => app.children[1];   // the queue half of #app; the Focus is children[0]
@@ -800,6 +800,26 @@ const W = "wwwwwwww-3333-3333-3333-333333333333";
   ok("scrolling: and a short slide is slop, not a gesture", shownSid() === guarded,
      "got " + shownSid());
 
+  // --- The sheet: the queue's way in at a width with no room for a rail -----
+  // The count lives in the Focus's sticky header because that is the one strip
+  // still on screen once the read has scrolled past everything else.
+  const zbtn = () => findAll(doc.getElementById("app"), "zbtn")[0];
+  ok("sheet: the count rides the Focus's sticky header, where the read can't lose it",
+     !!zbtn() && /queued/.test(zbtn().textContent), zbtn() && zbtn().textContent);
+  ok("sheet: and it is shut until you ask for it", !zones().className.includes("open"),
+     zones().className);
+  zbtn().dispatch("click");
+  await settle();
+  ok("sheet: tapping the count brings the queue up over the read",
+     zones().className.includes("open") && doc.getElementById("zscrim").hidden === false,
+     zones().className);
+  const sheetRow = findAll(zones(), "qrow").find((r) => !isNow(r));
+  sheetRow.querySelector(".qbody").dispatch("click");
+  await settle();
+  ok("sheet: landing a Focus is its whole purpose, so that puts it away again",
+     !zones().className.includes("open") && doc.getElementById("zscrim").hidden === true,
+     zones().className);
+
   // --- The rail: the same ring, spent as width a monitor never misses -------
   ok("rail: it draws the whole ring, the Focus included", railRows().length === 3,
      railRows().map((r) => r.textContent).join(" | "));
@@ -877,8 +897,17 @@ const W = "wwwwwwww-3333-3333-3333-333333333333";
   // The rail's gate is a media query, so only the sheet can say where it is.
   const mq = HTML.indexOf("@media(min-width:900px){");
   const mqBlock = mq > 0 ? HTML.slice(mq, HTML.indexOf("\n}", mq)) : "";
-  ok("rail: it does not exist below 900px — the phone keeps its zones and the swipe",
+  ok("rail: it does not exist below 900px — the phone gets the sheet and the swipe",
      rule(".rail") === "display:none" && /\.rail\{display:block/.test(mqBlock), rule(".rail"));
+  // The narrow half of the same answer. Stacking the queue under an unbounded
+  // Scrollback put it at the end of the read — the further you read the further
+  // away the rest of the Board got, which is the original complaint again.
+  ok("sheet: below 900px the queue is a sheet over the read, not a stack under it",
+     /position:fixed/.test(rule(".zones")) && /transform:translateY/.test(rule(".zones")),
+     rule(".zones"));
+  ok("sheet: which the >=900px rail sends back to ordinary flow, drawn once",
+     /\.zones\{position:static/.test(mqBlock) && /\.zgrab,\.zscrim,\.zbtn\{display:none\}/.test(mqBlock),
+     mqBlock.slice(0, 160));
   ok("rail: where it does exist the queue steps aside, so the list is never drawn twice",
      /\.queues\{display:none\}/.test(mqBlock), mqBlock.slice(-120));
   ok("rail: and the reading column is OFFSET by it, never overlapped",

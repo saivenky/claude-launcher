@@ -58,11 +58,17 @@ lands. Who wears `.hid` and when is board.js::syncChrome. */
 position:sticky;top:0;z-index:2;background:var(--panel);border-radius:9px 9px 0 0;
 transition:transform .2s ease,opacity .2s ease}
 .fhead.hid{transform:translateY(-110%);opacity:0}
-.fdir{font-weight:600;font-size:14px}
+.fdir{font-weight:600;font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
 .fbadge{font-size:10px;text-transform:uppercase;letter-spacing:.7px;color:var(--m);
 border:1px solid var(--line);border-radius:4px;padding:1px 6px}
 .bq .fbadge{color:var(--q)} .bp .fbadge{color:var(--p)}
-.fmeta{margin-left:auto;color:var(--dim);font-size:11px}
+.fmeta{color:var(--dim);font-size:11px;white-space:nowrap;flex:0 0 auto}
+.fsid{color:var(--dim);font-size:11px;white-space:nowrap;flex:0 0 auto}
+.fhead .fbadge{flex:0 0 auto}
+/* Four things do not fit across a 390px header once the queue count joins them.
+The sessionId is the one you never read on a phone — it is for pasting into a
+resume, which is not something you do from this strip. */
+@media(max-width:560px){.fsid{display:none}}
 .about{padding:8px 14px;border-bottom:1px solid var(--line);background:var(--panel2);font-size:12.5px}
 .albl{color:var(--dim);text-transform:uppercase;font-size:9px;letter-spacing:1px;margin-right:9px}
 
@@ -341,8 +347,35 @@ moves as you swipe, so on a monitor the gesture has a readout.
 BELOW 900px THE RAIL DOES NOT EXIST. `--rail` stays 0px, every offset above
 collapses, and the phone keeps its zones and its swipe — cramming two panes into
 390px is the thing this breakpoint exists to refuse. */
+/* --- the return path, narrow: the queue as a sheet ---
+The rail is the wide answer; this is the same list at the same rank on a phone,
+where 290px of permanent width does not exist. It is a SHEET rather than a stack
+under the Focus: cards below the **Scrollback** put the queue at the end of an
+unbounded read, so the further you read the further the rest of the Board got —
+which is the wasted-real-estate complaint wearing a different hat. One tap on the
+count in the (sticky) card header brings it up over the read; a tap on a row
+takes the **Focus** and puts it away again. Reverted to ordinary flow at >=900px
+by the media query below, where the rail has already drawn it. */
+.zones{position:fixed;left:0;right:0;bottom:0;z-index:41;background:var(--panel);
+border-top:1px solid var(--line);border-radius:16px 16px 0 0;max-height:82vh;overflow-y:auto;
+padding:8px 14px calc(16px + env(safe-area-inset-bottom,0px));box-shadow:0 -8px 34px rgba(0,0,0,.6);
+transform:translateY(101%);visibility:hidden;transition:transform .22s ease,visibility .22s}
+.zones.open{transform:none;visibility:visible}
+.zgrab{width:38px;height:4px;border-radius:2px;background:var(--line);margin:2px auto 10px}
+.zscrim{position:fixed;inset:0;z-index:40;background:rgba(0,0,0,.62)}
+.zscrim[hidden]{display:none}
+/* The count, in the Focus's own sticky header — the one strip that is always on
+screen while you read. Hidden at >=900px: the rail is the queue there. */
+.zbtn{margin-left:auto;flex:0 0 auto;background:var(--line);color:var(--fg);border:0;
+border-radius:999px;font:inherit;font-size:10.5px;letter-spacing:.4px;padding:4px 10px;cursor:pointer}
+.zbtn.hot{background:var(--accent);color:#000;font-weight:700}
+.fhead .fmeta+.zbtn{margin-left:8px}
+
 .rail{display:none}
 @media(min-width:900px){
+.zones{position:static;transform:none;visibility:visible;background:none;border:0;
+border-radius:0;max-height:none;overflow:visible;padding:0;box-shadow:none}
+.zgrab,.zscrim,.zbtn{display:none}
 :root{--rail:290px;--gut:max(14px,calc(50% - var(--rail)/2 - var(--col)/2))}
 .rail{display:block;position:fixed;left:0;top:0;bottom:0;width:var(--rail);z-index:31;background:var(--panel2);border-right:1px solid var(--line);overflow-y:auto;padding:12px 10px calc(14px + env(safe-area-inset-bottom,0px))}
 .railhead{display:flex;align-items:baseline;gap:8px;padding:2px 4px 8px;color:var(--dim);font-size:10px;letter-spacing:1.1px;text-transform:uppercase}
@@ -362,7 +395,7 @@ stays in the flow — it is outside the triage surface and never in the ring. */
 .queues{display:none}
 }
 </style></head>
-<body><div class=wrap>
+<body><div class=zscrim id=zscrim hidden></div><div class=wrap>
 <header><h1>◆ claude board</h1><span class=sub id=summary>loading…</span></header>
 <div id=pending></div>
 <div id=app></div>
