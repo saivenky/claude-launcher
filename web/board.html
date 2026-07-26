@@ -6,31 +6,35 @@
 --line:#232a31;--accent:#e6b450;--q:#7fd1c4;--p:#e6b450;--m:#8ab4f8;--w:#5b646d;--red:#e06c75;
 /* --- the reading column ---
 ONE bounded column for every surface on this page: the Board's header, the Focus
-card, the queue, the Foreign Runs, and the fixed intake dock alike. Nothing here
-was ever laid out for a wide screen — 640px of transcript reads short, and the
-dock spanning viewport-edge-to-edge under a centred card made a monitor look
-like a stretched phone. 740px is what a prototype on real turns settled on.
+card, the queue, the Foreign Runs, and the **Intake** sheet alike. Nothing here
+was ever laid out for a wide screen — 640px of transcript reads short, and a
+bottom sheet spanning viewport-edge-to-edge under a centred card made a monitor
+look like a stretched phone. 740px is what a prototype on real turns settled on.
 `--gut` is the whole trick: on a phone `max()` pins it to today's 14px, so the
 phone is pixel-identical to before; past ~768px it becomes the centring margin. */
 --col:740px;--gut:max(14px,calc(50% - var(--col)/2));
 /* The split rail's width, and 0 everywhere it does not exist. Every surface
-that spans the page — the reading column, the dock, the edge cue, the toast —
-offsets by it rather than sliding under it, so on a phone (where it is 0px) the
-arithmetic below collapses to exactly what it was. Set to 290px by the >=900px
-media query at the bottom of this sheet, and nowhere else. */
+that spans the page — the reading column, the Intake sheet, the edge cue, the
+toast — offsets by it rather than sliding under it, so on a phone (where it is
+0px) the arithmetic below collapses to exactly what it was. Set to 290px by the
+>=900px media query at the bottom of this sheet, and nowhere else. */
 --rail:0px;
-/* The intake dock's height. Seeded here so the page is right before any script
-runs, then MEASURED and re-published by board.js (syncDockHeight) — the Recover
-pill grows the dock, and a guessed constant would let the composer sit on it. */
---dockh:68px;
-/* The composer's height, measured beside --dockh. Only the swipe hint stands on
-it, and only until the first swipe — but a Blocked Focus grows this bar by a row
-of options, so it has to be measured rather than assumed. */
+/* THERE IS NO --dockh ANY MORE (ADR 0015). It measured the intake dock the
+composer used to stand on; **Intake** is a sheet behind a ＋ in the **Focus**'s
+header now, so the bottom edge is the composer and nothing else. Every offset
+that stood on it — .wrap's padding, #toast, .swipehint, .respond's sticky bottom
+and its .hid transform — lost the term rather than gained a zero. */
+/* The composer's height, and the only measured offset left. Only the swipe hint
+stands on it, and only until the first swipe — but a Blocked Focus grows this bar
+by a row of options, so it has to be measured rather than assumed. */
 --barh:52px;}
 *{box-sizing:border-box}
 body{margin:0;background:var(--bg);color:var(--fg);
 font:14px/1.6 ui-monospace,SFMono-Regular,Menlo,monospace}
-.wrap{margin-left:var(--rail);padding:14px var(--gut) calc(var(--dockh) + 28px)}
+/* The bottom padding no longer clears a fixed dock (ADR 0015) — nothing is fixed
+at this edge but the composer, which is sticky and inside the card. It does still
+own the page's own safe-area inset, which the dock used to absorb for it. */
+.wrap{margin-left:var(--rail);padding:14px var(--gut) calc(28px + env(safe-area-inset-bottom,0px))}
 /* The summary is four counts and a separator each; on a 390px phone it does not
 fit beside the title, and an unwrapped flex row pushed it off the right edge. */
 header{display:flex;align-items:baseline;gap:4px 10px;padding-bottom:12px;flex-wrap:wrap}
@@ -99,7 +103,9 @@ chips, never a blank row. */
 The box this replaced was `overflow-y:auto`, which quietly contained overflow on
 BOTH axes — dropping the scroll box dropped that containment too, and a single
 unbreakable token (`docs/plans/2026-07-24-processing-ui-plan.md`) was enough to
-push the whole page wider than the phone and strand the dock off-screen. The
+push the whole page wider than the phone and strand the then-docked intake bar
+off-screen (deleted since, ADR 0015 — the failure mode is not: any fixed
+full-width surface at this edge goes the same way). The
 scrollback wraps hard; only a table is allowed to scroll, on its own axis. */
 .sb,.turn,.md{min-width:0;overflow-wrap:anywhere}
 /* markdown rendered server-side, escape-first (ADR 0006) */
@@ -124,16 +130,18 @@ background:rgba(224,108,117,.08)}
 .ask{padding:12px 16px;background:var(--panel2)}
 .ask .lbl{font-size:10px;letter-spacing:1px;text-transform:uppercase;color:var(--accent)}
 .ask .qtext{font-size:13.5px;margin-top:4px;color:#fff}
-/* The composer, docked. It sits ON TOP of the intake dock (`--dockh`), never
-over it — see the shared-bottom-edge note in board.js. `.actions` moved out of
-it and back into the card's flow, so the bar that follows you down the page is
-just the reply row: a full action strip riding the bottom edge would spend the
-pixels this slice exists to recover. */
-.respond{padding:10px 16px;position:sticky;bottom:var(--dockh);z-index:2;
+/* THE COMPOSER *IS* THE BOTTOM EDGE (ADR 0015). It used to stand on the intake
+dock at `bottom:var(--dockh)`; the dock is deleted, so it stands on the viewport
+and owns the `env(safe-area-inset-bottom)` the dock absorbed on its behalf.
+`.actions` is still out of it and back in the card's flow, so the bar that
+follows you down the page is just the reply row: a full action strip riding this
+edge would spend the pixels ADR 0014 and ADR 0015 exist to recover. */
+.respond{padding:10px 16px calc(10px + env(safe-area-inset-bottom,0px));
+position:sticky;bottom:0;z-index:2;
 background:var(--panel);border-top:1px solid var(--line);border-radius:0 0 9px 9px;
 box-shadow:0 -10px 20px -12px rgba(0,0,0,.75);
 transition:transform .2s ease,opacity .2s ease}
-.respond.hid{transform:translateY(calc(100% + var(--dockh)));opacity:0}
+.respond.hid{transform:translateY(100%);opacity:0}
 /* A working Focus keeps its reply box; this says where the text goes. */
 .queued{display:flex;align-items:center;gap:6px;color:var(--m);font-size:11px;margin:0 2px 7px}
 .opts{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px}
@@ -148,7 +156,7 @@ border-radius:7px;padding:8px 10px;font:inherit;font-size:13px}
 .send{flex:0 0 auto}
 .send{background:var(--accent);color:#000;border:0;border-radius:7px;padding:8px 16px;
 font:inherit;font-size:13px;font-weight:700;cursor:pointer}
-/* In the card's flow, above the docked composer — not inside it. It wraps now,
+/* In the card's flow, above the sticky composer — not inside it. It wraps now,
 which it has to: the card lost `overflow:hidden` (see .focus), and this row of
 six controls was only ever fitting a phone by being clipped by it. */
 .actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:2px 16px 11px}
@@ -185,30 +193,86 @@ put you. */
 .flag{color:var(--accent)}
 .dim{opacity:.5}
 .note{color:var(--dim);font-size:11px;margin-top:22px;border-top:1px solid var(--line);padding-top:10px}
-/* Clears the dock plus a one-line composer, so feedback never lands on the box
-you are about to type in next. */
-#toast{position:fixed;left:calc(50% + var(--rail)/2);bottom:calc(var(--dockh) + 62px);transform:translateX(-50%);background:var(--panel);
+/* Clears the composer, so feedback never lands on the box you are about to type
+in next. It used to clear the dock plus a GUESSED one-line composer (`--dockh` +
+62px); with the dock gone (ADR 0015) it stands on the same measured `--barh` the
+swipe hint does, which is honest about a **Blocked** Focus's extra row too. */
+#toast{position:fixed;left:calc(50% + var(--rail)/2);bottom:calc(var(--barh) + 12px);transform:translateX(-50%);background:var(--panel);
 border:1px solid var(--line);color:var(--fg);padding:8px 14px;border-radius:8px;font-size:12px;z-index:40}
 
-/* --- intake dock + per-run actions + optimistic card (ADR 0008) ---
-The dock keeps the bottom edge it has always had; the composer stacks on top of
-it. It also rides the same chrome state as the Focus's own bars — read up into
-history and the whole bottom edge clears, so the run-up gets the pixels. */
-.dock{position:fixed;left:var(--rail);right:0;bottom:0;z-index:30;
-padding:10px var(--gut) calc(10px + env(safe-area-inset-bottom,0px));
-/* Solid, not the old fade-to-bg gradient. The composer now stands on this at
-`bottom:var(--dockh)`, and --dockh measures the dock's WHOLE box — including the
-gradient's transparent top quarter. That left a band between the two bars with
-nothing behind it, so the **Scrollback** scrolled through the gap in a stripe.
-Nothing needs to fade behind a bar that another bar is sitting on. */
-background:var(--bg);
-transition:transform .2s ease,opacity .2s ease}
-.dock.hid{transform:translateY(110%);opacity:0}
-.dockbar{display:flex;align-items:center;gap:8px;background:var(--panel);border:1px solid var(--line);
-border-radius:10px;padding:7px 9px;box-shadow:0 6px 22px rgba(0,0,0,.45)}
-.dplus{flex:0 0 auto;width:32px;height:32px;background:var(--panel2);border:1px solid var(--line);
-color:var(--fg);border-radius:7px;font-size:17px;line-height:1;cursor:pointer;padding:0}
-.dplus[aria-expanded=true]{border-color:var(--accent);color:var(--accent)}
+/* --- Intake: a sheet behind a ＋, never the bottom edge (ADR 0015) ---
+Every shape of **Intake** — the generic-dir launch row, **Recover**, **resume**
+by `sessionId`, the **Task** / **Dispatch** buttons — in ONE bottom sheet, opened
+by the ＋ in the **Focus**'s sticky header. It replaces the docked launch bar of
+ADR 0008 and the Recover pill above it: those two were a *create* surface holding
+the one strip that cannot be scrolled away from, for a verb used a handful of
+times a day, while the half you are actually using at the live end of a read is
+**Observe** / **Respond**.
+Deliberately THE SAME OBJECT as the queue sheet (.zones, below): over the read
+rather than under it, a scrim behind it, dismissed by the scrim or by acting. Two
+sheets, one idiom — and never both open, which board.js enforces.
+IT LIVES IN THE FLOW, between #pending and #app, and `position:fixed` lifts it
+out. That is what makes the inline case (.isheet.inline, below) need no node
+moved at runtime: drop the fixed positioning and it is already exactly where the
+empty Board wants it — above the card slot. */
+.isheet{position:fixed;left:var(--rail);right:0;bottom:0;z-index:43;
+background:var(--panel);border-top:1px solid var(--line);border-radius:16px 16px 0 0;
+max-height:86vh;overflow-y:auto;
+padding:8px var(--gut) calc(18px + env(safe-area-inset-bottom,0px));
+box-shadow:0 -8px 34px rgba(0,0,0,.6);
+transform:translateY(101%);visibility:hidden;transition:transform .22s ease,visibility .22s}
+.isheet.open{transform:none;visibility:visible}
+.iscrim{position:fixed;inset:0;z-index:42;background:rgba(0,0,0,.62)}
+.iscrim[hidden]{display:none}
+.igrab{width:38px;height:4px;border-radius:2px;background:var(--line);margin:2px auto 12px}
+.ihead{color:var(--dim);font-size:10px;letter-spacing:1.1px;text-transform:uppercase;
+margin:0 0 10px 2px}
+/* The generic-dir launch row: ADR 0008 measured it as the hot path, so it is the
+sheet's first row. Was `.dockbar`, named for the bar that held the bottom edge —
+inside the sheet it is the launch row and carries no panel of its own. */
+.ilaunch{display:flex;align-items:center;gap:8px;margin-bottom:12px}
+/* A shadow belongs to a surface that floats over the page; the dropup is inside
+one now, so it keeps its border and loses the lift. */
+.isheet .dirpop{box-shadow:none}
+/* The one affordance that opens Intake, in the **Focus**'s sticky header — the
+only strip still on screen once the read has scrolled past everything else (ADR
+0015). AT EVERY WIDTH, unlike .zbtn below, which is display:none at >=900px
+because the rail draws the queue there: nothing draws Intake in the rail, so
+there is no duplicate to avoid and no breakpoint fork to maintain. It falls in
+behind the queue count when there is one and takes the header's `auto` when there
+is not. NO RECOVER BADGE ON IT — board.js::renderRecoverRow says why. */
+.iplus{flex:0 0 auto;margin-left:8px;width:28px;height:28px;border-radius:999px;
+background:var(--panel2);border:1px solid var(--line);color:var(--dim);
+font:inherit;font-size:15px;line-height:1;cursor:pointer;padding:0}
+.iplus:hover{border-color:var(--dim);color:var(--fg)}
+/* Marked while the sheet is open, in the same accent vocabulary as .zbtn.hot. */
+.iplus.hot{border-color:var(--accent);color:var(--accent)}
+.fhead .fmeta+.iplus{margin-left:auto}
+.fhead .zbtn+.iplus{margin-left:6px}
+/* **Recover**, a row in the sheet rather than a pill on the bottom edge. It keeps
+the accent — after a restart it is still the loud thing — but it is loud INSIDE
+the surface you opened, not on the edge you read over. Hidden outright when
+nothing is resumable, which is the condition the pill also had and which was
+nearly always true (board.js: renderRecoverRow). */
+.irecov{display:flex;align-items:center;gap:10px;width:100%;margin-bottom:12px;
+background:var(--panel2);border:1px solid var(--accent);color:var(--accent);
+border-radius:10px;padding:11px 13px;font:inherit;font-size:13px;font-weight:700;
+letter-spacing:.3px;cursor:pointer;text-align:left}
+.irecov[hidden]{display:none}
+.irecov:active{background:var(--accent);color:#000}
+.irecov .n{margin-left:auto;font-weight:400;font-size:11.5px;opacity:.85}
+/* THE EMPTY BOARD's second layout (ADR 0015). With no **Focus** there is no
+`.fhead`, so there is no ＋ and no way to open a sheet — so Intake stops being one
+and renders inline, open, in the page flow above the card slot, with no scrim and
+nothing that dismisses it. This is the post-reboot screen, where Intake is the
+only thing you can do, and it is what replaced the Recover pill as the thing that
+makes a **Resumable Session** obvious. Losing `position:fixed` is the whole move:
+the element is already at this point in the document. .wrap's own gutter supplies
+the column, hence padding:0. */
+.isheet.inline{position:static;transform:none;visibility:visible;max-height:none;
+overflow:visible;background:none;border:0;border-radius:0;box-shadow:none;
+padding:0;margin-bottom:16px}
+.isheet.inline .igrab{display:none}
 .dprompt{color:var(--dim);font-size:12.5px;white-space:nowrap}
 .dinp{flex:1;min-width:6ch;background:var(--panel2);color:var(--accent);border:0;
 border-bottom:1px dashed var(--dim);font:inherit;font-size:13px;padding:5px 6px;outline:0}
@@ -216,9 +280,6 @@ border-bottom:1px dashed var(--dim);font:inherit;font-size:13px;padding:5px 6px;
 .dgo{flex:0 0 auto;background:transparent;border:1px solid var(--fg);color:var(--fg);border-radius:7px;
 padding:6px 13px;font:inherit;font-size:12.5px;cursor:pointer}
 .dgo:active{background:var(--fg);color:var(--bg)}
-.dockexp{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:11px 12px;
-margin-bottom:8px;box-shadow:0 6px 22px rgba(0,0,0,.45)}
-.dockexp[hidden]{display:none}
 .dirpop{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:6px;
 margin-bottom:8px;box-shadow:0 6px 22px rgba(0,0,0,.45);max-height:44vh;overflow-y:auto}
 .dirpop[hidden]{display:none}
@@ -239,7 +300,7 @@ border-top:2px solid var(--dim);border-radius:10px;padding:12px 14px;margin-bott
 border-radius:50%;animation:spin 1s linear infinite}
 @keyframes spin{to{transform:rotate(360deg)}}
 @media(prefers-reduced-motion:reduce){.spin{animation:none}
-.fhead,.respond,.dock{transition:none}
+.fhead,.respond,.isheet{transition:none}
 .swipehint,.edge{transition:none}}
 .qbody{flex:1;min-width:0;display:flex;align-items:center;gap:9px;background:transparent;border:0;
 color:inherit;font:inherit;text-align:left;padding:0;cursor:pointer}
@@ -277,19 +338,15 @@ font-size:11.5px;letter-spacing:.3px;padding:6px 8px;cursor:pointer}
 .fgxfer:hover{border-color:var(--dim);color:var(--fg)}
 .fgxfer:disabled{cursor:default;opacity:.55}
 
-/* --- Recover: the intake bar + picker overlay (slice 04) ---
-A pill that sits above the launch bar and carries the recovery-set count — the
-eye-catcher on the empty post-reboot Board. Present whenever a Session is
-resumable; accent-outlined so it reads even against an all-clear screen. The
-picker is a bottom-sheet overlay (not an inline dropup like dirpop): a batch
-multi-select with a live count and a confirm needs more room than a tap-to-fill
-list, and a sheet gives it a header, a scroll, and a sticky action. */
-.recoverbar{display:flex;margin-bottom:8px}
-.recoverbar[hidden]{display:none}
-.recoverbtn{flex:1;background:var(--panel);border:1px solid var(--accent);color:var(--accent);
-border-radius:10px;padding:9px 12px;font:inherit;font-size:13px;font-weight:700;letter-spacing:.3px;
-cursor:pointer;box-shadow:0 6px 22px rgba(0,0,0,.45)}
-.recoverbtn:active{background:var(--accent);color:#000}
+/* --- Recover: the picker overlay (slice 04) ---
+The pill that used to sit above the launch bar and carry the recovery-set count is
+gone (ADR 0015): its one condition was `recoverSessions.length === 0`, so it was
+on the bottom edge whenever anything at all was resumable — nearly always — for a
+verb that answers a restart. It is `.irecov`, a row in the Intake sheet, now.
+The picker it opens is unchanged: a bottom-sheet overlay (not an inline dropup
+like dirpop), because a batch multi-select with a live count and a confirm needs
+more room than a tap-to-fill list — a sheet gives it a header, a scroll, and a
+sticky action. */
 .recovpanel{position:fixed;inset:0;z-index:50;display:flex;align-items:flex-end;justify-content:center;
 background:rgba(0,0,0,.6)}
 .recovpanel[hidden]{display:none}
@@ -329,11 +386,13 @@ opacity:0;transition:opacity .3s ease;pointer-events:none}
 /* A strip across the column, not a floating pill. A pill is narrower than the
 line it covers, so the **Scrollback** showed through on both sides of it and the
 whole thing read as a rendering fault rather than a hint.
-Anchored on `--barh` — the composer's MEASURED height (board.js: syncDockHeight)
-— not a guessed offset: a **Blocked** Focus adds a row of options and grows that
-bar, and a constant would put this underneath it exactly when it appears. */
+Anchored on `--barh` — the composer's MEASURED height (board.js: syncBarHeight) —
+not a guessed offset: a **Blocked** Focus adds a row of options and grows that
+bar, and a constant would put this underneath it exactly when it appears. It used
+to add `--dockh` to that; the dock is gone (ADR 0015), so the composer it stands
+on is the bottom edge and the term went with the dock. */
 .swipehint{position:fixed;left:var(--rail);right:0;
-bottom:calc(var(--dockh) + var(--barh));z-index:29;color:var(--dim);font-size:11px;
+bottom:var(--barh);z-index:29;color:var(--dim);font-size:11px;
 background:var(--bg);padding:6px var(--gut) 8px;text-align:center;pointer-events:none;
 transition:transform .2s ease,opacity .2s ease}
 .swipehint[hidden]{display:none}
@@ -365,7 +424,12 @@ transform:translateY(101%);visibility:hidden;transition:transform .22s ease,visi
 .zscrim{position:fixed;inset:0;z-index:40;background:rgba(0,0,0,.62)}
 .zscrim[hidden]{display:none}
 /* The count, in the Focus's own sticky header — the one strip that is always on
-screen while you read. Hidden at >=900px: the rail is the queue there. */
+screen while you read. Hidden at >=900px: the rail is the queue there. It set the
+precedent the Intake ＋ follows (ADR 0015): this strip is already where the
+Board's *other* surface is entered, which is why .iplus above sits beside it —
+but .iplus is NOT in the display:none below, because nothing draws Intake in the
+rail. The `margin-left:auto` here is what .iplus inherits the job of when there
+is no queue at all. */
 .zbtn{margin-left:auto;flex:0 0 auto;background:var(--line);color:var(--fg);border:0;
 border-radius:999px;font:inherit;font-size:10.5px;letter-spacing:.4px;padding:4px 10px;cursor:pointer}
 .zbtn.hot{background:var(--accent);color:#000;font-weight:700}
@@ -395,9 +459,31 @@ stays in the flow — it is outside the triage surface and never in the ring. */
 .queues{display:none}
 }
 </style></head>
-<body><div class=zscrim id=zscrim hidden></div><div class=wrap>
+<body><div class=zscrim id=zscrim hidden></div><div class=iscrim id=iscrim hidden></div><div class=wrap>
 <header><h1>◆ claude board</h1><span class=sub id=summary>loading…</span></header>
 <div id=pending></div>
+<!-- **Intake**, every shape of it, in one sheet opened by the ＋ in the Focus's
+sticky header (ADR 0015). It is authored HERE, in the flow just above the card
+slot, and `position:fixed` lifts it out to the bottom edge — so the empty Board's
+inline mode is one class (.isheet.inline) rather than a node moved at runtime.
+Order is deliberate: the dir launch ADR 0008 measured as the hot path first (with
+its dropup above it, where a dropup goes), then **Recover**, then resume by
+`sessionId`, then the **Task** / **Dispatch** buttons — rarest last. -->
+<div class=isheet id=isheet role=group aria-label=intake>
+  <div class=igrab></div>
+  <div class=ihead id=ihead>intake · start something new</div>
+  <div class=dirpop id=dirpop role=listbox hidden></div>
+  <div class=ilaunch>
+    <span class=dprompt id=dirroot>~/projects/</span>
+    <input class=dinp id=dir placeholder=subdir autocomplete=off role=combobox aria-autocomplete=list aria-controls=dirpop aria-expanded=false aria-label="project subdir under the projects root">
+    <button class=dgo id=launch>launch</button>
+  </div>
+  <button class=irecov id=recover aria-haspopup=dialog hidden>recover</button>
+  <label class=dlbl>resume a session</label>
+  <div class=drow><span class=dprompt>$ cl --resume </span><input class=dinp id=sid placeholder=sessionId autocomplete=off aria-label="session id to resume"><button class=dgo id=resume>resume</button></div>
+  <label class=dlbl id=taskslbl hidden>tasks</label>
+  <div id=tasks></div>
+</div>
 <div id=app></div>
 <div class=note>one card at a time, rest queued by urgency · new work waits its turn, it never cuts in · the card moves when you do.</div>
 <noscript>This board needs JavaScript to reach the live session API.</noscript>
@@ -406,22 +492,6 @@ stays in the flow — it is outside the triage surface and never in the ring. */
 <div class="edge l" id=edgel></div>
 <div class="edge r" id=edger></div>
 <div class=swipehint id=swipehint hidden>◂&nbsp; drag sideways to move between Runs &nbsp;▸</div>
-<div class=dock id=dock>
-  <div class=dockexp id=dockexp hidden>
-    <label class=dlbl>resume a session</label>
-    <div class=drow><span class=dprompt>$ cl --resume </span><input class=dinp id=sid placeholder=sessionId autocomplete=off aria-label="session id to resume"><button class=dgo id=resume>resume</button></div>
-    <label class=dlbl id=taskslbl hidden>tasks</label>
-    <div id=tasks></div>
-  </div>
-  <div class=dirpop id=dirpop role=listbox hidden></div>
-  <div class=recoverbar id=recoverbar hidden><button class=recoverbtn id=recover aria-haspopup=dialog>recover</button></div>
-  <div class=dockbar>
-    <button class=dplus id=dplus aria-label="more intake" aria-expanded=false>＋</button>
-    <span class=dprompt id=dirroot>~/projects/</span>
-    <input class=dinp id=dir placeholder=subdir autocomplete=off role=combobox aria-autocomplete=list aria-controls=dirpop aria-expanded=false aria-label="project subdir under the projects root">
-    <button class=dgo id=launch>launch</button>
-  </div>
-</div>
 <div class=recovpanel id=recovpanel hidden role=dialog aria-modal=true aria-label="recover sessions">
   <div class=recovsheet>
     <div class=recovhead><span class=recovheadt id=recovtitle>recover</span><button class=recovx id=recovclose aria-label="close recover">×</button></div>

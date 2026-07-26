@@ -24,11 +24,11 @@ const HTML = fs.readFileSync(path.join(ROOT, "web/board.html"), "utf8");
 
 // --- stub layout -----------------------------------------------------------
 // board.js reads exactly two boxes: the Focus card's, to decide whether the end
-// of the read is below the fold (readingUp), and the intake dock's, to publish
-// the height the composer stands on (syncDockHeight). The stub lays out those
-// two and nothing else — enough to drive the scroll-chrome rule, nowhere near
-// enough to pretend CSS ran.
-const layout = {cardBottom: 0, dockHeight: 0};
+// of the read is below the fold (readingUp), and the composer's, to publish the
+// height the swipe hint and the toast stand on (syncBarHeight — there is no dock
+// to measure since ADR 0015). The stub lays out those two and nothing else —
+// enough to drive the scroll-chrome rule, nowhere near enough to pretend CSS ran.
+const layout = {cardBottom: 0, barHeight: 0};
 const rect = (b) => ({top: 0, left: 0, right: 0, width: 0, bottom: b, height: b});
 
 // --- stub DOM: only the surface board.js actually touches -------------------
@@ -64,7 +64,7 @@ class El {
   getBoundingClientRect() {
     const cls = " " + this._cls + " ";
     if (cls.includes(" focus ")) return rect(layout.cardBottom);
-    if (cls.includes(" dock ")) return rect(layout.dockHeight);
+    if (cls.includes(" respond ")) return rect(layout.barHeight);
     return rect(0);
   }
   querySelector(sel) {   // class selectors only — all board.js asks for
@@ -95,8 +95,8 @@ const doc = {
   activeElement: null,
   hidden: true,   // stops schedule() firing background polls; the tests drive poll() by hand
   _byId: {},
-  // Only `--dockh` is ever written here (board.js::syncDockHeight); the tests
-  // read it back to prove the dock's height is measured, not guessed.
+  // Only `--barh` is ever written here (board.js::syncBarHeight); the tests read
+  // it back to prove the composer's height is measured, not guessed.
   documentElement: {style: {_p: {}, setProperty(k, v) { doc.documentElement.style._p[k] = v; }}},
   getElementById(id) { return doc._byId[id] || (doc._byId[id] = new El("div")); },
   createElement(t) { return new El(t); },
@@ -107,15 +107,17 @@ const doc = {
   addEventListener(t, fn) { (doc._lis[t] = doc._lis[t] || []).push(fn); },
   dispatch(t, ev) { (doc._lis[t] || []).forEach((fn) => fn(ev || {})); },
 };
-// board.html ships these hidden and gives the dock a class; the stub creates
-// bare, visible elements, so seed both or the client reads an intake that is
-// permanently open and a dock with no box to measure.
-["dockexp", "dirpop", "recoverbar", "recovpanel", "toast", "swipehint"]
+// board.html ships these hidden and gives the sheets their classes; the stub
+// creates bare, visible elements, so seed both or the client reads a scrim that is
+// permanently up and a **Recover** row offering a set it has not fetched.
+["dirpop", "recover", "recovpanel", "toast", "swipehint", "zscrim", "iscrim"]
   .forEach((id) => { doc.getElementById(id).hidden = true; });
 // Classes, because a gesture is refused by where it started (board.js::inChrome
 // reads `closest`), and tags, because the arrow keys stand down while an input
 // has focus. board.html says both; the stub makes every by-id node a bare div.
-["dock", "dirpop", "recovpanel", "rail", "swipehint"]
+// `isheet` also carries `open` / `inline` — the whole **Intake** state (ADR 0015)
+// — so the base class has to be there for setCls to preserve.
+["isheet", "dirpop", "recovpanel", "rail", "swipehint"]
   .forEach((id) => { doc.getElementById(id).className = id; });
 ["dir", "sid"].forEach((id) => { doc.getElementById(id).tag = "input"; });
 
@@ -139,6 +141,17 @@ const fetched = [];      // every URL board.js asked for
 const respondLog = [];
 const transferLog = [];  // every body posted to api/transfer
 let transferReply = {status: 200, body: {ok: true, runId: "r-transferred"}};
+// GET /api/recoverable: the **Resumable Sessions**, newest-first, with the
+// **recovery set** flagged (ADR 0013). Steerable, because the **Recover** row's
+// two states — `recover · N` and plain `recover` — are exactly the two shapes of
+// this payload, and its absence is the third.
+let recoverable = {sessions: [], preselectCount: 0};
+let recovEtagN = 0;
+// board.js polls once at load. That first poll is made to FAIL, once, so the boot
+// case is covered: nothing rendered means no Focus card and therefore no ＋, and
+// **Intake** has to fall back to the empty Board's inline layout rather than leave
+// the page with no route to it at all (ADR 0015). Cleared on use.
+let boardDown = true;
 
 function fakeBoard(focusSid) {
   const rank = {question: 0, approval: 0, yourmove: 1};
@@ -176,7 +189,9 @@ function res(status, body, etag) {
 function fakeFetch(url, opts) {
   fetched.push(url);
   if (url.startsWith("api/tasks")) return res(200, {root: "~/projects/", tasks: []}, "t1");
+  if (url.startsWith("api/recoverable")) return res(200, recoverable, "rc" + (++recovEtagN));
   if (url.startsWith("api/board")) {
+    if (boardDown) { boardDown = false; throw new Error("unreachable"); }
     const m = /[?&]focus=([^&]*)/.exec(url);
     // A fresh ETag every time: the point is that unrelated churn forces renders.
     return res(200, fakeBoard(m ? decodeURIComponent(m[1]) : ""), "e" + (++etagN));
@@ -247,6 +262,18 @@ const findAll = (root, cls) => {       // every descendant carrying this class
   return out;
 };
 const ghost = (txt) => findAll(focusWrap(), "ghost").find((b) => b.textContent === txt);
+// **Intake** (ADR 0015): the sheet, its scrim, the ＋ that opens it from inside the
+// Focus's card header, and the **Recover** row. The ＋ is built by board.js, so it
+// is findable; the sheet's own contents are authored in board.html, which the stub
+// does not parse — what is in the sheet and in what order is asserted against the
+// stylesheet at the bottom of this file instead.
+const isheet = () => doc.getElementById("isheet");
+const iscrim = () => doc.getElementById("iscrim");
+const iplus = () => findAll(focusWrap(), "iplus")[0];
+const recovRow = () => doc.getElementById("recover");
+// One class predicate for the whole file — sheets carry `open` / `inline`, chrome
+// carries `hid`, a turn carries its role, and they are all the same question.
+const hasCls = (n, c) => !!n && (" " + (n.className || "") + " ").includes(" " + c + " ");
 const tick = (ms) => new Promise((r) => setTimeout(r, ms));
 const settle = async () => { for (let i = 0; i < 8; i++) await Promise.resolve(); await tick(5); };
 const poll = async () => { await sandbox.poll(); await settle(); };
@@ -268,6 +295,12 @@ const B = "bbbbbbbb-2222-2222-2222-222222222222";
 const W = "wwwwwwww-3333-3333-3333-333333333333";
 
 (async () => {
+  // The boot case, before anything is asked of the client: its load-time poll was
+  // made to fail (boardDown), so nothing has rendered — no card, so no ＋. Intake
+  // must still be reachable, which means the inline layout (ADR 0015).
+  ok("unreachable: a Board that never loaded still offers Intake, inline",
+     hasCls(isheet(), "inline") && !iplus(), isheet().className);
+
   // Adopt: the server picks a head once; from then on the client owns the Focus.
   world = [S(A, "question", 1, "alpha")];
   await poll();
@@ -489,7 +522,6 @@ const W = "wwwwwwww-3333-3333-3333-333333333333";
   sandbox.setPinned(T);
   await settle();
   const turns = () => findAll(sbEl(), "turn");
-  const hasCls = (n, c) => (" " + n.className + " ").includes(" " + c + " ");
 
   ok("scrollback: one element per turn, oldest first", turns().length === 3 &&
      hasCls(turns()[0], "you") && hasCls(turns()[2], "ai"),
@@ -553,7 +585,10 @@ const W = "wwwwwwww-3333-3333-3333-333333333333";
 
   const fhead = () => card() && card().querySelector(".fhead");
   const respond = () => card() && card().querySelector(".respond");
-  const dock = () => doc.getElementById("dock");
+  // The third thing at this edge. It used to be the intake dock; ADR 0015 deleted
+  // that, so what is left riding the chrome state with the card's own two bars is
+  // the swipe hint, which stands on the composer's measured height.
+  const hint = () => doc.getElementById("swipehint");
   const hid = (n) => !!n && (" " + (n.className || "") + " ").includes(" hid ");
   // The client hides the chrome on consecutive travel UP (back into history) and
   // hands it back on travel down — or outright, at the end of the read. A
@@ -564,25 +599,25 @@ const W = "wwwwwwww-3333-3333-3333-333333333333";
   const readDown = () => { scrollTo(1200); scrollTo(1600); };
 
   ok("chrome: at the live end of the scrollback it is all up",
-     !hid(fhead()) && !hid(respond()) && !hid(dock()));
+     !hid(fhead()) && !hid(respond()) && !hid(hint()));
 
   layout.cardBottom = 2400;    // the end of the read is far below an 800px fold
   readDown();
   ok("chrome: reading DOWN a long run-up keeps it up — that is the way to the answer",
-     !hid(fhead()) && !hid(respond()) && !hid(dock()));
+     !hid(fhead()) && !hid(respond()) && !hid(hint()));
 
   readUp();
   ok("chrome: scrolling up into history slides the Focus's header away", hid(fhead()));
   ok("chrome: and the composer with it", hid(respond()));
   ok("chrome: the intake dock rides the same state — the bottom edge is one thing",
-     hid(dock()));
+     hid(hint()));
   ok("chrome: hiding never unbuilds the composer — the same box is still there",
      !!ti() && ti() === respond().querySelector(".ti"));
 
   layout.cardBottom = 700;     // the end of the read is back on screen
   scrollTo(1190);              // a nudge further UP: the end of the read wins anyway
   ok("chrome: returning near the bottom brings all three back",
-     !hid(fhead()) && !hid(respond()) && !hid(dock()));
+     !hid(fhead()) && !hid(respond()) && !hid(hint()));
 
   // The escape hatch, and its limit: a tap is a nudge, not a latch.
   layout.cardBottom = 2400;
@@ -590,7 +625,7 @@ const W = "wwwwwwww-3333-3333-3333-333333333333";
   ok("escape hatch: hidden to begin with", hid(respond()));
   doc.dispatch("click");
   ok("escape hatch: interacting with the page restores the chrome without a scroll",
-     !hid(fhead()) && !hid(respond()) && !hid(dock()));
+     !hid(fhead()) && !hid(respond()) && !hid(hint()));
   scrollTo(win.scrollY - 200);
   ok("escape hatch: and another step back into history takes it away again",
      hid(respond()));
@@ -618,7 +653,7 @@ const W = "wwwwwwww-3333-3333-3333-333333333333";
      "got " + JSON.stringify(ti().value));
   ok("rebuild: the reading position still survives", win.scrollY === 640, "got " + win.scrollY);
   ok("rebuild: and the chrome is left where the reader left it, on the new nodes",
-     hid(fhead()) && hid(respond()) && hid(dock()));
+     hid(fhead()) && hid(respond()) && hid(hint()));
 
   // A different Session is a different read: you have travelled nowhere in it
   // yet, so it opens with the chrome up however deep the last one was.
@@ -626,33 +661,153 @@ const W = "wwwwwwww-3333-3333-3333-333333333333";
   sandbox.setPinned(B);
   await settle();
   ok("switch: a new Session opens with the chrome up, wherever the page sits",
-     !hid(fhead()) && !hid(respond()) && !hid(dock()), card() && card().className);
+     !hid(fhead()) && !hid(respond()) && !hid(hint()), card() && card().className);
   sandbox.setPinned(T);
   await settle();
 
-  // --- The intake dock still works, and is not occluded by the composer -----
+  // --- Intake is a sheet behind a ＋ in the card header (ADR 0015) -----------
+  // The docked launch bar and the **Recover** pill above it are deleted: at the
+  // live end of the read the bottom edge is the composer and nothing else. Every
+  // shape of Intake is one sheet now, and the one thing that opens it is the ＋ in
+  // the **Focus**'s sticky header — a Board-level verb borrowing the only strip
+  // that is always on screen while you read.
+  ok("intake: the ＋ lives in the Focus's sticky header, where the read cannot lose it",
+     !!iplus() && iplus().tag === "button" && iplus().textContent === "＋" &&
+     fhead().querySelector(".iplus") === iplus(), iplus() && iplus().className);
+  ok("intake: it is the header's last thing, so it falls in behind the queue count",
+     fhead().children[fhead().children.length - 1] === iplus() &&
+     findAll(fhead(), "zbtn").length === 1,
+     fhead().children.map((c) => c.className).join(" | "));
+  ok("intake: and the sheet is shut until you ask for it",
+     !hasCls(isheet(), "open") && iscrim().hidden === true, isheet().className);
+
   readUp();
-  ok("intake: the dock clears the bottom edge with the rest while you read", hid(dock()));
-  doc.getElementById("dplus").dispatch("click");
-  ok("intake: ＋ still opens the expanded dock (resume + tasks, ADR 0008)",
-     doc.getElementById("dockexp").hidden === false);
-  ok("intake: an intake you have opened is never slid out from under you", !hid(dock()));
-  ok("intake: while the Focus's own chrome still gets out of the read's way", hid(respond()));
-  doc.getElementById("dplus").dispatch("click");
-  ok("intake: closing it hands the dock back to the chrome state", hid(dock()));
+  ok("intake: the ＋'s own strip clears the read while nothing is open", hid(fhead()));
+  doc.dispatch("click");   // the escape hatch: chrome back, no scroll
+  iplus().dispatch("click");
+  ok("intake: tapping it brings the sheet up over the read, with a scrim behind it",
+     hasCls(isheet(), "open") && iscrim().hidden === false, isheet().className);
+  ok("intake: and marks the ＋ while it is open",
+     hasCls(iplus(), "hot") && iplus()["aria-expanded"] === "true", iplus().className);
+  readUp();
+  ok("intake: an Intake you have opened is never slid out from under you — the ＋ is in there",
+     !hid(fhead()) && !hid(respond()) && !hid(hint()));
+  iscrim().dispatch("click");
+  ok("intake: the scrim dismisses it, exactly as it does the queue's sheet",
+     !hasCls(isheet(), "open") && iscrim().hidden === true, isheet().className);
+  ok("intake: and the ＋ stops being marked", !hasCls(iplus(), "hot"), iplus().className);
+  ok("intake: which hands the chrome back to the scroll position it was at", hid(respond()));
 
   doc.dispatch("click");
+  iplus().dispatch("click");
+  doc.dispatch("keydown", {key: "Escape"});
+  ok("intake: Escape shuts it too — one idiom with the queue sheet",
+     !hasCls(isheet(), "open"), isheet().className);
+
+  // Every shape of **Intake** is in there, and acting is a dismissal — the sheet
+  // was only ever open in order to reach one of these.
+  iplus().dispatch("click");
   doc.getElementById("dir").value = "sandbox";
   doc.getElementById("launch").dispatch("click");
   await settle();
-  ok("intake: and dir-launch still posts — the hot path ADR 0008 measured",
+  ok("intake: dir-launch still posts — the hot path ADR 0008 measured",
      fetched.includes("api/launch"), JSON.stringify(fetched.slice(-3)));
+  ok("intake: and firing an action puts the sheet away", !hasCls(isheet(), "open"),
+     isheet().className);
+  iplus().dispatch("click");
+  doc.getElementById("sid").value = "some-session-id";
+  doc.getElementById("resume").dispatch("click");
+  await settle();
+  ok("intake: resume-by-sessionId is in the sheet too, and dismisses it as well",
+     fetched.includes("api/resume") && !hasCls(isheet(), "open"), isheet().className);
 
-  layout.dockHeight = 96;   // e.g. the Recover pill is up: the dock is taller
+  // The **Recover** row: hidden iff nothing is resumable, and it never badges the
+  // ＋ (ADR 0015 — a non-empty recovery set outside a restart is the mtime
+  // heuristic finding a cluster, and a badge would put that on the one strip you
+  // cannot scroll away from).
+  ok("recover: nothing resumable, so the row is not there at all",
+     recovRow().hidden === true);
+  recoverable = {sessions: [{sessionId: "r1", title: "one", dir: "/p/one", mtime: 1, preselect: true},
+                            {sessionId: "r2", title: "two", dir: "/p/two", mtime: 1}],
+                 preselectCount: 1};
+  await sandbox.loadRecoverable();
+  await settle();
+  ok("recover: something is resumable, so the row appears",
+     recovRow().hidden === false, "hidden=" + recovRow().hidden);
+  ok("recover: it carries the recovery-set count, and the total beside it",
+     recovRow().textContent.includes("recover · 1") &&
+     recovRow().textContent.includes("2 resumable"), recovRow().textContent);
+  ok("recover: and the ＋ carries no badge of it — that is the decision, not an omission",
+     iplus().textContent === "＋", iplus().textContent);
+  recoverable = {sessions: recoverable.sessions, preselectCount: 0};
+  await sandbox.loadRecoverable();
+  await settle();
+  ok("recover: an empty recovery set reads plain `recover` and still offers the picker",
+     recovRow().textContent.includes("recover") &&
+     !recovRow().textContent.includes("·") &&
+     recovRow().textContent.includes("2 resumable"), recovRow().textContent);
+  iplus().dispatch("click");
+  recovRow().dispatch("click");
+  await settle();
+  ok("recover: tapping it opens the picker and closes the sheet — never two sheets",
+     doc.getElementById("recovpanel").hidden === false && !hasCls(isheet(), "open"),
+     isheet().className);
+  doc.getElementById("recovclose").dispatch("click");
+  recoverable = {sessions: [], preselectCount: 0};
+  await sandbox.loadRecoverable();
+  await settle();
+  ok("recover: nothing resumable again, so the row goes", recovRow().hidden === true);
+
+  layout.barHeight = 96;   // e.g. a Blocked Focus: the composer grew a row of options
   win.dispatch("resize");
-  ok("bottom edge: the dock's height is measured and published, never guessed",
-     doc.documentElement.style._p["--dockh"] === "96px",
+  ok("bottom edge: the composer's height is measured and published, never guessed",
+     doc.documentElement.style._p["--barh"] === "96px",
      JSON.stringify(doc.documentElement.style._p));
+  layout.barHeight = 0;
+
+  // With no queue there is no count for the ＋ to follow, and it still has to be
+  // there — it is the only thing on the page that opens Intake.
+  world = [world[0]];
+  world[0].updatedAt = 4242;   // move the Focus's own data, or the card is not rebuilt
+  await poll();
+  ok("intake: the ＋ is there with no queue count beside it at all",
+     !!iplus() && findAll(fhead(), "zbtn").length === 0,
+     fhead().children.map((c) => c.className).join(" | "));
+
+  // --- The empty Board: Intake is the only thing you can do (ADR 0015) -------
+  // After a machine restart no **Run** survives, so there is no **Focus**, no
+  // `.fhead` and therefore no ＋. Intake stops being a sheet and renders inline in
+  // the page flow instead — open, unscrimmed, undismissable. This is the screen the
+  // Recover pill used to be on the bottom edge for.
+  recoverable = {sessions: [{sessionId: "r1", title: "one", dir: "/p/one", mtime: 1, preselect: true}],
+                 preselectCount: 1};
+  world = [];
+  await poll();
+  ok("empty board: no Focus, so no card and no ＋ to open a sheet with",
+     card() === null && !iplus(), focusWrap().textContent);
+  ok("empty board: so Intake renders inline, in the page flow, instead",
+     hasCls(isheet(), "inline") && !hasCls(isheet(), "open"), isheet().className);
+  ok("empty board: with no scrim, because there is nothing behind it to dismiss to",
+     iscrim().hidden === true);
+  ok("empty board: and Recover is loud right there — the pill's whole job",
+     recovRow().hidden === false && recovRow().textContent.includes("recover · 1"),
+     recovRow().textContent);
+  doc.dispatch("keydown", {key: "Escape"});
+  iscrim().dispatch("click");
+  ok("empty board: nothing dismisses it — Intake is the only thing you can do here",
+     hasCls(isheet(), "inline"), isheet().className);
+  doc.getElementById("dir").value = "fresh";
+  doc.getElementById("launch").dispatch("click");
+  await settle();
+  ok("empty board: and launching from it does not put it away either",
+     hasCls(isheet(), "inline"), isheet().className);
+
+  world = [S(T, "yourmove", 1, "scroll")];
+  await poll();
+  ok("empty board: a Focus arriving hands Intake back to the sheet and the ＋",
+     !hasCls(isheet(), "inline") && !!iplus(), isheet().className);
+  recoverable = {sessions: [], preselectCount: 0};
+  await sandbox.loadRecoverable();
 
   // --- The return path: a ring you can walk (this slice) --------------------
   // Answering a Run used to drop it three headings down under a label promising
@@ -675,7 +830,6 @@ const W = "wwwwwwww-3333-3333-3333-333333333333";
   await settle();
 
   const rail = () => doc.getElementById("rail");
-  const hint = () => doc.getElementById("swipehint");
   const railRows = () => findAll(rail(), "qrow");
   const isNow = (r) => (" " + r.className + " ").includes(" now ");
   const nowRow = () => railRows().find(isNow);
@@ -767,9 +921,9 @@ const W = "wwwwwwww-3333-3333-3333-333333333333";
     return name;
   };
   for (const [name, node] of [["the composer", card().querySelector(".respond")],
-                              ["the intake dock", doc.getElementById("dock")],
+                              ["the Intake sheet", isheet()],
                               ["the Recover sheet", doc.getElementById("recovpanel")],
-                              ["the dir popup", doc.getElementById("dirpop")],
+                              ["the dir dropup", doc.getElementById("dirpop")],
                               ["the rail", rail()]]) {
     noSwipe(name, node);
     await settle();
@@ -813,6 +967,17 @@ const W = "wwwwwwww-3333-3333-3333-333333333333";
   ok("sheet: tapping the count brings the queue up over the read",
      zones().className.includes("open") && doc.getElementById("zscrim").hidden === false,
      zones().className);
+  // Two sheets, one read: opening either has to shut the other, because two
+  // stacked sheets over the **Scrollback** is not a state (ADR 0015).
+  iplus().dispatch("click");
+  ok("sheets: opening Intake shuts the queue — two stacked sheets is not a state",
+     hasCls(isheet(), "open") && !zones().className.includes("open") &&
+     doc.getElementById("zscrim").hidden === true, zones().className);
+  zbtn().dispatch("click");
+  ok("sheets: and opening the queue shuts Intake, the same way round",
+     zones().className.includes("open") && !hasCls(isheet(), "open") &&
+     iscrim().hidden === true, isheet().className);
+  doc.activeElement = null;   // opening Intake focuses the dir field; drop it again
   const sheetRow = findAll(zones(), "qrow").find((r) => !isNow(r));
   sheetRow.querySelector(".qbody").dispatch("click");
   await settle();
@@ -870,7 +1035,7 @@ const W = "wwwwwwww-3333-3333-3333-333333333333";
     const m = new RegExp("^" + esc(sel) + "\\{([^}]*)\\}", "m").exec(HTML);
     return m ? m[1] : "(no rule for " + sel + ")";
   };
-  const HIDS = [".fhead.hid", ".respond.hid", ".dock.hid"];
+  const HIDS = [".fhead.hid", ".respond.hid", ".swipehint.hid"];
 
   ok("no layout reserved: the chrome is sticky, so the turns scroll UNDER it",
      rule(".fhead").includes("position:sticky") && rule(".respond").includes("position:sticky"),
@@ -879,20 +1044,57 @@ const W = "wwwwwwww-3333-3333-3333-333333333333";
      HIDS.every((s) => /transform:translateY/.test(rule(s))) &&
      !HIDS.some((s) => /display:none|height:0|max-height/.test(rule(s))),
      HIDS.map(rule).join(" || "));
-  ok("bottom edge: the composer stacks ON the dock rather than across it",
-     rule(".respond").includes("bottom:var(--dockh)") && rule(".dock").includes("bottom:0"),
-     rule(".respond"));
+  // ADR 0015's whole claim, in the one place that can prove it: the composer
+  // stands on the viewport, not on a dock, and `--dockh` is not a term anywhere —
+  // every offset that had it lost it rather than gained a zero.
+  ok("bottom edge: the composer IS the bottom edge — nothing is docked under it",
+     rule(".respond").includes("bottom:0") && rule(".dock") === "(no rule for .dock)" &&
+     rule(".dockbar") === "(no rule for .dockbar)", rule(".respond"));
+  // Comments in this stylesheet talk about --dockh at length — it is the term ADR
+  // 0015 removed, and saying so is the point — so strip them: this asserts about
+  // declarations, not prose.
+  const DECLS = HTML.replace(/\/\*[\s\S]*?\*\//g, "");
+  ok("bottom edge: and no offset stands on a --dockh that no longer exists",
+     !/var\(--dockh\)/.test(DECLS) && !/--dockh:/.test(DECLS),
+     (/[^;{]*var\(--dockh\)[^;]*/.exec(DECLS) || [""])[0]);
+  ok("bottom edge: so the composer owns the safe-area inset the dock absorbed for it",
+     rule(".respond").includes("env(safe-area-inset-bottom"), rule(".respond"));
+  ok("bottom edge: and the Recover pill that sat on it is gone outright",
+     !/\.recoverbtn/.test(HTML) && !/\.recoverbar/.test(HTML));
   const rm = HTML.indexOf("@media(prefers-reduced-motion:reduce){");
   ok("chrome: the slide respects prefers-reduced-motion (the .spin precedent)",
-     rm > 0 && HTML.slice(rm, rm + 220).includes(".fhead,.respond,.dock{transition:none}"),
+     rm > 0 && HTML.slice(rm, rm + 220).includes(".fhead,.respond,.isheet{transition:none}"),
      HTML.slice(rm, rm + 220));
 
   ok("column: one bounded reading column, wider than the old 640px phone width",
      /--col:740px/.test(HTML) && rule(".wrap").includes("var(--gut)"), rule(".wrap"));
   ok("column: which collapses to today's 14px gutters on a phone — nothing changes there",
      /--gut:max\(14px,calc\(50% - var\(--col\)\/2\)\)/.test(HTML));
-  ok("column: and the fixed dock snaps to the SAME column, not the viewport edge",
-     rule(".dock").includes("var(--gut)"), rule(".dock"));
+  ok("column: and the fixed Intake sheet snaps to the SAME column, not the viewport edge",
+     rule(".isheet").includes("var(--gut)"), rule(".isheet"));
+
+  // --- Intake, as only the markup and the stylesheet can say it (ADR 0015) ---
+  // The sheet's contents are authored, not built, so the stub DOM cannot see them:
+  // what is in the sheet, in what order, and where the sheet sits in the document
+  // are all read straight out of board.html here.
+  const sheetHtml = HTML.slice(HTML.indexOf("<div class=isheet"), HTML.indexOf("<div id=app>"));
+  const INTAKE_ORDER = ["class=dirpop", "class=ilaunch", "id=launch", "class=irecov",
+                        "id=sid", "id=tasks"];
+  let seq = -1, inOrder = true;
+  for (const s of INTAKE_ORDER) { const i = sheetHtml.indexOf(s); if (i < seq) inOrder = false; seq = i; }
+  ok("intake: the sheet holds every shape of it — launch (with its dropup), Recover, resume, tasks",
+     !!sheetHtml && inOrder && /class=dlbl/.test(sheetHtml),
+     JSON.stringify(INTAKE_ORDER.map((s) => [s, sheetHtml.indexOf(s)])));
+  ok("intake: authored ABOVE the card slot, which is what makes inline mode need no node moved",
+     HTML.indexOf("<div class=isheet") < HTML.indexOf("<div id=app>") &&
+     HTML.indexOf("<div id=pending>") < HTML.indexOf("<div class=isheet"));
+  ok("intake: and it is a sheet the same way the queue's is — over the read, with a scrim",
+     /position:fixed/.test(rule(".isheet")) && /transform:translateY/.test(rule(".isheet")) &&
+     /\.isheet\.open\{transform:none/.test(HTML) && /position:fixed/.test(rule(".iscrim")),
+     rule(".isheet"));
+  ok("intake: the empty Board drops the fixed positioning and nothing else moves",
+     /position:static/.test(rule(".isheet.inline")) &&
+     /transform:none/.test(rule(".isheet.inline")), rule(".isheet.inline"));
 
   // The rail's gate is a media query, so only the sheet can say where it is.
   const mq = HTML.indexOf("@media(min-width:900px){");
@@ -914,8 +1116,14 @@ const W = "wwwwwwww-3333-3333-3333-333333333333";
      /--rail:290px/.test(mqBlock) &&
      /--gut:max\(14px,calc\(50% - var\(--rail\)\/2 - var\(--col\)\/2\)\)/.test(mqBlock) &&
      rule(".wrap").includes("margin-left:var(--rail)") &&
-     rule(".dock").includes("left:var(--rail)"),
-     rule(".wrap") + " || " + rule(".dock"));
+     rule(".isheet").includes("left:var(--rail)"),
+     rule(".wrap") + " || " + rule(".isheet"));
+  // Intake has no wide half. The queue steps aside above 900px because the rail
+  // draws it there; nothing draws Intake in the rail, so the sheet and its ＋ stay
+  // exactly as they are and the breakpoint never mentions either (ADR 0015).
+  ok("intake: it is a sheet at EVERY width — no rail draws it, so nothing steps aside",
+     !/\.isheet\{/.test(mqBlock) && !/\.iplus/.test(mqBlock) && !/\.iscrim/.test(mqBlock),
+     mqBlock.slice(0, 200));
   ok("swipe: the Scrollback keeps the vertical axis and claims only the horizontal",
      rule(".sb").includes("touch-action:pan-y"), rule(".sb"));
   ok("swipe: the landing cue is a fixed overlay — a cue may not move the read",

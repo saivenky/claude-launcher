@@ -7,15 +7,16 @@
 // `.innerHTML =`, in turnEl().
 //
 // Since ADR 0008 the Board is the Launcher's only page, so it also carries
-// intake (dir-launch, resume, task/dispatch buttons — the bottom compose dock),
+// **Intake** (dir-launch, resume, Recover, task/dispatch buttons — a sheet behind
+// the ＋ in the Focus's header since ADR 0015, a docked bottom bar before that),
 // the per-run close (×) and deep-link (↗), and the optimistic launch card.
 // Below all of it, outside the triage surface, sit the Foreign Runs — seen,
 // never driven, and transferable in one tap (foreignZone, ADR 0012).
 //
 // The whole page is one bounded reading column (board.html: --col / --gut), and
-// the chrome around the Focus — its header, its composer, and the intake dock
-// they share the bottom edge with — follows the scroll rather than a mode. See
-// the chrome section below (syncChrome).
+// the chrome around the Focus — its header and its composer, which now owns the
+// bottom edge outright — follows the scroll rather than a mode. See the chrome
+// section below (syncChrome).
 //
 // Rotation is consent-based (CONTEXT.md: Focus, Rotation). Two rules carry it,
 // and between them nothing the Board does can cost you a half-typed reply or
@@ -46,13 +47,13 @@ const sidEl = document.getElementById("sid");
 const dirRootEl = document.getElementById("dirroot");
 const launchEl = document.getElementById("launch");
 const resumeEl = document.getElementById("resume");
-const dplusEl = document.getElementById("dplus");
-const dockEl = document.getElementById("dock");
-const dockexpEl = document.getElementById("dockexp");
+const isheetEl = document.getElementById("isheet");       // the **Intake** sheet
+const iscrimEl = document.getElementById("iscrim");       // and its dismissal
+const iheadEl = document.getElementById("ihead");
 const tasksEl = document.getElementById("tasks");
 const taskslblEl = document.getElementById("taskslbl");
-const recoverbarEl = document.getElementById("recoverbar");
-const recoverBtnEl = document.getElementById("recover");
+const recoverBtnEl = document.getElementById("recover");  // the Recover ROW, in
+                                                          // the sheet (ADR 0015)
 const recovPanelEl = document.getElementById("recovpanel");
 const recovTitleEl = document.getElementById("recovtitle");
 const recovSubEl = document.getElementById("recovsub");
@@ -71,14 +72,31 @@ const focusWrap = el("div");
 const zonesWrap = el("div", "zones");
 app.append(focusWrap, zonesWrap);
 
-// --- the queue sheet (narrow only; the rail is the wide half) ---------------
-// A phone has no 290px to spend on a permanent rail, and stacking the queue
-// under the **Scrollback** puts it at the end of an unbounded read — the
-// further you read, the further away the rest of the Board gets. So at this
-// width the same list is a sheet over the read, opened from the count in the
-// Focus's sticky header. At >=900px the CSS returns .zones to ordinary flow and
-// none of this state is reachable, because the button that sets it is hidden.
+// --- the two sheets: the queue, and Intake ----------------------------------
+// THE QUEUE SHEET (narrow only; the rail is the wide half). A phone has no 290px
+// to spend on a permanent rail, and stacking the queue under the **Scrollback**
+// puts it at the end of an unbounded read — the further you read, the further
+// away the rest of the Board gets. So at this width the same list is a sheet over
+// the read, opened from the count in the Focus's sticky header. At >=900px the CSS
+// returns .zones to ordinary flow and none of this state is reachable, because
+// the button that sets it is hidden.
+//
+// THE INTAKE SHEET is its peer and deliberately the same object (ADR 0015): every
+// shape of **Intake** over the read, a scrim behind it, opened from the ＋ in the
+// same sticky header, dismissed by the scrim or by acting. It exists at EVERY
+// width — nothing draws Intake in the rail, so there is no wide half for it to
+// step aside for.
+//
+// AND THEY ARE MUTUALLY EXCLUSIVE. Two stacked sheets over one read is not a
+// state: each setter closes the other, guarded by `if (open)` so opening one
+// cannot bounce back and close itself.
 let queueOpen = false;
+let intakeSheetOpen = false;
+// The empty-Board layout (ADR 0015): no **Focus** means no `.fhead`, so no ＋ and
+// no sheet — Intake renders inline in the page flow instead, always open, with
+// nothing that dismisses it. Held here because every dismissal below has to
+// refuse while it is true.
+let intakeInline = false;
 const scrimEl = document.getElementById("zscrim");
 
 function queueCount() {
@@ -86,17 +104,72 @@ function queueCount() {
   return ringGroups(false).reduce((n, g) => n + g.items.length, 0);
 }
 
+// The one class-toggle vocabulary this file uses — setHid is the same call — so
+// there is nothing here a reader has to learn twice.
+function setCls(node, cls, on) {
+  if (!node) return;
+  const base = (node.className || "").split(" ").filter((c) => c && c !== cls).join(" ");
+  node.className = on ? base + " " + cls : base;
+}
+
 function setQueueOpen(open) {
-  queueOpen = open;
-  // Same className idiom as setHid — the one class-toggle vocabulary this file
-  // uses, so there is nothing here a reader has to learn twice.
-  const base = (zonesWrap.className || "").split(" ").filter((c) => c && c !== "open").join(" ");
-  zonesWrap.className = open ? base + " open" : base;
-  if (scrimEl) scrimEl.hidden = !open;
+  queueOpen = !!open;
+  setCls(zonesWrap, "open", queueOpen);
+  if (scrimEl) scrimEl.hidden = !queueOpen;
+  if (queueOpen) setIntake(false);
+}
+
+// Open or shut the Intake sheet. Inline Intake is not a sheet and has no closed
+// state, so it refuses outright rather than quietly desyncing the ＋ from it.
+function setIntake(open) {
+  if (intakeInline) return;
+  intakeSheetOpen = !!open;
+  setCls(isheetEl, "open", intakeSheetOpen);
+  if (iscrimEl) iscrimEl.hidden = !intakeSheetOpen;
+  markIntakePlus();
+  if (intakeSheetOpen) {
+    setQueueOpen(false);
+    // The dir field is the hot path (ADR 0008), and focusing it also paints the
+    // recent-dirs dropup — so the sheet opens on the thing you most likely came
+    // for rather than on a row you then have to tap.
+    if (dirEl && dirEl.focus) dirEl.focus();
+  }
+  applyChrome();   // an Intake that just closed may slide away with the rest
+}
+
+// The ＋ lives in the Focus's card header, so it is rebuilt whenever the card is;
+// focusCard() seeds it from this state and this re-marks the live one.
+function markIntakePlus() {
+  const b = focusWrap.querySelector(".iplus");
+  if (!b) return;
+  setCls(b, "hot", intakeSheetOpen);
+  b.setAttribute("aria-expanded", intakeSheetOpen ? "true" : "false");
+}
+
+// Sheet ⇄ inline. Driven by renderFocus, because the presence of a **Focus** is
+// the whole condition: the ＋ rides `.fhead`, and there is no `.fhead` without a
+// card to put it in.
+function setIntakeInline(on) {
+  intakeInline = !!on;
+  if (intakeInline) {
+    intakeSheetOpen = false;
+    if (iscrimEl) iscrimEl.hidden = true;
+    setCls(isheetEl, "open", false);
+  }
+  setCls(isheetEl, "inline", intakeInline);
+  // The heading carries the difference, because the surface itself does not: on
+  // an empty Board this is not "also available", it is the only thing there is.
+  iheadEl.textContent = intakeInline
+    ? "nothing running · start something" : "intake · start something new";
 }
 
 if (scrimEl) scrimEl.addEventListener("click", () => setQueueOpen(false));
-document.addEventListener("keydown", (e) => { if (e.key === "Escape") setQueueOpen(false); });
+if (iscrimEl) iscrimEl.addEventListener("click", () => setIntake(false));
+document.addEventListener("keydown", (e) => {
+  if (e.key !== "Escape") return;
+  setQueueOpen(false);
+  setIntake(false);
+});
 
 const LANE_LABEL = {question: "blocked · question", approval: "blocked · approval",
                     yourmove: "your move", working: "working", snoozed: "snoozed"};
@@ -313,7 +386,7 @@ function rowActions(item) {
   return wrap;
 }
 
-// --- Intake: compose dock + optimistic launch card -------------------------
+// --- Intake: the sheet's actions + the optimistic launch card ---------------
 // A launched Run is invisible until `claude` reaches `ps` (1-3s). The launch
 // hands back a runId; key an optimistic "starting…" card by it, burst-poll, and
 // reconcile it away when the real Run surfaces (ADR 0003 invariant 4, adapted
@@ -356,19 +429,14 @@ function reconcile(data) {
   if (changed) renderPending();
 }
 
-function setDock(open) {
-  dockexpEl.hidden = !open;
-  dplusEl.setAttribute("aria-expanded", open ? "true" : "false");
-  syncDockHeight();   // the panel changed the dock's height
-  applyChrome();      // an intake that just closed may slide away with the rest
-}
-
 // The launch input's quick-pick: the folders you've recently run Claude in
 // (server-derived; ADR 0006). A native <datalist> is unreliable here — it
 // won't open when its options arrive after focus (our fetch is async) and iOS
 // Safari barely renders it — so we drive our own dropup popover with the same
 // combobox semantics: free-text stays, we just show suggestions and fill on
 // tap. Recent dirs change as you work, so we refetch on each focus.
+// It is a DROPUP, and it still is inside the sheet: board.html puts it above the
+// launch row in document order, which is where the list has always opened.
 let dirCache = [];
 
 function hidePop() {
@@ -411,7 +479,8 @@ async function launchDir() {
   const dir = dirEl.value.trim();
   const res = await postJSON("api/launch", {dir});
   toast(res.message || (res.ok ? "launched" : "launch failed"));
-  if (res.ok) { dirEl.value = ""; setDock(false); watch(res.runId, dir || "default"); }
+  // Acting is a dismissal — the sheet was only ever open to reach this (ADR 0015).
+  if (res.ok) { dirEl.value = ""; setIntake(false); watch(res.runId, dir || "default"); }
   hidePop();
 }
 
@@ -419,7 +488,7 @@ async function resumeSession() {
   const sessionId = sidEl.value.trim();
   const res = await postJSON("api/resume", {sessionId});
   toast(res.message || (res.ok ? "resumed" : "resume failed"));
-  if (res.ok) { sidEl.value = ""; setDock(false); watch(res.runId, "resume"); }
+  if (res.ok) { sidEl.value = ""; setIntake(false); watch(res.runId, "resume"); }
 }
 
 async function launchTask(btn) {
@@ -428,7 +497,7 @@ async function launchTask(btn) {
   if (t.seedEl) body.input = t.seedEl.value.trim();
   const res = await postJSON("api/launch", body);
   toast(res.message || (res.ok ? "launched" : "launch failed"));
-  if (res.ok) { if (t.seedEl) t.seedEl.value = ""; setDock(false); watch(res.runId, t.label); }
+  if (res.ok) { if (t.seedEl) t.seedEl.value = ""; setIntake(false); watch(res.runId, t.label); }
 }
 
 // Task defs are data now (ADR 0008): fetch and build the buttons client-side,
@@ -469,11 +538,12 @@ async function loadTasks() {
   }
 }
 
-// --- Recover: the intake picker + empty-board count badge (slice 04) --------
+// --- Recover: a row in the Intake sheet + the picker (slice 04, ADR 0015) ----
 // A discovery-and-bulk Resume (CONTEXT.md: Recover). GET /api/recoverable lists
 // the Resumable Sessions newest-first and flags the recovery set (`preselect`);
-// its `preselectCount` rides the intake pill as a nudge — the eye-catcher on the
-// empty post-reboot Board. No auto-open, no auto-resume (ADR 0013, consent
+// its `preselectCount` rides the Recover ROW as a nudge — and on the empty
+// post-reboot Board that row is inline in the page flow, which is the case the old
+// bottom-edge pill existed for. No auto-open, no auto-resume (ADR 0013, consent
 // ethos): the count is a nudge, not an action. You tap → the picker opens
 // pre-ticked → you confirm.
 //
@@ -497,22 +567,43 @@ async function loadRecoverable() {
   } catch (e) { return; }
   recoverSessions = data.sessions || [];
   recoverPreselect = data.preselectCount || 0;
-  renderRecoverBadge();
+  renderRecoverRow();
   if (recoverOpen) renderRecoverList();   // keep an open picker current
 }
 
-// The pill is present whenever anything is resumable; it carries the count only
-// when the recovery set is non-empty (`recover · N`), else reads plain `recover`
-// and opens the full list (spec: uncounted-but-present).
-function renderRecoverBadge() {
+// The row is present whenever anything is resumable; it carries the recovery-set
+// count when that set is non-empty (`recover · N`), else reads plain `recover` and
+// opens the full list (spec: uncounted-but-present). The TOTAL resumable count
+// rides the other end of the row, because the two numbers answer different
+// questions: N is the Launcher's guess at a restart, the total is everything the
+// picker will list.
+//
+// THE ＋ CARRIES NO BADGE, and that is the decision, not an omission (ADR 0015).
+// After a machine restart no Run survives, so the Board *is* empty, Intake is
+// inline where the card would be, and this count is already loud in exactly the
+// case the old bottom-edge pill was built for. Any OTHER time the recovery set is
+// non-empty it is the mtime heuristic (ADR 0013) finding a cluster that was not a
+// restart — and a badge there would put a false positive back on the one strip you
+// cannot scroll away from, which is the whole thing this slice deleted.
+//
+// It no longer measures anything either: the pill used to grow the dock the
+// composer stood on, so appearing or going meant re-publishing `--dockh`. There is
+// no dock, so this row costs the bottom edge nothing.
+function renderRecoverRow() {
   const n = recoverSessions.length;
-  recoverbarEl.hidden = n === 0;
-  if (n === 0) { if (recoverOpen) closeRecover(); syncDockHeight(); return; }
-  recoverBtnEl.textContent = recoverPreselect > 0 ? ("recover · " + recoverPreselect) : "recover";
-  syncDockHeight();   // the pill just grew (or shrank) the dock the composer stands on
+  recoverBtnEl.hidden = n === 0;
+  if (n === 0) { if (recoverOpen) closeRecover(); return; }
+  recoverBtnEl.textContent = "";
+  recoverBtnEl.append(el("span", null,
+    recoverPreselect > 0 ? ("recover · " + recoverPreselect) : "recover"));
+  recoverBtnEl.append(el("span", "n", n + " resumable"));
 }
 
 function openRecover() {
+  // Recover is reached from inside the Intake sheet, and the picker is a modal of
+  // its own — so the sheet goes, here rather than on the row's click, because
+  // this is the one door into the picker (ADR 0015: acting dismisses the sheet).
+  setIntake(false);
   recoverOpen = true;
   recovPanelEl.hidden = false;
   renderRecoverList();
@@ -665,6 +756,21 @@ function focusCard(f) {
     qb.addEventListener("click", () => setQueueOpen(true));
     head.append(qb);
   }
+  // **Intake**'s only way in (ADR 0015). A Board-level verb in a Run-level strip,
+  // deliberately: this is the one bar that is always on screen while you read, the
+  // queue count above already set that precedent, and the alternative was the
+  // permanent bottom bar this slice deleted. Intake is not a property of the
+  // Focus — it just borrows the strip.
+  // LAST in the header, and at EVERY width: unlike `.zbtn`, which CSS drops at
+  // >=900px because the rail draws the queue there, nothing draws Intake in the
+  // rail, so there is no duplicate to avoid. It carries no Recover count — see
+  // renderRecoverRow for why that is a decision.
+  const plus = el("button", "iplus" + (intakeSheetOpen ? " hot" : ""), "＋");
+  plus.setAttribute("aria-label", "intake — start something new");
+  plus.setAttribute("aria-haspopup", "dialog");
+  plus.setAttribute("aria-expanded", intakeSheetOpen ? "true" : "false");
+  plus.addEventListener("click", () => setIntake(!intakeSheetOpen));
+  head.append(plus);
   card.append(head);
 
   if (f.aiTitle) {
@@ -752,7 +858,7 @@ function focusCard(f) {
   respond.append(row);
 
   // The per-run action strip. It is built here with the composer but appended to
-  // the CARD, not to `.respond`: the composer is docked to the bottom edge now
+  // the CARD, not to `.respond`: the composer IS the bottom edge now
   // (see the chrome section below) and a full strip of buttons riding that edge
   // would spend the pixels this whole layout exists to recover. These are the
   // rare, deliberate actions — they sit in the flow at the end of the read,
@@ -801,7 +907,7 @@ function focusCard(f) {
   actions.append(close);
 
   card.append(actions);
-  card.append(respond);   // last child — the docked composer (board.html: .respond)
+  card.append(respond);   // last child — the sticky composer (board.html: .respond)
   return card;
 }
 
@@ -1086,11 +1192,17 @@ function renderFocus(f) {
   focusSid = f ? f.sessionId : null;
   focusWrap.textContent = "";
   if (!f) {
+    // No **Focus** means no `.fhead`, so there is no ＋ and nothing to open a
+    // sheet with — so **Intake** stops being one and renders inline, open, above
+    // this slot (ADR 0015). This is the post-reboot screen: Intake is the only
+    // thing you can do here, and there must never be a Board with no route to it.
+    setIntakeInline(true);
     focusWrap.append(el("div", "empty", "All clear — nothing needs you right now."));
-    chromeHid = false;   // no read to get out of the way of — hand the dock back
+    chromeHid = false;   // no read to get out of the way of
     applyChrome();
     return;
   }
+  setIntakeInline(false);
   const card = focusCard(f);
   focusWrap.append(card);
   if (keep) restore(card, keep);
@@ -1159,15 +1271,14 @@ function replyEngaged() {
 // that is actually true — moving up is going back into history, moving down is
 // going toward the answer — and the end of the read still wins outright.
 //
-// THE BOTTOM EDGE IS SHARED, AND THAT IS RESOLVED BY STACKING. The intake dock
-// is fixed there (ADR 0008) and the composer now wants the same edge. Neither is
-// traded away: the dock keeps `bottom:0`, because ADR 0008 measured dir-launch
-// as the hot path and intake must stay one visible tap, and the composer sits
-// directly on top of it at `bottom:var(--dockh)`. `--dockh` is measured rather
-// than guessed (syncDockHeight) because the **Recover** pill grows the dock, and
-// a stale constant would put the composer over it. The two then ride ONE chrome
-// state, so the bottom edge is either both bars or none of it — never a composer
-// parked across a dock. Read up into history and the whole edge clears.
+// THE BOTTOM EDGE IS THE COMPOSER, AND NOTHING ELSE (ADR 0015). It used to be
+// shared and resolved by stacking: the intake dock at `bottom:0` (ADR 0008 had
+// measured dir-launch as the hot path) with the composer standing on it at
+// `bottom:var(--dockh)`, plus the **Recover** pill between them whenever anything
+// at all was resumable. Two of those three are **Intake** — the *create* half of
+// the **Board** — holding the one strip that cannot be scrolled away from, for a
+// verb used a handful of times a day. They are one sheet behind a ＋ now, so there
+// is one bar at this edge and one chrome state covering it.
 const CHROME_SLACK = 140;   // px the end of the read must sit below the fold
                             // before there is any history to be up in
 const CHROME_STEP = 24;     // px of travel one way before it counts as a move
@@ -1191,22 +1302,28 @@ function readingUp() {
 }
 
 function setHid(node, hid) {
-  if (!node) return;
-  const base = (node.className || "").split(" ").filter((c) => c && c !== "hid").join(" ");
-  node.className = hid ? base + " hid" : base;
+  setCls(node, "hid", hid);
 }
 
-// An intake you have already opened is never slid out from under you.
+// Is **Intake** on screen? The sheet, the inline empty-Board layout, and the
+// **Recover** picker the sheet leads to. Not `dirpop`: the dropup only exists
+// inside the sheet, so it cannot be open without the first term already being
+// true.
 function intakeOpen() {
-  return dockexpEl.hidden === false || dirpopEl.hidden === false || recoverOpen;
+  return intakeSheetOpen || intakeInline || recoverOpen;
 }
 
+// An Intake you have opened holds the whole chrome up — the ＋ that opened it
+// lives in `.fhead` (ADR 0015), so sliding that strip away underneath an open
+// sheet would leave the surface no marked way in and no way back to the read it
+// covers. One rule for the header, the composer and the hint alike, exactly as
+// when the dock rode this state with them.
 function applyChrome() {
   const card = focusWrap.querySelector(".focus");
-  setHid(card && card.querySelector(".fhead"), chromeHid);
-  setHid(card && card.querySelector(".respond"), chromeHid);
-  setHid(dockEl, chromeHid && !intakeOpen());
-  setHid(hintEl, chromeHid);   // the swipe hint shares this edge; so does it
+  const hid = chromeHid && !intakeOpen();
+  setHid(card && card.querySelector(".fhead"), hid);
+  setHid(card && card.querySelector(".respond"), hid);
+  setHid(hintEl, hid);   // the swipe hint shares this edge; so does it
 }
 
 function setChrome(hid, y) {
@@ -1259,11 +1376,11 @@ const WHEEL_BIAS = 1.6;
 const WHEEL_LOCK = 700;    // a flick is many wheel events — take the first only
 const EDGE_FLASH = 320;
 
-// Where the gesture is NOT: the composer (you are typing into it), the intake
-// dock, the Recover sheet, the dir popup — each its own surface with its own
+// Where the gesture is NOT: the composer (you are typing into it), the **Intake**
+// sheet, the Recover sheet, the dir dropup — each its own surface with its own
 // targets — the rail (a list you scroll), and any input or markdown table that
 // scrolls on an axis of its own.
-const SWIPE_BLOCK = ".respond,.dock,.recovpanel,.dirpop,.rail,input,textarea,table";
+const SWIPE_BLOCK = ".respond,.isheet,.recovpanel,.dirpop,.rail,input,textarea,table";
 function inChrome(node) {
   return !!(node && node.closest && node.closest(SWIPE_BLOCK));
 }
@@ -1358,17 +1475,18 @@ document.addEventListener("keydown", (e) => {
   swipeFocus(e.key === "ArrowRight" ? 1 : -1);
 });
 
-// Publish the dock's real height for the composer to stand on. Re-measured every
-// moment the dock can change height: on load, on resize, when the intake opens
-// or closes, and when the Recover pill appears or goes.
-function syncDockHeight() {
-  if (!dockEl || !dockEl.getBoundingClientRect || !document.documentElement) return;
-  const h = Math.round(dockEl.getBoundingClientRect().height);
-  if (h > 0) document.documentElement.style.setProperty("--dockh", h + "px");
-  // …and the composer's height beside it, for the one thing that stands on the
-  // composer: the swipe hint. A **Blocked** Focus grows this bar by a row of
-  // options, so a constant would bury the hint underneath it precisely when the
-  // options appear. Same instinct as --dockh: measure, never guess.
+// Publish the composer's real height. This was syncDockHeight, and it published
+// `--dockh` too — the dock's measured box, which the composer stood on and the
+// **Recover** pill grew. ADR 0015 deleted the dock, so `--dockh` is gone with it
+// and only the composer is left to measure.
+//
+// It still has to be measured rather than assumed: two things stand on `--barh` —
+// the swipe hint (board.html: .swipehint) and the toast — and a **Blocked** Focus
+// grows this bar by a row of options, so a constant would bury them underneath it
+// precisely when the options appear. Re-measured on load, on resize, and on every
+// render, because the card that carries the bar is rebuilt there.
+function syncBarHeight() {
+  if (!document.documentElement) return;
   const bar = focusWrap && focusWrap.querySelector && focusWrap.querySelector(".respond");
   const bh = bar && bar.getBoundingClientRect ? Math.round(bar.getBoundingClientRect().height) : 0;
   if (bh > 0) document.documentElement.style.setProperty("--barh", bh + "px");
@@ -1415,7 +1533,7 @@ function render(data) {
   }
 
   renderFocus(f);
-  syncDockHeight();   // the card just changed: --barh follows the composer's height
+  syncBarHeight();   // the card just changed: --barh follows the composer's height
   zonesWrap.textContent = "";
   // Two boxes, because they answer to different rules at a wide width: the
   // queue steps aside for the rail (board.html) while the Foreign section —
@@ -1475,6 +1593,11 @@ async function poll() {
     loadRecoverable();
   } catch (e) {
     toast("board unreachable");
+    // Nothing has ever rendered, so there is no Focus card and therefore no ＋ —
+    // and the page would offer no route to **Intake** at all. Fall back to the
+    // empty Board's inline layout, which is also the honest reading: we cannot see
+    // a **Run**, so starting one is the only thing here (ADR 0015).
+    if (!boardData) setIntakeInline(true);
   }
   schedule();
 }
@@ -1485,7 +1608,8 @@ function schedule() {
   if (!document.hidden) timer = setTimeout(poll, pendingRuns.size ? 500 : 4000);
 }
 
-dplusEl.addEventListener("click", () => setDock(dockexpEl.hidden));
+// The ＋ that opens the sheet is not wired here: it lives in the Focus's card
+// header, so focusCard() builds it and binds it on every rebuild (ADR 0015).
 launchEl.addEventListener("click", launchDir);
 resumeEl.addEventListener("click", resumeSession);
 dirEl.addEventListener("keydown", (e) => {
@@ -1511,7 +1635,7 @@ document.addEventListener("keydown", (e) => { if (e.key === "Escape" && recoverO
 // would take it straight back out. No exclusion list is needed either — hidden
 // chrome is off-screen and cannot be the thing you tapped.
 window.addEventListener("scroll", syncChrome, {passive: true});
-window.addEventListener("resize", () => { syncDockHeight(); syncChrome(); });
+window.addEventListener("resize", () => { syncBarHeight(); syncChrome(); });
 document.addEventListener("click", showChrome);
 
 document.addEventListener("visibilitychange", () => {
@@ -1519,7 +1643,7 @@ document.addEventListener("visibilitychange", () => {
   else { poll(); loadTasks(); loadRecoverable(); }
 });
 
-syncDockHeight();
+syncBarHeight();
 loadTasks();
 loadRecoverable();
 poll();
