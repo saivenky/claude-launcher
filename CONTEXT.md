@@ -203,7 +203,9 @@ Starting new work from the **Board** — a generic dir **launch**, a
 restart, or a one-tap **Task** / **Dispatch**. The
 *create* side of the Board, as opposed to the *triage* side (**Observe** /
 **Respond**) that acts on work already running.
-_Avoid_: launch (only one of intake's shapes), compose, new session
+_Avoid_: launch (only one of intake's shapes), compose, new session, new run
+(three of the four shapes produce a **Run**, so it distinguishes none of them —
+and a **Dispatch** produces none at all)
 
 **Blocked**:
 A **Run** paused awaiting a *specific required input from you*: an
