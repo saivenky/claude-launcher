@@ -838,19 +838,40 @@ function focusCard(f) {
       "⏳ busy — what you send queues until this turn ends"));
   }
   const row = el("div", "replyrow");
-  const ti = el("input", "ti");
+  // A TEXTAREA, one row at rest and pixel-identical to the `<input>` it replaces
+  // (ADR 0015). **Respond** carries prose — a paragraph, a path, a pasted error —
+  // and a single-line box showed the last few words of it through a keyhole. It
+  // grows per keystroke and caps at five rows; growComposer owns that arithmetic
+  // and the `--barh` the swipe hint stands on. `rows=1` is what makes the box the
+  // old input's height before a single measurement happens.
+  const ti = el("textarea", "ti");
+  ti.rows = 1;
   ti.placeholder = isBlocked(f) ? "answer…"
     : f.lane === "working" ? "queue a note for the next turn…" : "type your reply…";
   const send = el("button", "send", "respond →");
   // Clear only once the text is actually sent. The box now survives rebuilds,
   // so clearing optimistically (or not at all) would carry a stale value back
-  // in and make a sent reply look unsent.
+  // in and make a sent reply look unsent. It has to shrink back with the text —
+  // an emptied five-row box would leave the bar standing at five rows.
   const fire = async () => {
     const v = ti.value.trim();
-    if (v && await sendRespond(f, {text: v})) ti.value = "";
+    if (v && await sendRespond(f, {text: v})) { ti.value = ""; growComposer(ti); }
   };
   send.addEventListener("click", fire);
-  ti.addEventListener("keydown", (e) => { if (e.key === "Enter") fire(); });
+  ti.addEventListener("input", () => growComposer(ti));
+  // ENTER INSERTS A NEWLINE. ⌘/Ctrl+Enter SENDS (ADR 0015). Not the Slack idiom,
+  // deliberately: a soft keyboard has no Shift+Enter, so Enter-to-send would make
+  // a second line untypeable on the phone this whole tool exists for — and the
+  // multi-line box above would then be a box you could only ever put one line in.
+  // Nothing is lost by moving send off Enter, because `respond →` is already in
+  // this row and is the only way in on glass anyway; the modifier is purely the
+  // hardware-keyboard shortcut. preventDefault so the send does not also leave a
+  // stray newline behind in the box it is about to clear.
+  ti.addEventListener("keydown", (e) => {
+    if (e.key !== "Enter" || !(e.metaKey || e.ctrlKey)) return;
+    if (e.preventDefault) e.preventDefault();
+    fire();
+  });
   // Letting go of the box is the moment a deferred advance becomes safe; the
   // re-poll re-runs render()'s check.
   ti.addEventListener("blur", () => { if (advanceWhenFree) { etag = null; poll(); } });
@@ -1205,7 +1226,13 @@ function renderFocus(f) {
   setIntakeInline(false);
   const card = focusCard(f);
   focusWrap.append(card);
+  // The composer's height is measured, never declared (growComposer), and it is
+  // measured HERE — after the card is in the document, or the box has no layout to
+  // report. restore() does it for a carried-over reply; a clean box still gets the
+  // measurement, so the at-rest row is the same computed height in both cases and
+  // never `rows=1` in one and a measurement in the other.
   if (keep) restore(card, keep);
+  else growComposer(card.querySelector(".ti"));
   // Chrome across a rebuild. A rebuild of the SAME Focus re-APPLIES the state it
   // already had rather than re-deriving it: restore() carried the reading
   // position over unchanged, so the state that matched it still matches — and a
@@ -1224,10 +1251,15 @@ function renderFocus(f) {
 // a 46vh scroller of its own. ADR 0014 killed that box, so the **Scrollback**
 // flows into the page and the page scroll IS the reading position — same intent,
 // one level up. A poll must not throw you back to the top of a long run-up.
+// `boxScroll` is the composer's OWN scroll, which only exists because the box is
+// a textarea capped at five rows (ADR 0015): past the cap it scrolls internally,
+// so a long reply has a reading position of its own inside the bar, and a rebuild
+// that dropped it would jump you to the top of your own draft.
 function grab(card) {
   const ti = card.querySelector(".ti");
   return {text: ti ? ti.value : "", start: ti ? ti.selectionStart : 0,
           end: ti ? ti.selectionEnd : 0, active: !!ti && ti === document.activeElement,
+          boxScroll: ti ? ti.scrollTop : 0,
           scroll: window.scrollY || 0};
 }
 
@@ -1236,10 +1268,15 @@ function restore(card, k) {
   const ti = card.querySelector(".ti");
   if (!ti) return;
   ti.value = k.text;
-  if (k.active) {   // it had the keyboard up — give it straight back
+  growComposer(ti);   // a carried-over reply is however many rows it was
+  if (k.active) {     // it had the keyboard up — give it straight back
     ti.focus();
     try { ti.setSelectionRange(k.start, k.end); } catch (e) {}
   }
+  // LAST, because both of the two calls above move it: the height clamps it, and
+  // setSelectionRange scrolls the caret into view. This is the position the reader
+  // actually left, so it gets the final say.
+  ti.scrollTop = k.boxScroll;
 }
 
 // Are you mid-reply on the Focus? Text in the box counts even without the caret:
@@ -1483,13 +1520,51 @@ document.addEventListener("keydown", (e) => {
 // It still has to be measured rather than assumed: two things stand on `--barh` —
 // the swipe hint (board.html: .swipehint) and the toast — and a **Blocked** Focus
 // grows this bar by a row of options, so a constant would bury them underneath it
-// precisely when the options appear. Re-measured on load, on resize, and on every
-// render, because the card that carries the bar is rebuilt there.
+// precisely when the options appear. Re-measured on load, on resize, on every
+// render (the card that carries the bar is rebuilt there) and now on every
+// keystroke, because the reply box is a textarea that grows — see growComposer,
+// which is the only caller that fires while your thumb is on the glass.
 function syncBarHeight() {
   if (!document.documentElement) return;
   const bar = focusWrap && focusWrap.querySelector && focusWrap.querySelector(".respond");
   const bh = bar && bar.getBoundingClientRect ? Math.round(bar.getBoundingClientRect().height) : 0;
   if (bh > 0) document.documentElement.style.setProperty("--barh", bh + "px");
+}
+
+// The reply box's height, per keystroke: one row at rest, five at most, then it
+// scrolls inside itself (ADR 0015). `field-sizing:content` is this in one CSS
+// declaration and is not in Safari yet — which is the phone the whole tool exists
+// for — so the height is measured here and written inline.
+//
+// THE CAP IS COMPUTED FROM THE BOX, NOT WRITTEN DOWN AS PIXELS. Five of *this*
+// box's computed line-height, plus its own vertical padding and border, so it
+// follows the font, the padding and the reader's text-size preference instead of
+// dating the moment any of them move. The border is in that sum because `*` sets
+// `box-sizing:border-box`, so an inline `height` has to cover it — and because
+// `scrollHeight` is content + padding and never border, which is exactly the 2px
+// that would otherwise leave the box a hair shorter than the `<input>` it replaces
+// and scrolling by that much at rest.
+//
+// It ends in syncBarHeight, and that is the point of routing every growth through
+// here: `--barh` is the composer's measured height and the swipe hint stands on
+// it, so the bar moving per keystroke means the hint has to move with it.
+const CAP_ROWS = 5;
+
+function growComposer(ta) {
+  if (!ta || !ta.style) return;
+  const cs = (window.getComputedStyle && window.getComputedStyle(ta)) || {};
+  const px = (v) => parseFloat(v) || 0;
+  const lh = px(cs.lineHeight) || 19;   // a `normal` line-height parses to NaN
+  const pad = px(cs.paddingTop) + px(cs.paddingBottom);
+  const bord = px(cs.borderTopWidth) + px(cs.borderBottomWidth);
+  ta.style.height = "auto";   // let scrollHeight report the TEXT, not the height
+                              // this function wrote the last time it ran
+  const sh = ta.scrollHeight || 0;
+  // A box nothing has laid out yet measures 0. Hand the height back to `rows=1`
+  // rather than collapse the bar to nothing.
+  ta.style.height = sh > 0
+    ? Math.min(sh + bord, Math.round(lh * CAP_ROWS + pad + bord)) + "px" : "";
+  syncBarHeight();
 }
 
 function render(data) {

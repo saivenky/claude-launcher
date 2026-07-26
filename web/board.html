@@ -26,7 +26,9 @@ that stood on it — .wrap's padding, #toast, .swipehint, .respond's sticky bott
 and its .hid transform — lost the term rather than gained a zero. */
 /* The composer's height, and the only measured offset left. Only the swipe hint
 stands on it, and only until the first swipe — but a Blocked Focus grows this bar
-by a row of options, so it has to be measured rather than assumed. */
+by a row of options, and the reply box is a textarea that grows per keystroke
+(board.js: growComposer), so it has to be measured rather than assumed, and
+re-measured as you type. */
 --barh:52px;}
 *{box-sizing:border-box}
 body{margin:0;background:var(--bg);color:var(--fg);
@@ -141,6 +143,11 @@ position:sticky;bottom:0;z-index:2;
 background:var(--panel);border-top:1px solid var(--line);border-radius:0 0 9px 9px;
 box-shadow:0 -10px 20px -12px rgba(0,0,0,.75);
 transition:transform .2s ease,opacity .2s ease}
+/* `100%` is the bar's OWN height, so a composer grown to five rows still slides
+entirely off the bottom edge — one of the two things a growing box could have
+broken here. `bottom:0` sticky above is the other, and it holds too: the box grows
+UPWARD into the read, so the pixels it takes are only ever taken while you are
+actually typing into it. */
 .respond.hid{transform:translateY(100%);opacity:0}
 /* A working Focus keeps its reply box; this says where the text goes. */
 .queued{display:flex;align-items:center;gap:6px;color:var(--m);font-size:11px;margin:0 2px 7px}
@@ -148,11 +155,32 @@ transition:transform .2s ease,opacity .2s ease}
 .opt{background:transparent;border:1px solid var(--line);color:var(--fg);border-radius:6px;
 padding:5px 12px;font:inherit;font-size:13px;cursor:pointer}
 .opt:hover{border-color:var(--accent);color:var(--accent)}
-.replyrow{display:flex;gap:6px}
-/* `flex:1` alone keeps `min-width:auto`, so the input refused to shrink below
+/* BOTTOM-ALIGNED, not centred: the box grows upward (see textarea.ti) and
+`respond →` must stay exactly where your thumb left it, so the row aligns on the
+one edge that does not move. Under the default `stretch` the button would have
+grown taller with every line typed, since its cross-size is `auto`. It keeps its
+own height here instead of matching the box's. */
+.replyrow{display:flex;gap:6px;align-items:flex-end}
+/* `flex:1` alone keeps `min-width:auto`, so the box refused to shrink below
 its placeholder and shoved `respond →` off the right edge of a 390px phone. */
 .ti{flex:1;min-width:0;background:var(--panel2);border:1px solid var(--line);color:var(--fg);
 border-radius:7px;padding:8px 10px;font:inherit;font-size:13px}
+/* THE REPLY BOX IS A TEXTAREA, ONE ROW AT REST (ADR 0015). **Respond** carries
+prose, and a single-line input showed the last few words of it through a keyhole.
+It deliberately declares NO font, padding, line-height or height of its own: it
+shares `.ti` above with the input it replaces, and `rows=1` states the height, so
+at rest it is that input to the pixel. That matters on every **Run** — a box three
+rows tall would hand back most of the pixels deleting the intake dock just
+recovered, including on the Runs you never type into.
+Growth is per keystroke and lands as an inline `height`, capped at five rows,
+because `field-sizing:content` would do it in CSS and is not in Safari yet — which
+is the phone this whole tool exists for. The cap is computed from this box's own
+line-height and padding rather than written here as a max-height (board.js:
+growComposer), so it follows the font instead of dating with it; past five rows the
+box scrolls inside itself.
+`resize:none` because a drag handle is desktop-only furniture, and it would fight
+the measured height anyway. */
+textarea.ti{display:block;resize:none;overflow-y:auto}
 .send{flex:0 0 auto}
 .send{background:var(--accent);color:#000;border:0;border-radius:7px;padding:8px 16px;
 font:inherit;font-size:13px;font-weight:700;cursor:pointer}
@@ -388,9 +416,10 @@ line it covers, so the **Scrollback** showed through on both sides of it and the
 whole thing read as a rendering fault rather than a hint.
 Anchored on `--barh` — the composer's MEASURED height (board.js: syncBarHeight) —
 not a guessed offset: a **Blocked** Focus adds a row of options and grows that
-bar, and a constant would put this underneath it exactly when it appears. It used
-to add `--dockh` to that; the dock is gone (ADR 0015), so the composer it stands
-on is the bottom edge and the term went with the dock. */
+bar, the textarea grows it again on every keystroke, and a constant would put this
+underneath it exactly when either happens. It used to add `--dockh` to that; the
+dock is gone (ADR 0015), so the composer it stands on is the bottom edge and the
+term went with the dock. */
 .swipehint{position:fixed;left:var(--rail);right:0;
 bottom:var(--barh);z-index:29;color:var(--dim);font-size:11px;
 background:var(--bg);padding:6px var(--gut) 8px;text-align:center;pointer-events:none;

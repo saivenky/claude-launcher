@@ -31,13 +31,37 @@ const HTML = fs.readFileSync(path.join(ROOT, "web/board.html"), "utf8");
 const layout = {cardBottom: 0, barHeight: 0};
 const rect = (b) => ({top: 0, left: 0, right: 0, width: 0, bottom: b, height: b});
 
+// The composer's own metrics. The reply box is a textarea whose height is
+// MEASURED rather than declared (board.js::growComposer — `field-sizing:content`
+// is not in Safari yet), so the stub has to be able to answer getComputedStyle
+// and scrollHeight for it. No CSS runs here, so these numbers are not a rendering:
+// they are what the client is *told*, which is what makes its arithmetic — five
+// rows of this line-height, plus this padding and this border — assertable at all.
+// A test may move `lineHeight` to prove the cap follows the box and is not a
+// constant.
+const boxStyle = {lineHeight: "20px", paddingTop: "8px", paddingBottom: "8px",
+                  borderTopWidth: "1px", borderBottomWidth: "1px"};
+const BOX_PAD = 16, BOX_BORDER = 2;   // what those add up to, for the sums below
+
 // --- stub DOM: only the surface board.js actually touches -------------------
 class El {
   constructor(tag) {
     this.tag = tag; this.children = []; this.listeners = {}; this._cls = "";
     this.value = ""; this.scrollTop = 0; this.selectionStart = 0; this.selectionEnd = 0;
     this.hidden = false; this._html = "";
+    // The composer writes its measured height here (board.js::growComposer), and
+    // a test reads it back — the one inline style this client sets.
+    this.style = {};
   }
+  // A textarea's content height, the way a browser reports it: one line per
+  // newline plus the box's own padding, never its border. That last part is the
+  // gotcha growComposer exists to get right, so the stub has to reproduce it.
+  // Assign to override — a test needs a wall of text without typing one.
+  get scrollHeight() {
+    if (this._sh !== undefined) return this._sh;
+    return String(this.value || "").split("\n").length * parseFloat(boxStyle.lineHeight) + BOX_PAD;
+  }
+  set scrollHeight(v) { this._sh = v; }
   get className() { return this._cls; }
   set className(v) { this._cls = v || ""; }
   get textContent() {
@@ -223,6 +247,11 @@ const win = {prompt: () => "secret",
              alert: (m) => { alertLog.push(m); },
              scrollY: 0, scrollTo: (x, y) => { win.scrollY = y; },
              innerHeight: 800,
+             // The composer measures itself off this (board.js::growComposer). The
+             // stub answers with the metrics `.ti` sets in board.html, since a
+             // textarea's height is the one thing on this page the client has to
+             // compute instead of declare.
+             getComputedStyle: () => boxStyle,
              _lis: {},
              addEventListener(t, fn) { (win._lis[t] = win._lis[t] || []).push(fn); },
              dispatch(t, ev) { (win._lis[t] || []).forEach((fn) => fn(ev || {})); }};
@@ -388,6 +417,12 @@ const W = "wwwwwwww-3333-3333-3333-333333333333";
      "got " + shownSid());
   ok("mid-reply: the draft is intact", ti().value === "a reply I am still writing",
      "got " + JSON.stringify(ti().value));
+  // The other half of replyEngaged: text in the box counts even once the caret is
+  // gone, because you may have tapped away to read the run-up before sending.
+  ti().blur();
+  await settle(); await tick(1500); await settle();
+  ok("mid-reply: the text alone goes on gating it, with the caret gone",
+     shownSid() === A.slice(0, 8), "got " + shownSid());
   const box = ti();
   box.value = ""; box.blur();
   await settle(); await tick(1500); await settle();
@@ -561,16 +596,125 @@ const W = "wwwwwwww-3333-3333-3333-333333333333";
      JSON.stringify(askBox().map((a) => a.textContent)));
 
   // The composer is unconditional (CONTEXT.md: Focus). Responding to a working
-  // Run is not a special case — its input queues until the turn ends.
+  // Run is not a special case — its input queues until the turn ends. Each lane
+  // says where the text goes in the box's own placeholder, and nowhere else: a
+  // **Blocked** Focus is answered, a working one is queued behind the turn.
+  const PLACEHOLDER = {yourmove: "type your reply…", question: "answer…",
+                       working: "queue a note for the next turn…"};
   for (const lane of ["yourmove", "question", "working"]) {
     world[0].lane = lane;
     await poll();
     ok("composer: a " + lane + " Focus still offers the reply box", !!ti() &&
        !!focusWrap().querySelector(".send"));
+    ok("composer: and its box says where a " + lane + " Focus's text goes",
+       ti().placeholder === PLACEHOLDER[lane], ti().placeholder);
   }
   ok("composer: a working Focus says what happens to what you type",
      card().textContent.includes("queues until this turn ends"), card().textContent);
   ok("composer: and nothing is disabled to say it", ti().disabled !== true);
+
+  // --- The composer is a growing textarea (ADR 0015) ------------------------
+  // **Respond** carries prose — a paragraph, a path, a pasted error — and the
+  // `<input>` this replaces showed the last few words of it through a keyhole. So
+  // it is a textarea that grows per keystroke and caps at five rows. What the stub
+  // can prove is the arithmetic and the wiring; the pixels are board.html's, and
+  // the stylesheet assertions at the bottom of this file cover what they can.
+  const boxH = () => ti().style.height;
+  const ROW = parseFloat(boxStyle.lineHeight);
+  ok("composer: the reply box is a textarea, not an input", ti().tag === "textarea", ti().tag);
+  ok("composer: one row at rest — this box's line-height, padding and border, the box the input had",
+     ti().rows === 1 && boxH() === (ROW + BOX_PAD + BOX_BORDER) + "px",
+     "rows=" + ti().rows + " h=" + boxH());
+  // The overlay this slice came from (prototype/bottom-edge-intake) kept the real
+  // input alive and mirrored the textarea into it, because it could not reach the
+  // send closure from outside the page. This one is native, so there is no second
+  // copy of your reply anywhere.
+  ok("composer: and it is the only box in the row — no hidden input left mirroring it",
+     findAll(focusWrap(), "ti").length === 1 && !findAll(focusWrap(), "ti")
+       .some((b) => b.tag === "input"),
+     JSON.stringify(findAll(focusWrap(), "ti").map((b) => b.tag)));
+
+  ti().value = "one\ntwo\nthree";
+  ti().dispatch("input");
+  ok("composer: it grows per keystroke, inline — `field-sizing:content` is not in Safari yet",
+     boxH() === (3 * ROW + BOX_PAD + BOX_BORDER) + "px", boxH());
+  ti().scrollHeight = 400;   // a wall of text, without typing one
+  ti().dispatch("input");
+  ok("composer: and stops at five rows, from where it scrolls inside itself",
+     boxH() === (5 * ROW + BOX_PAD + BOX_BORDER) + "px", boxH());
+  boxStyle.lineHeight = "30px";
+  ti().dispatch("input");
+  ok("composer: the cap is five rows of THIS box's line-height, never a pixel constant",
+     boxH() === (5 * 30 + BOX_PAD + BOX_BORDER) + "px", boxH());
+  boxStyle.lineHeight = ROW + "px";
+  // `--barh` is the composer's measured height and the swipe hint stands on it
+  // (ADR 0015), so a bar that moves per keystroke has to be republished per
+  // keystroke or the hint ends up underneath the box.
+  layout.barHeight = 74;
+  ti().dispatch("input");
+  ok("composer: every growth republishes --barh, which the swipe hint stands on",
+     doc.documentElement.style._p["--barh"] === "74px",
+     JSON.stringify(doc.documentElement.style._p));
+  layout.barHeight = 0;
+  ti().scrollHeight = undefined;   // back to counting the lines in the box
+
+  // ENTER INSERTS A NEWLINE; ⌘/Ctrl+Enter SENDS (ADR 0015). A soft keyboard has no
+  // Shift+Enter, so the Slack idiom would make the second line of a five-row box
+  // untypeable on the phone this whole tool exists for.
+  let swallowed = false;
+  const enter = (mods) => Object.assign({key: "Enter",
+                                         preventDefault: () => { swallowed = true; }}, mods || {});
+  const sentN = respondLog.length;
+  ti().value = "line one";
+  ti().dispatch("keydown", enter());
+  await settle();
+  ok("composer: Enter does not send — the keystroke is left to insert a newline",
+     respondLog.length === sentN && !swallowed && ti().value === "line one",
+     respondLog.length - sentN + " sent / " + JSON.stringify(ti().value));
+  ti().dispatch("keydown", enter({metaKey: true}));
+  await settle();
+  ok("composer: ⌘Enter is what sends",
+     respondLog.length === sentN + 1 && respondLog[sentN].text === "line one",
+     JSON.stringify(respondLog.slice(sentN)));
+  ok("composer: swallowing the keystroke, so a send never also leaves a newline behind",
+     swallowed);
+  ok("composer: a sent reply clears the box, and the box shrinks back with the text",
+     ti().value === "" && boxH() === (ROW + BOX_PAD + BOX_BORDER) + "px",
+     JSON.stringify(ti().value) + " / " + boxH());
+  ti().value = "line two";
+  ti().dispatch("keydown", enter({ctrlKey: true}));
+  await settle();
+  ok("composer: and Ctrl+Enter is the same shortcut on a keyboard without a ⌘",
+     respondLog.length === sentN + 2 && respondLog[sentN + 1].text === "line two",
+     JSON.stringify(respondLog.slice(sentN)));
+
+  // What a rebuild costs you, with a textarea in the bar: the text, the caret
+  // inside it, and — past the cap — the box's own scroll, which an `<input>` never
+  // had. A poll may no more throw you to the top of your own draft than to the top
+  // of the read.
+  ti().value = "first\nsecond\nthird";
+  ti().dispatch("input");
+  ti().focus();
+  ti().setSelectionRange(6, 12);
+  ti().scrollTop = 18;
+  const oldBox = ti();
+  world[0].updatedAt = 4141;   // move the Focus's own data, or nothing is rebuilt
+  await poll();
+  ok("rebuild: the box is a new node, and still a textarea",
+     ti() !== oldBox && ti().tag === "textarea", ti().tag);
+  ok("rebuild: carrying a multi-line reply over intact",
+     ti().value === "first\nsecond\nthird", JSON.stringify(ti().value));
+  ok("rebuild: with the caret where you left it, not dumped at the end",
+     ti().selectionStart === 6 && ti().selectionEnd === 12,
+     ti().selectionStart + "-" + ti().selectionEnd);
+  ok("rebuild: and the box's own scroll, which only a capped textarea has",
+     ti().scrollTop === 18, "got " + ti().scrollTop);
+  ok("rebuild: re-measured, so the bar is not left one row under the text it holds",
+     boxH() === (3 * ROW + BOX_PAD + BOX_BORDER) + "px", boxH());
+  ti().value = "";
+  ti().dispatch("input");
+  ti().blur();
+  doc.activeElement = null;
 
   // --- The chrome is a scroll position, not a mode (ADR 0014's Context) -----
   // The Focus's header and its composer are worth pixels only at the live end of
@@ -1061,6 +1205,26 @@ const W = "wwwwwwww-3333-3333-3333-333333333333";
      rule(".respond").includes("env(safe-area-inset-bottom"), rule(".respond"));
   ok("bottom edge: and the Recover pill that sat on it is gone outright",
      !/\.recoverbtn/.test(HTML) && !/\.recoverbar/.test(HTML));
+  // The composer's shape, in the one place that can state it. "One row at rest,
+  // pixel-identical to the input" IS this rule declaring nothing of its own: the
+  // box, the font and the padding are still `.ti`, shared with the input it
+  // replaced, and `rows=1` says the height. No cap is written here either — the cap
+  // is five of this box's own rows (board.js::growComposer), so it follows the font
+  // instead of dating with it.
+  ok("composer: the textarea shares the input's own box, so at rest it IS that box",
+     rule("textarea.ti") !== "(no rule for textarea.ti)" &&
+     !/font|padding|line-height|height/.test(rule("textarea.ti")), rule("textarea.ti"));
+  ok("composer: no resize handle — a drag handle is desktop-only furniture — and it scrolls at the cap",
+     /resize:none/.test(rule("textarea.ti")) && /overflow-y:auto/.test(rule("textarea.ti")),
+     rule("textarea.ti"));
+  ok("composer: the row is bottom-aligned, so `respond →` stays put as the box grows",
+     /align-items:flex-end/.test(rule(".replyrow")), rule(".replyrow"));
+  // A growing box at this edge could have broken exactly two things, and both are
+  // declarations: the slide-away is a percentage of the bar's OWN height, and the
+  // bar is stuck to the bottom, so it grows up into the read rather than off-screen.
+  ok("composer: a box grown to five rows still slides fully off the bottom edge",
+     /transform:translateY\(100%\)/.test(rule(".respond.hid")) &&
+     rule(".respond").includes("bottom:0"), rule(".respond.hid"));
   const rm = HTML.indexOf("@media(prefers-reduced-motion:reduce){");
   ok("chrome: the slide respects prefers-reduced-motion (the .spin precedent)",
      rm > 0 && HTML.slice(rm, rm + 220).includes(".fhead,.respond,.isheet{transition:none}"),
