@@ -158,8 +158,8 @@ let foreignWorld = [];   // [{sessionId, title, dir, status, bridge, updatedAt, 
 // sessionId -> **Scrollback**: the recent **turns**, oldest first, exactly the
 // shape server.py::_scrollback ships (ADR 0014). A test can swap one Session's.
 const sbOf = {};
-const SB = () => [{role: "user", html: "<p>which one?</p>", tools: []},
-                  {role: "assistant", html: "<p>ctx</p>", tools: []}];
+const SB = () => [{role: "user", html: "<p>which one?</p>"},
+                  {role: "assistant", html: "<p>ctx</p>"}];
 let etagN = 0;
 const fetched = [];      // every URL board.js asked for
 const respondLog = [];
@@ -361,7 +361,7 @@ const W = "wwwwwwww-3333-3333-3333-333333333333";
   ok("churn: the reading position survives", win.scrollY === 120, "got " + win.scrollY);
 
   // When the Focus's own data does move, it rebuilds — carrying state across.
-  sbOf[A] = SB().concat([{role: "assistant", html: "<p>a new turn arrived</p>", tools: []}]);
+  sbOf[A] = SB().concat([{role: "assistant", html: "<p>a new turn arrived</p>"}]);
   await poll();
   ok("own change: the card is rebuilt", card() !== node);
   ok("own change: the reply is carried over", ti().value === "half-typed reply",
@@ -541,45 +541,97 @@ const W = "wwwwwwww-3333-3333-3333-333333333333";
   ok("transfer: an ordinary refusal stays a toast", alertLog.length === 1,
      JSON.stringify(alertLog));
 
-  // --- The Focus is a Scrollback (ADR 0014) ---------------------------------
-  // The card renders the Session's recent **turns** — what you said, what it did
-  // and what it then said — in place of the single last assistant message.
+  // --- The Focus is a Scrollback (ADR 0014), grouped by speaker (ADR 0016) ---
+  // The card renders the Session's recent entries — what you said, what it did
+  // and what it then said. A contiguous stretch of assistant prose and **work
+  // runs** is ONE claude block; only something you did breaks it.
   const T = "77777777-5555-5555-5555-555555555555";
   foreignWorld = [];
   world = [S(T, "yourmove", 1, "scroll")];
   sbOf[T] = [
-    {role: "user", html: "<p>consolidate the notes</p>", tools: []},
-    // The tool-only turn, and an injection attempt riding a field that is NOT
-    // the innerHTML'd one.
-    {role: "assistant", html: "", tools: ["Bash", "<img src=x onerror=alert(1)>"]},
-    {role: "assistant", html: "<p>done — <strong>3 files</strong></p>", tools: ["Read"]},
+    {role: "user", html: "<p>consolidate the notes</p>"},
+    {role: "command", cmd: "/ship"},
+    {role: "assistant", html: "<p>on it</p>"},
+    // A **work run**: nine calls, of which the last three kept their detail. The
+    // third is an injection attempt riding `detail` — the field that is NOT the
+    // innerHTML'd one.
+    {role: "work", n: 9, calls: [{name: "Bash", detail: "git status --short"},
+                                 {name: "Bash", detail: "git commit -m wip"},
+                                 {name: "Read", detail: "<img src=x onerror=alert(1)>"}]},
+    {role: "assistant", html: "<p>done — <strong>3 files</strong></p>"},
   ];
   sandbox.setPinned(T);
   await settle();
-  const turns = () => findAll(sbEl(), "turn");
+  const chains = () => findAll(sbEl(), "chain");
+  const runs = () => findAll(sbEl(), "work");
+  const lines = () => findAll(sbEl(), "wline");
 
-  ok("scrollback: one element per turn, oldest first", turns().length === 3 &&
-     hasCls(turns()[0], "you") && hasCls(turns()[2], "ai"),
-     turns().map((t) => t.className).join(" | "));
+  // Three assistant entries in a row — prose, work, prose — and ONE caption over
+  // the lot. Unchained this was three captions and three margins to say one
+  // thing: Claude is still going.
+  ok("scrollback: a contiguous assistant stretch is ONE claude block",
+     chains().length === 1 && findAll(chains()[0], "who").length === 1,
+     chains().map((c) => c.className).join(" | "));
+  ok("scrollback: your own turn breaks the chain and keeps its bubble",
+     findAll(sbEl(), "turn").length === 1 && hasCls(findAll(sbEl(), "turn")[0], "you"));
+  ok("scrollback: the slash command you invoked stands in for the skill body",
+     findAll(sbEl(), "cmd").length === 1 && findAll(sbEl(), "cmd")[0].textContent.includes("/ship"),
+     JSON.stringify(findAll(sbEl(), "cmd").map((c) => c.textContent)));
 
   // The ADR 0006 / ADR 0003 split, in one pair of assertions: the ONE field the
   // server rendered escape-first becomes markup; every other field of the same
-  // turn is untrusted text and cannot become an element.
-  ok("scrollback: a turn's html reaches the DOM as markup (ADR 0006)",
+  // entry is untrusted text and cannot become an element.
+  ok("scrollback: an entry's html reaches the DOM as markup (ADR 0006)",
      findAll(sbEl(), "md")[0].innerHTML === "<p>consolidate the notes</p>",
      JSON.stringify(findAll(sbEl(), "md").map((m) => m.innerHTML)));
-  const chips = findAll(turns()[1], "tool");
-  ok("scrollback: a turn's other fields cannot inject — textContent, never innerHTML (ADR 0003)",
-     chips.length === 2 && chips[1].textContent === "<img src=x onerror=alert(1)>" &&
-     chips[1].innerHTML === "", JSON.stringify(chips.map((c) => [c.textContent, c.innerHTML])));
 
-  // A working Run emits long stretches of tool calls with no prose. Drawn as
-  // blanks the whole scrollback looks broken.
-  ok("scrollback: a tool-only turn draws its chips and is not blank",
-     turns()[1].textContent.includes("Bash") && hasCls(turns()[1], "toolsonly"),
-     JSON.stringify(turns()[1].textContent));
-  ok("scrollback: the newest assistant turn reads as the live one",
-     hasCls(turns()[2], "live") && !hasCls(turns()[1], "live"));
+  // A working Run emits long stretches of tool calls with no prose. One line for
+  // the whole run, naming how many steps and roughly what of — never one slot
+  // per call, which is what was evicting the prose.
+  ok("scrollback: a work run is one collapsed line, not one row per call",
+     runs().length === 1 && lines().length === 0 &&
+     runs()[0].textContent.includes("9 steps"),
+     JSON.stringify(runs().map((r) => r.textContent)));
+  ok("scrollback: the collapsed summary skims the run and dedupes it",
+     runs()[0].textContent.includes("git ×2"), JSON.stringify(runs()[0].textContent));
+
+  findAll(sbEl(), "roll")[0].onclick();
+  ok("scrollback: tapping a work run opens it, one line per kept call",
+     lines().length === 3 && findAll(sbEl(), "wname")[0].textContent === "Bash" &&
+     findAll(sbEl(), "wdetail")[0].textContent === "git status --short",
+     JSON.stringify(lines().map((l) => l.textContent)));
+  ok("scrollback: an opened run says how many calls it did not keep",
+     findAll(sbEl(), "wmore")[0].textContent.includes("6 earlier"),
+     JSON.stringify(findAll(sbEl(), "wmore").map((m) => m.textContent)));
+  const detail = findAll(sbEl(), "wdetail")[2];
+  ok("scrollback: a call's detail cannot inject — textContent, never innerHTML (ADR 0003)",
+     detail.textContent === "<img src=x onerror=alert(1)>" && detail.innerHTML === "",
+     JSON.stringify([detail.textContent, detail.innerHTML]));
+
+  ok("scrollback: the block Claude is speaking in wears the live rail",
+     hasCls(chains()[0], "live"));
+
+  // An opened run must survive the card being rebuilt, because on a working Run
+  // that happens every poll — a run that re-collapsed under you every four
+  // seconds would be unusable. Which is why the open set is module state keyed
+  // by the run's own first call, not something the card carries.
+  sbOf[T] = sbOf[T].concat([{role: "assistant", html: "<p>and then this</p>"}]);
+  await poll();
+  ok("scrollback: an opened run stays open when the Focus's data moves",
+     lines().length === 3, JSON.stringify(lines().map((l) => l.textContent)));
+
+  // ...but it belongs to the Session it was opened in.
+  const T2 = "77777777-6666-6666-6666-666666666666";
+  world = [S(T, "yourmove", 1, "scroll"), S(T2, "yourmove", 1, "other")];
+  sbOf[T2] = [{role: "assistant", html: "<p>elsewhere</p>"}];
+  sandbox.setPinned(T2);
+  await poll();
+  sandbox.setPinned(T);
+  await poll();
+  ok("scrollback: and it does not follow you to another Session",
+     lines().length === 0, JSON.stringify(lines().map((l) => l.textContent)));
+  world = [S(T, "yourmove", 1, "scroll")];
+  await poll();
 
   // An **Ask** is the blocker of a **Blocked** Run and of nothing else. On an
   // idle Focus the closing question is already the last turn above.
@@ -790,7 +842,7 @@ const W = "wwwwwwww-3333-3333-3333-333333333333";
   ti().value = "still writing this";
   win.scrollY = 640;
   const heldCard = card();
-  sbOf[T] = sbOf[T].concat([{role: "assistant", html: "<p>and another turn</p>", tools: []}]);
+  sbOf[T] = sbOf[T].concat([{role: "assistant", html: "<p>and another turn</p>"}]);
   await poll();
   ok("rebuild: the card is rebuilt when its own data moves", card() !== heldCard);
   ok("rebuild: the half-typed reply still survives", ti().value === "still writing this",

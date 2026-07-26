@@ -1576,14 +1576,21 @@ def _md_to_html(text: str) -> str:
 # below instead.)
 _ASK_MAX = 600     # the command / file / plan being approved
 
-# The **Scrollback**'s two bounds, and the only two knobs that decide what
-# `/api/board` costs. ADR 0014 accepted a bigger body on the condition that it
-# stays bounded on purpose: at most _SCROLLBACK_TURNS turns, each clipped to
-# _TURN_MAX characters of prose (so a worst case of ~56KB before markup). If the
-# body ever becomes the problem, CUT THESE — do not split the scrollback back
-# out onto a second endpoint; that is the design ADR 0014 rejected.
-_SCROLLBACK_TURNS = 14   # how many recent **turns** of the Session the Focus shows
+# The **Scrollback**'s bounds, and the only knobs that decide what `/api/board`
+# costs. ADR 0014 accepted a bigger body on the condition that it stays bounded
+# on purpose. If the body ever becomes the problem, CUT THESE — do not split the
+# scrollback back out onto a second endpoint; that is the design ADR 0014
+# rejected.
+#
+# A **work run** costs one slot, not one per call (ADR 0016), so these four
+# numbers together are the bound: at most _SCROLLBACK_TURNS entries, each either
+# _TURN_MAX characters of prose or _RUN_CALLS calls of _CALL_MAX each. A run's
+# worst case (~19KB) stays under a prose turn's, which is what makes charging
+# them the same slot honest.
+_SCROLLBACK_TURNS = 14   # how many recent entries of the Session the Focus shows
 _TURN_MAX = 4000         # per-turn clip on one turn's prose
+_RUN_CALLS = 24          # per-run clip on how many calls carry their detail
+_CALL_MAX = 200          # per-call clip on what a tool call was doing
 
 
 def _clip(s: str, n: int) -> str:
@@ -1662,24 +1669,87 @@ def _ask_of(session_id: str, rows: list | None = None) -> tuple:
     return ask, options
 
 
+# A **tool call**'s detail: what it was DOING, not merely which tool it was.
+# `name` -> the one input field worth showing. `_approval_detail` above answers
+# the same question for the six approvable tools and answers it for the **Ask**;
+# this is that idea generalised to every tool a **Turn** can invoke (ADR 0016).
+_CALL_ARG = {
+    "Bash": "command", "Read": "file_path", "Write": "file_path",
+    "Edit": "file_path", "MultiEdit": "file_path", "NotebookEdit": "notebook_path",
+    "Glob": "pattern", "Grep": "pattern", "WebFetch": "url", "WebSearch": "query",
+    "ToolSearch": "query", "Skill": "skill", "Agent": "description",
+    "Task": "description", "ExitPlanMode": "plan",
+}
+
+# The slash command you typed, off the `<command-name>` row Claude Code writes
+# beside it. Deliberately narrow: a leading `/`, then non-space, non-`<`.
+_CMD_RE = re.compile(r"<command-name>\s*(/[^<\s]+)")
+
+
+def _call_of(tu: dict) -> dict:
+    """One `tool_use` as `{"name", "detail"}` — the tool, and what it did with it.
+
+    `detail` is PLAIN TEXT and the client sets it with textContent (ADR 0003).
+    Unlike a **Turn**'s prose it does NOT go through `_md_to_html`, so it must
+    never reach an HTML sink; that asymmetry is the reason this returns a
+    separate field rather than more `html`.
+
+    Whitespace is collapsed because a heredoc or a multi-line plan arrives with
+    newlines in it and this renders as a single ellipsised line."""
+    name = tu.get("name") or "?"
+    inp = tu.get("input") if isinstance(tu.get("input"), dict) else {}
+    detail = str(inp.get(_CALL_ARG.get(name, ""), "") or "")
+    if name in ("Edit", "MultiEdit"):       # the file, plus what it became
+        first = str(inp.get("new_string") or "").strip().splitlines()
+        if first:
+            detail = f"{detail} — {first[0].strip()}"
+    elif name == "Grep" and inp.get("path"):
+        detail = f"{detail} in {inp['path']}"
+    elif name in ("Agent", "Task") and inp.get("subagent_type"):
+        detail = f"{inp['subagent_type']}: {detail}"
+    elif name == "AskUserQuestion":
+        qs = inp.get("questions")
+        if isinstance(qs, list) and qs and isinstance(qs[0], dict):
+            detail = str(qs[0].get("question") or "")
+    elif name.startswith("mcp__"):          # mcp__intake__write_note -> intake/write_note
+        parts = name.split("__")
+        if len(parts) > 2:
+            name = "/".join(parts[1:])
+    return {"name": name, "detail": _clip(" ".join(detail.split()), _CALL_MAX)}
+
+
 def _scrollback(rows: list) -> list[dict]:
-    """The recent **turns** of a **Session**, oldest first — what the **Focus**
-    reads (ADR 0014). One turn is `{"role", "html", "tools"}`.
+    """The recent entries of a **Session**, oldest first — what the **Focus**
+    reads (ADR 0014, reshaped by ADR 0016). One entry is one of three things:
+
+        {"role": "user"|"assistant", "html": …}   prose someone produced
+        {"role": "command", "cmd": "/ship"}       a slash command you invoked
+        {"role": "work", "calls": [{name, detail}, …], "n": 7}
 
     Takes an already-parsed tail rather than a `sessionId`, because it shares its
-    parse with `_ask_of`: one file read per poll feeds both the scrollback
-    and the **Ask**. It is a bounded window on the transcript, never the whole
-    thread — `_SCROLLBACK_TURNS` turns, each clipped to `_TURN_MAX`.
+    parse with `_ask_of`: one file read per poll feeds both the scrollback and
+    the **Ask**. It is a bounded window on the transcript, never the whole thread.
 
     `html` is `_md_to_html` of the turn's text blocks, so every turn is rendered
     escape-first exactly as ADR 0006's single `contextHtml` was: the client
     `innerHTML`s N strings instead of one, through the same function, adding no
-    new sink. `tools` names the tools that turn invoked; a turn carrying only
-    tools is the COMMON case on a working Run and survives with empty `html`
-    (the client draws chips), because rendered as a blank the scrollback would
-    look broken. Only a turn with neither prose nor tools is dropped.
+    new sink. A **work run**'s `calls` are NOT html and never become any.
+
+    Three rules here are ADR 0016's, and each one is a thing the scrollback used
+    to get wrong:
+
+    - **A contiguous run of tool calls is ONE entry.** Claude Code emits one
+      assistant row per `tool_use` and never mixes prose into it, so a stretch of
+      tool work arrived as N separate turns and ate N of the _SCROLLBACK_TURNS
+      slots — 5-8 of 14 on a live Session, evicting the prose ADR 0014 exists to
+      show. Coalescing is what pays for the detail.
+    - **An `isMeta` row is dropped.** A skill's injected body is a 2-7KB `user`
+      row nobody typed; rendered as prose it claims you said it.
+    - **The `<command-name>` row is kept, not filtered.** With the body gone it
+      is the only trace a bare `/ship` leaves, and it is the one line that is
+      true: you invoked a skill.
     """
-    turns = []
+    out: list[dict] = []
     for o in rows:
         # A sidechain row belongs to a subagent's own thread, not to this
         # Session's turns.
@@ -1690,17 +1760,37 @@ def _scrollback(rows: list) -> list[dict]:
         if not blocks and isinstance(raw, str) and raw.strip():
             blocks = [{"type": "text", "text": raw}]   # a user turn may be a bare string
         text = "\n".join(b.get("text", "") for b in blocks if b.get("type") == "text").strip()
-        tools = [b.get("name", "?") for b in blocks if b.get("type") == "tool_use"]
+        tus = [b for b in blocks if b.get("type") == "tool_use"]
+        if o.get("isMeta"):
+            continue                        # an injected skill body is not your turn
         if o["type"] == "user" and not text and any(b.get("type") == "tool_result" for b in blocks):
             continue                        # a tool return is not a human turn
         if text.startswith("<") and text.endswith(">"):
-            continue                        # <command-name> / <system-reminder> plumbing
-        if not text and not tools:
+            m = _CMD_RE.search(text)        # the slash command; the rest is plumbing
+            if m:
+                out.append({"role": "command", "cmd": m.group(1)})
             continue
-        turns.append({"role": o["type"],
-                      "html": _md_to_html(_clip(text, _TURN_MAX)) if text else "",
-                      "tools": tools})
-    return turns[-_SCROLLBACK_TURNS:]
+        if not text and not tus:
+            continue
+        if text:
+            out.append({"role": o["type"], "html": _md_to_html(_clip(text, _TURN_MAX))})
+        if tus:
+            # Extend the run in progress rather than opening a second one. `n`
+            # counts every call; `calls` carries the last _RUN_CALLS of them, so
+            # a 200-step stretch still says 200 without weighing 200 details.
+            #
+            # Handled as its own branch rather than `elif`, so a row carrying
+            # BOTH prose and a call yields both entries. A census over 40
+            # transcripts found zero such rows — Claude Code splits them — but
+            # the alternative to this branch is dropping the call on the floor
+            # the day that stops being true.
+            prev = out[-1] if out else None
+            if not (prev and prev.get("role") == "work"):
+                prev = {"role": "work", "calls": [], "n": 0}
+                out.append(prev)
+            prev["n"] += len(tus)
+            prev["calls"] = (prev["calls"] + [_call_of(t) for t in tus])[-_RUN_CALLS:]
+    return out[-_SCROLLBACK_TURNS:]
 
 
 def _lane_of(run: dict) -> str:

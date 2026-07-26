@@ -93,14 +93,52 @@ sideways travel being spent scrolling nothing. */
 .turn.you{background:var(--panel2);border:1px solid var(--line);
 border-radius:10px 10px 10px 3px;padding:8px 11px;opacity:.9}
 .turn.you .who{color:var(--m)}
-.turn.ai .who{color:var(--accent)}
-/* The newest assistant turn is the live one — the thing you are answering. */
-.turn.live{border-left:2px solid var(--lane);padding-left:11px;margin-left:-13px}
-/* A turn with tools and no prose is the COMMON case on a working Run: dimmed
-chips, never a blank row. */
-.tools{display:flex;flex-wrap:wrap;gap:5px;margin-top:7px}
-.tool{font-size:10px;color:var(--dim);border:1px solid var(--line);border-radius:5px;padding:1px 6px}
-.turn.toolsonly{opacity:.55}
+
+/* --- one claude block per stretch (ADR 0016) ---
+A contiguous run of assistant prose and **work runs** is ONE block with ONE
+caption; only something you did breaks it. Every assistant turn used to repay
+the caption and its 15px, so "prose, work, prose, work, prose" spent five
+captions to say one thing — Claude is still going. Across thirteen live
+Sessions the last 14 entries held 143 captions between them; chained, 29. */
+.chain{margin-bottom:15px}
+.chain:last-child{margin-bottom:2px}
+.chain .who{color:var(--accent)}
+/* The live chain — the one Claude is speaking in, i.e. the thing you are
+answering. It is the block that wears the rail now, not the last paragraph of
+it, which is the point: the rail marks the reply you are answering, and that
+reply is the whole stretch. */
+.chain.live{border-left:2px solid var(--lane);padding-left:11px;margin-left:-13px}
+.chain .md{margin-bottom:10px}
+.chain>:last-child{margin-bottom:0}
+
+/* --- a **work run**: a contiguous stretch of tool calls, on one line ---
+It used to be one dimmed chip per call, each in its own turn, each costing a
+slot of the 14 — measured at 5-8 of them on a live Session, evicting the prose
+ADR 0014 exists to show. Now the whole run is one entry: how many steps and
+roughly what of, until you tap it open. The rail is what says "work happened
+here" now that the caption above it is shared. */
+.work{margin-bottom:10px;border-left:1px solid var(--line);padding-left:10px}
+.roll{font-size:11.5px;color:var(--dim);cursor:pointer;display:flex;gap:8px;align-items:baseline}
+.roll:hover{color:var(--fg)}
+.rollct{color:var(--accent);opacity:.8;flex:0 0 auto}
+/* The summary is a skim, so it stays ONE line however many steps it names —
+`nowrap` + ellipsis rather than wrap. Opening the run is what the detail is for. */
+.rollsum{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
+.rollcar{flex:0 0 auto;opacity:.5;font-size:9px;margin-left:auto}
+/* One line per call, opened. `grid` rather than flex so every detail starts on
+the same x: the tool names form a gutter you can skim without reading the
+arguments beside them. Each detail is ONE line — a Bash heredoc is 200 chars of
+one-lined transcript and would otherwise wrap into a wall. */
+.wline{display:grid;grid-template-columns:auto 1fr;gap:9px;align-items:baseline;
+font-size:11.5px;line-height:1.75;margin-top:2px}
+.wname{color:var(--accent);opacity:.8}
+.wdetail{color:var(--dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
+.wmore{font-size:10.5px;color:var(--w);margin-top:3px}
+
+/* The slash command you invoked, standing in for the skill body the server
+drops (ADR 0016). */
+.cmd{margin-bottom:15px;font-size:12px;color:var(--m)}
+.cmd b{color:var(--accent);font-weight:600}
 /* A **Turn** is arbitrary transcript prose: file paths, URLs, long inline code.
 The box this replaced was `overflow-y:auto`, which quietly contained overflow on
 BOTH axes — dropping the scroll box dropped that containment too, and a single

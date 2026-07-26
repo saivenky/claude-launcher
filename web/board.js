@@ -696,37 +696,142 @@ async function doRecover() {
   setTimeout(() => { etag = null; poll(); }, 3500);
 }
 
-// One **Turn** of the **Scrollback**: who spoke, its prose, and the names of the
-// tools it invoked. `live` marks the newest assistant turn — the one you are
-// actually answering — so it reads as the head of the run-up, not just the last
-// paragraph of it.
+// --- The **Scrollback**'s three entries (ADR 0014, reshaped by ADR 0016) ------
 //
-// ADR 0006's innerHTML exception lives HERE and nowhere else in this file. Only
-// `t.html` is assigned: it is markdown the server already rendered escape-first
-// (`_md_to_html`), so a `<script>` in a transcript arrives as text, never as an
-// element. ADR 0014 widened that exception from one field to N turns — same
-// function, same sink. Every OTHER field of a turn (the role, each tool name) is
-// untrusted transcript text and goes through el() → textContent, per ADR 0003.
-function turnEl(t, live) {
-  const tools = t.tools || [];
-  const toolsOnly = !t.html && tools.length > 0;
-  const wrap = el("div", "turn " + (t.role === "user" ? "you" : "ai") +
-                         (live ? " live" : "") + (toolsOnly ? " toolsonly" : ""));
-  wrap.append(el("div", "who", t.role === "user" ? "you" : "claude"));
-  if (t.html) {
-    const md = el("div", "md");
-    md.innerHTML = t.html;   // server-escaped markdown — see ADR 0006 / 0014
-    wrap.append(md);
+// ADR 0006's innerHTML exception lives in this section and nowhere else in this
+// file. Only an entry's `html` is ever assigned: it is markdown the server
+// already rendered escape-first (`_md_to_html`), so a `<script>` in a transcript
+// arrives as text, never as an element. ADR 0014 widened that exception from one
+// field to N. Everything else here — a tool's name, its detail, a slash command
+// — is untrusted transcript text and goes through el() → textContent, per
+// ADR 0003. A **work run**'s `calls` are NOT html and must never become any.
+
+// Which **work runs** the reader has opened, by the identity of the run's first
+// call. Module state rather than card state on purpose: the Focus card is
+// rebuilt whenever its payload moves — which on a working Run is every poll —
+// and a run that re-collapsed under you every four seconds would be unusable.
+// (A run past _RUN_CALLS that is STILL growing does shift its own first call and
+// so does collapse once. Runs that long are rare enough to accept it.)
+let openRuns = new Set();
+
+const runKey = (w) => (w.calls[0] ? w.calls[0].name + " " + w.calls[0].detail : "");
+
+// A call's one-word label for the collapsed summary: the basename if the first
+// token is a path, else the token itself — `git`, `npm`, `server.py`. The whole
+// detail is what EXPANDING is for; this is the skim.
+function callLabel(c) {
+  const head = (c.detail || "").split(/\s+/)[0];
+  if (!head) return c.name;
+  return head.includes("/") ? (head.split("/").filter(Boolean).pop() || head) : head;
+}
+
+// `git ×3, npm, server.py` — run-length encoded, because a stretch of work is
+// usually the same tool over and over and "git, git, git" says it three times.
+function runSummary(w) {
+  const out = [];
+  w.calls.forEach((c) => {
+    const l = callLabel(c);
+    const last = out[out.length - 1];
+    if (last && last.l === l) last.n++;
+    else out.push({l: l, n: 1});
+  });
+  return out.map((x) => (x.n > 1 ? x.l + " ×" + x.n : x.l)).join(", ");
+}
+
+function callLine(c) {
+  const row = el("div", "wline");
+  row.append(el("span", "wname", c.name));
+  row.append(el("span", "wdetail", c.detail || "—"));
+  return row;
+}
+
+// A **work run**: one contiguous stretch of tool calls, on ONE line until you
+// open it. Collapsed it says how many steps and roughly what of; expanded it is
+// one line per call, each ellipsised at the column edge. Toggling rewrites this
+// box in place — never a re-render, which would take the half-typed reply and
+// the scroll position with it.
+function fillWork(box, w, key) {
+  const open = openRuns.has(key);
+  box.textContent = "";
+  const line = el("div", "roll");
+  line.append(el("span", "rollct", w.n + (w.n === 1 ? " step" : " steps")));
+  line.append(el("span", "rollsum", open ? "" : runSummary(w)));
+  line.append(el("span", "rollcar", open ? "▴" : "▾"));
+  line.onclick = () => {
+    if (open) openRuns.delete(key); else openRuns.add(key);
+    fillWork(box, w, key);
+  };
+  box.append(line);
+  if (!open) return;
+  if (w.n > w.calls.length) {
+    box.append(el("div", "wmore", (w.n - w.calls.length) + " earlier steps not kept"));
   }
-  // A turn carrying only tools is the COMMON case on a working Run. Rendered as
-  // a blank the whole scrollback looks broken, so it draws dimmed chips instead
-  // (ADR 0014).
-  if (tools.length) {
-    const chips = el("div", "tools");
-    tools.forEach((name) => chips.append(el("span", "tool", name)));
-    wrap.append(chips);
-  }
+  w.calls.forEach((c) => box.append(callLine(c)));
+}
+
+function workEl(w) {
+  const box = el("div", "work");
+  fillWork(box, w, runKey(w));
+  return box;
+}
+
+function proseEl(t, cls) {
+  const wrap = el("div", cls);
+  const md = el("div", "md");
+  md.innerHTML = t.html;   // server-escaped markdown — see ADR 0006 / 0014
+  wrap.append(md);
   return wrap;
+}
+
+// The slash command you invoked. It stands in for the skill body the server now
+// drops (ADR 0016) — without it a bare `/ship` leaves no trace at all and the
+// reply below it reads as unmotivated.
+function commandEl(t) {
+  const d = el("div", "cmd");
+  d.append(document.createTextNode("you invoked "));
+  d.append(el("b", null, t.cmd));
+  return d;
+}
+
+// The **Scrollback**, grouped by speaker: one `claude` block per contiguous
+// stretch of assistant prose and **work runs**, and only something YOU did — a
+// turn or a slash command — breaks it (ADR 0016). Every assistant turn used to
+// repay the caption and its margin, so "prose, work, prose, work, prose" spent
+// five captions to say one thing: Claude is still going.
+//
+// Grouping is presentation and NOT budget: the server still charges each entry
+// inside a chain against _SCROLLBACK_TURNS, because that count is what bounds
+// the payload (ADR 0014) and one chain can hold ten 4000-char turns.
+function scrollbackEl(entries) {
+  const sb = el("div", "sb");
+  if (!entries.length) {
+    sb.append(el("div", "who", "(nothing in the transcript tail yet)"));
+    return sb;
+  }
+  // The live chain: the one Claude is speaking in, which is the last one only
+  // if nothing of yours follows it. Reply and nothing is live — exactly as the
+  // last *turn* used to carry the rail only when it ended the scrollback.
+  const last = entries[entries.length - 1];
+  const liveTail = last.role !== "user" && last.role !== "command";
+
+  let chain = null;
+  entries.forEach((t, i) => {
+    if (t.role === "user" || t.role === "command") {
+      chain = null;
+      sb.append(t.role === "command" ? commandEl(t) : proseEl(t, "turn you"));
+      return;
+    }
+    if (!chain) {
+      // The rail is decided as the block is opened, not toggled onto it after:
+      // this file builds class strings at construction and owns no classList.
+      chain = el("div", "chain" + (liveTail && !entries.slice(i + 1).some(
+        (e) => e.role === "user" || e.role === "command") ? " live" : ""));
+      chain.append(el("div", "who", "claude"));
+      sb.append(chain);
+    }
+    chain.append(t.role === "work" ? workEl(t) : proseEl(t, "cm"));
+  });
+  return sb;
 }
 
 function focusCard(f) {
@@ -780,16 +885,11 @@ function focusCard(f) {
     card.append(about);
   }
 
-  // The **Scrollback**: the Session's recent **turns**, oldest first, in place of
+  // The **Scrollback**: the Session's recent entries, oldest first, in place of
   // the single last assistant message (ADR 0014). What you said, what it did and
   // what it then said — the run-up you need in order to answer. It has NO scroll
   // box of its own; it flows into the page scroll (see `.sb` in board.html).
-  const sb = el("div", "sb");
-  const turns = f.scrollback || [];
-  if (!turns.length) sb.append(el("div", "who", "(nothing in the transcript tail yet)"));
-  turns.forEach((t, i) => sb.append(
-    turnEl(t, t.role === "assistant" && i === turns.length - 1)));
-  card.append(sb);
+  card.append(scrollbackEl(f.scrollback || []));
 
   // An **Ask** is the blocker of a **Blocked** Run and of nothing else
   // (CONTEXT.md). An idle Run's closing question is now visibly the last turn
@@ -1209,6 +1309,9 @@ function renderFocus(f) {
   if (sig === focusSig) return;   // nothing about the Focus moved — hands off it
   const old = focusWrap.querySelector(".focus");
   const keep = (old && f && focusSid === f.sessionId) ? grab(old) : null;
+  // Opened **work runs** belong to the Session you opened them in. A new Focus
+  // starts collapsed, and the set never grows across Sessions.
+  if (!f || focusSid !== f.sessionId) openRuns = new Set();
   focusSig = sig;
   focusSid = f ? f.sessionId : null;
   focusWrap.textContent = "";

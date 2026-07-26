@@ -163,21 +163,34 @@ _Avoid_: card (the Focus's rendering, not the concept), selection, current,
 active, top
 
 **Scrollback**:
-The recent **turns** of the Focus's **Session**, newest last — what the Focus
-shows in place of a single message. A *window on the transcript*, not the
-transcript itself: it is a bounded tail, and a **Foreign Run**'s Session has
-one just as a Managed Run's does, because it is read from the transcript and
-not from a pane. Distinct from the **rendered pane**, which is the live TUI
-and the only place a permission prompt exists (ADR 0009).
+The recent **turns** and **work** of the Focus's **Session**, newest last —
+what the Focus shows in place of a single message. A *window on the
+transcript*, not the transcript itself: it is a bounded tail, and a **Foreign
+Run**'s Session has one just as a Managed Run's does, because it is read from
+the transcript and not from a pane. Distinct from the **rendered pane**, which
+is the live TUI and the only place a permission prompt exists (ADR 0009).
 _Avoid_: history, log, transcript (the file on disk — the scrollback is a
 read of its tail), context (was the old single-message field; see ADR 0014)
 
 **Turn**:
-One entry in a **Scrollback**: something you sent, or one assistant reply,
-with the names of any tools that reply invoked. The unit the scrollback is
-counted and clipped in.
-_Avoid_: message (a turn may carry only tool calls and no prose), exchange
-(that is a pair), event
+One thing that was *said* in a **Scrollback** — prose you sent, or one
+assistant reply. Never tool calls: those are **Work**, the scrollback's other
+kind of entry, and no row of the transcript carries both (ADR 0016). A slash
+command you invoked is a Turn of yours; the skill body it injects is not,
+because you did not send it.
+_Avoid_: message (overloaded), exchange (that is a pair), event; entry (a Turn
+is one *kind* of scrollback entry, not the general word for one)
+
+**Work**:
+One entry of a **Scrollback** standing for a contiguous stretch of tool calls —
+everything the **Run** did between two things that were said, as one thing,
+each call naming what it was *doing* and not merely which tool it was. It costs
+the scrollback exactly what a **Turn** costs, which is the whole point: charged
+per call instead, tool names took 5–8 of the Focus's 14 entries and evicted the
+prose the Scrollback exists to show (ADR 0016).
+_Avoid_: tool run / run of calls (**Run** is one `claude` process here, and that
+collision is not survivable), step, activity, action, tool use (the atom, not
+the stretch)
 
 **Ask**:
 The specific input a **Blocked** **Run** needs from you — the concrete
@@ -311,9 +324,13 @@ _Avoid_: access, availability
   alike. Only an **Ask** is conditional, because only a **Blocked** Run has
   one. Responding to a working Run is not a special case: its input queues
   until the turn ends
-- A **Scrollback** is made of **turns** and belongs to a **Session**, so it
-  survives its **Run** exactly as the Session does — **resume** a Session and
-  the scrollback is still there. It is a bounded tail, never the whole thread
+- A **Scrollback** is made of **turns** and **work** and belongs to a
+  **Session**, so it survives its **Run** exactly as the Session does —
+  **resume** a Session and the scrollback is still there. It is a bounded tail,
+  never the whole thread
+- A **Work** is delimited by **turns**: it begins when something stops being
+  said and ends when something is said again. So a Scrollback never holds two
+  adjacent Works, and what a Work contains is never a matter of judgement
 - **Rotation** advances the **Focus** only on your action or when the Focus
   resolves. New work surfaces as a count on the queue — never by replacing
   what you are reading or typing in
@@ -384,6 +401,18 @@ _Avoid_: access, availability
   **Scrollback** once it became many **turns** (ADR 0014). The word was always
   doing two jobs: this repo's *domain* context and the Focus's run-up. Only the
   first survives.
+- "a **turn** carries prose *and* the tools it invoked" was written into the
+  glossary and into `_scrollback` — and was never true. A census over 40
+  transcripts found 657 tool-carrying assistant rows, every one holding exactly
+  ONE `tool_use` and ZERO prose: Claude Code emits a row per call. The wrong
+  model was not idle. It is why the scrollback rendered a bare chip per row and
+  charged a slot for each, which is what ADR 0016 undoes.
+- "run" would name a stretch of tool calls if left alone, and **Run** is the
+  central term of this glossary — one `claude` process. Resolved before it could
+  spread: the stretch is a **Work**, and "tool run" is on that entry's _Avoid_
+  list. The tell that this was close: the payload field is `role: "work"` and
+  the code still calls the loop variable a run in its own comments, where the
+  surrounding text makes the sense unambiguous.
 - "the ask" was used for any question a **Run** left hanging — resolved and
   narrowed to **Blocked** Runs only. The prose-`?` heuristic that fed it on an
   **idle** Run produced a second copy of the last **turn**, not new

@@ -69,6 +69,10 @@ off the **rendered pane** and is genuinely absent from the transcript
 - **Tool-only turns are the common case and must render as something.** A
   working Run emits long stretches of `tool_use` with no prose; shown as blanks
   the scrollback looks broken. They render as dimmed tool-name chips.
+  *(Superseded by [ADR 0016](0016-a-stretch-of-tool-calls-is-one-entry.md): the
+  chips said nothing and, at one slot per call, took 5–8 of the 14 entries this
+  ADR bounds — evicting the very prose it exists to show. A contiguous stretch
+  is one **Work** entry now.)*
 - **`/api/proto/thread` is prototype-only and does not ship.** It exists on the
   prototype branch to answer this question and dies with it; the real path is
   the `scrollback` field.

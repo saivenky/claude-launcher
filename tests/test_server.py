@@ -1385,7 +1385,7 @@ class ApprovalFocusTests(unittest.TestCase):
         focus = server._board()["focus"]
         self.assertIn("wc -w", focus["ask"])
         for turn in focus["scrollback"]:
-            self.assertNotIn("wc -w", turn["html"])
+            self.assertNotIn("wc -w", turn.get("html", ""))
         self.assertEqual(focus["lane"], "approval")          # badge unchanged
         self.assertEqual(focus["options"], ["Yes", "No"])    # Yes/No preserved
 
@@ -1485,25 +1485,98 @@ class ScrollbackTests(unittest.TestCase):
         self.assertIn("<code>&lt;b&gt;ticks&lt;/b&gt;</code>", html)   # inline code, escaped
         self.assertIn("| pipe |", html)                                # no stray table
 
-    def test_a_tool_only_turn_survives_as_a_turn(self):
+    def test_a_run_of_tool_calls_is_one_entry(self):
         # The COMMON case on a working Run: long stretches of tool_use with no
-        # prose. Dropped, the scrollback would look broken; it renders as chips.
-        turns = server._scrollback([
-            {"type": "assistant", "message": {"content": [
-                {"type": "tool_use", "id": "t1", "name": "Bash", "input": {"command": "ls"}},
-                {"type": "tool_use", "id": "t2", "name": "Read", "input": {}}]}}])
-        self.assertEqual(len(turns), 1)
-        self.assertEqual(turns[0]["tools"], ["Bash", "Read"])
-        self.assertEqual(turns[0]["html"], "")
+        # prose, one call per assistant row. They were one entry EACH and ate a
+        # slot each — 5-8 of the 14 on a live Session, evicting the prose. One
+        # contiguous run is now one entry (ADR 0016).
+        rows = [{"type": "assistant", "message": {"content": [
+                    {"type": "tool_use", "id": f"t{i}", "name": "Bash",
+                     "input": {"command": f"ls {i}"}}]}} for i in range(5)]
+        entries = server._scrollback(rows)
+        self.assertEqual(len(entries), 1)
+        self.assertEqual(entries[0]["role"], "work")
+        self.assertEqual(entries[0]["n"], 5)
+        self.assertEqual([c["name"] for c in entries[0]["calls"]], ["Bash"] * 5)
 
-    def test_prose_and_tools_ride_the_same_turn(self):
-        turns = server._scrollback([
+    def test_prose_between_two_runs_keeps_them_apart(self):
+        # The run boundary is what makes coalescing safe to render as one block:
+        # a run is a stretch of work BETWEEN two things that were said.
+        entries = server._scrollback([
+            {"type": "assistant", "message": {"content": [
+                {"type": "tool_use", "id": "a", "name": "Read", "input": {}}]}},
+            {"type": "assistant", "message": {"content": [{"type": "text", "text": "found it"}]}},
+            {"type": "assistant", "message": {"content": [
+                {"type": "tool_use", "id": "b", "name": "Edit", "input": {}}]}},
+        ])
+        self.assertEqual([e["role"] for e in entries], ["work", "assistant", "work"])
+
+    def test_a_call_carries_what_it_was_doing_not_just_its_name(self):
+        # The whole point: `Bash` names the tool and says nothing. Generalised
+        # from `_approval_detail`, which answers this for the **Ask** already.
+        entries = server._scrollback([
+            {"type": "assistant", "message": {"content": [
+                {"type": "tool_use", "id": "a", "name": "Bash",
+                 "input": {"command": "git push --force origin main"}}]}},
+            {"type": "assistant", "message": {"content": [
+                {"type": "tool_use", "id": "b", "name": "Grep",
+                 "input": {"pattern": "TODO", "path": "src/"}}]}},
+        ])
+        self.assertEqual([c["detail"] for c in entries[0]["calls"]],
+                         ["git push --force origin main", "TODO in src/"])
+
+    def test_a_calls_detail_is_one_line(self):
+        # A heredoc arrives with newlines in it and renders as a single
+        # ellipsised line, so the newlines go here rather than in the CSS.
+        entries = server._scrollback([
+            {"type": "assistant", "message": {"content": [
+                {"type": "tool_use", "id": "a", "name": "Bash",
+                 "input": {"command": "git commit -F - <<'EOF'\nsubject\n\nbody\nEOF"}}]}}])
+        self.assertEqual(entries[0]["calls"][0]["detail"],
+                         "git commit -F - <<'EOF' subject body EOF")
+
+    def test_a_run_keeps_its_true_count_but_bounds_its_details(self):
+        rows = [{"type": "assistant", "message": {"content": [
+                    {"type": "tool_use", "id": f"t{i}", "name": "Bash",
+                     "input": {"command": "x" * 900}}]}}
+                for i in range(server._RUN_CALLS * 3)]
+        entries = server._scrollback(rows)
+        self.assertEqual(len(entries), 1)
+        self.assertEqual(entries[0]["n"], server._RUN_CALLS * 3)         # the count is true
+        self.assertEqual(len(entries[0]["calls"]), server._RUN_CALLS)    # the weight is not
+        for call in entries[0]["calls"]:
+            self.assertLessEqual(len(call["detail"]), server._CALL_MAX + 1)
+
+    def test_prose_and_tools_on_one_row_yield_both_entries(self):
+        # No such row has ever been observed — Claude Code splits them — but the
+        # alternative to handling it is dropping the call on the floor the day
+        # that stops being true.
+        entries = server._scrollback([
             {"type": "assistant", "message": {"content": [
                 {"type": "text", "text": "let me look"},
-                {"type": "tool_use", "id": "t1", "name": "Grep", "input": {}}]}}])
-        self.assertEqual(len(turns), 1)
-        self.assertIn("let me look", turns[0]["html"])
-        self.assertEqual(turns[0]["tools"], ["Grep"])
+                {"type": "tool_use", "id": "t1", "name": "Grep", "input": {"pattern": "x"}}]}}])
+        self.assertEqual([e["role"] for e in entries], ["assistant", "work"])
+        self.assertIn("let me look", entries[0]["html"])
+
+    def test_an_injected_skill_body_is_not_your_turn(self):
+        # `isMeta` is a skill's injected body — 2-7KB of instructions nobody
+        # typed, rendered until now as prose you appear to have sent.
+        entries = server._scrollback([
+            {"type": "user", "isMeta": True,
+             "message": {"content": "Base directory for this skill: /x\n\n# Ship\n…"}},
+            {"type": "assistant", "message": {"content": [{"type": "text", "text": "on it"}]}},
+        ])
+        self.assertEqual([e["role"] for e in entries], ["assistant"])
+
+    def test_the_slash_command_you_invoked_survives_the_plumbing(self):
+        # With the body dropped, this row is the only trace a bare `/ship`
+        # leaves — and it is the one line that is true.
+        entries = server._scrollback([
+            {"type": "user", "message": {"content":
+                "<command-message>ship</command-message>\n<command-name>/ship</command-name>"}},
+            {"type": "user", "isMeta": True, "message": {"content": "Base directory…"}},
+        ])
+        self.assertEqual(entries, [{"role": "command", "cmd": "/ship"}])
 
     def test_a_tool_result_row_is_not_a_human_turn(self):
         turns = server._scrollback([
@@ -1532,8 +1605,8 @@ class ScrollbackTests(unittest.TestCase):
         self.assertIn("just text, no blocks", turns[0]["html"])
 
     def test_angle_wrapped_plumbing_rows_are_dropped(self):
+        # Everything angle-wrapped goes, EXCEPT the slash command inside it.
         turns = server._scrollback([
-            {"type": "user", "message": {"content": "<command-name>/write-plan</command-name>"}},
             {"type": "user", "message": {"content": [
                 {"type": "text", "text": "<system-reminder>be terse</system-reminder>"}]}},
             {"type": "user", "message": {"content": "a real ask"}},
@@ -1669,7 +1742,20 @@ class FocusScrollbackTests(unittest.TestCase):
         self._be_blocked()
         focus = server._board()["focus"]
         self.assertIn("recent dated notes", focus["scrollback"][0]["html"])
-        self.assertEqual(focus["scrollback"][-1]["tools"], ["Bash"])   # the tool-only turn
+        self.assertEqual(focus["scrollback"][-1]["role"], "work")
+        self.assertEqual([c["name"] for c in focus["scrollback"][-1]["calls"]], ["Bash"])
+
+    def test_the_pending_call_appears_in_the_run_as_well_as_the_ask(self):
+        # The tool_use a **Blocked** Run is waiting on is in the transcript, so it
+        # is the last call of the last **work run** as well as the **Ask**. ADR
+        # 0014 deleted the ask that repeated the last turn, so this is worth being
+        # explicit about: it is NOT that repeat. A run is collapsed until tapped,
+        # so on screen the command appears exactly once — in the Ask, which is the
+        # actionable copy. Expanded, the run is where it sits in the sequence.
+        self._be_blocked()
+        focus = server._board()["focus"]
+        self.assertIn("wc -w", focus["ask"])
+        self.assertIn("wc -w", focus["scrollback"][-1]["calls"][-1]["detail"])
 
     def test_context_html_is_gone(self):
         # The deliberate overlap of the previous slice is over: the client reads
