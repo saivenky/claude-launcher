@@ -33,7 +33,15 @@ const HTML = fs.readFileSync(path.join(ROOT, "web/board.html"), "utf8");
 // not where the seam IS — it is what the client is told it is, which is what
 // makes the landing's arithmetic assertable. Where the seam actually lands on a
 // 390×844 phone is a browser measurement and belongs in one.
-const layout = {cardBottom: 0, barHeight: 0, seamTop: 0};
+// `askTop`/`askBottom`, `barTop` and `hintTop` are the fourth: a **Blocked**
+// Focus's **Ask** renders BELOW the Scrollback, so the landing takes a FLOOR —
+// park the seam, then scroll on until the Ask clears the bottom edge
+// (board.js::clearFloor). That edge is the composer, or the swipe hint standing
+// on it while that is still up, so the stub can place all three. The defaults put
+// the bar at the bottom of the viewport, the hint far below everything and the
+// Ask at the very top: the "nothing to clear" case every other test wants.
+const layout = {cardBottom: 0, barTop: 800, barHeight: 0, seamTop: 0,
+                askTop: 0, askBottom: 0, pendBottom: 0, hintTop: 1e6};
 const rect = (b, t) => ({top: t || 0, left: 0, right: 0, width: 0, bottom: b, height: b});
 
 // The composer's own metrics. The reply box is a textarea whose height is
@@ -102,7 +110,21 @@ class El {
   getBoundingClientRect() {
     const cls = " " + this._cls + " ";
     if (cls.includes(" focus ")) return rect(layout.cardBottom);
-    if (cls.includes(" respond ")) return rect(layout.barHeight);
+    // The bar has a TOP as well as a height now: syncBarHeight reads the height,
+    // the landing's floor reads the top, and they are not the same number.
+    if (cls.includes(" respond ")) {
+      return {top: layout.barTop, left: 0, right: 0, width: 0,
+              bottom: layout.barTop + layout.barHeight, height: layout.barHeight};
+    }
+    if (cls.includes(" swipehint ")) return rect(layout.hintTop, layout.hintTop);
+    if (cls.includes(" ask ")) {
+      return {top: layout.askTop, left: 0, right: 0, width: 0,
+              bottom: layout.askBottom, height: layout.askBottom - layout.askTop};
+    }
+    // The pending-input warning sits UNDER the Ask, and when there is one it is
+    // what the floor has to clear: you must see that there is unsent text before
+    // you type over it.
+    if (cls.includes(" pending ")) return rect(layout.pendBottom, layout.askBottom);
     if (cls.includes(" seam ")) return rect(0, layout.seamTop);
     return rect(0);
   }
@@ -173,6 +195,9 @@ let foreignWorld = [];   // [{sessionId, title, dir, status, bridge, updatedAt, 
 // sessionId -> **Scrollback**: the recent **turns**, oldest first, exactly the
 // shape server.py::_scrollback ships (ADR 0014). A test can swap one Session's.
 const sbOf = {};
+// Unsent text already in the Run's own input box. Steerable because the warning
+// it draws is the other thing the landing's floor has to clear.
+let pendingText = "";
 const SB = () => [{role: "user", html: "<p>which one?</p>"},
                   {role: "assistant", html: "<p>ctx</p>"}];
 let etagN = 0;
@@ -208,7 +233,8 @@ function fakeBoard(focusSid) {
   return {
     focus: focus ? Object.assign(strip(focus), {
       aiTitle: "about " + focus.title, scrollback: sbOf[focus.sessionId] || SB(),
-      ask: blocked ? "what now?" : "", options: [], cursor: 0, pendingInput: "", pinned,
+      ask: blocked ? "what now?" : "", options: [], cursor: 0,
+      pendingInput: pendingText, pinned,
     }) : null,
     upnext: order.filter((s) => s !== focus).map(strip),
     watching: world.filter((s) => s.lane === "working" && s !== focus).map(strip),
@@ -942,6 +968,218 @@ const W = "wwwwwwww-3333-3333-3333-333333333333";
   ok("run-up: but it does not follow you to another Session",
      inrows().every((r) => !hasCls(r, "inopen")),
      inrows().map((r) => r.className).join(" | "));
+
+  // --- The edges the Fold meets off the happy path (slice 04) ---------------
+  //
+  // OPENING A RECORD IS GOING INTO HISTORY, AND THE ANCHOR HID THAT. Every
+  // unfold is anchored on its own node's top, which is the ADR's 0px of drift —
+  // and that success is exactly what defeated the "are you still parked where
+  // the landing left you" test, because a reader two screens up in a Record they
+  // just opened has moved the page by 0px. Measured in a browser on a growing
+  // Run: open a Record, wait one 4s poll, and the page jumped 984px back down
+  // onto the seam, with the Record still open behind it (ADR 0017: "scroll up
+  // into history with a Record half-read and you keep your place").
+  win.scrollY = layout.seamTop - 250;   // parked exactly where the landing left you
+  findAll(recs()[0], "rhd")[0].onclick();
+  const heldAt = win.scrollY;
+  sbOf[T] = sbOf[T].concat([{role: "assistant", html: "<p>arriving mid-read</p>"}]);
+  await poll();
+  ok("landing: opening a Record holds it — an anchored unfold is still travel",
+     win.scrollY === heldAt && hasCls(recs()[0], "recopen"),
+     win.scrollY + " / " + recs()[0].className);
+  // `↓ newest` is the reader saying they are done in history, so it is also the
+  // one move that gives the landing back.
+  fbtns()[1].onclick();
+  const rearmed = win.scrollY;   // where that button put the page
+  sbOf[T] = sbOf[T].concat([{role: "assistant", html: "<p>and one after that</p>"}]);
+  await poll();
+  ok("landing: and `↓ newest` re-arms it, so the next entry follows you down again",
+     win.scrollY === rearmed + layout.seamTop - 250, String(win.scrollY));
+
+  // A **Blocked** Focus. `focus.ask` renders BELOW the Scrollback, so a landing
+  // that parks the seam 250px down and stops leaves the one thing you came to
+  // answer under the composer: measured at 390×844, seam at 250, 535px of live
+  // prose, the Ask's top at 778 behind a composer whose top was 744. The option
+  // buttons were the only part that was fine — they ride the sticky `.respond` —
+  // so the page offered three answers to a question it was not showing.
+  //
+  // The stub runs no CSS and its boxes do not move when the page scrolls, so
+  // what is provable here is the ARITHMETIC the client applies; where the Ask
+  // actually sits on a phone is a browser measurement, as the seam's is.
+  const parked = () => layout.seamTop - 250;
+  layout.barTop = 700; layout.barHeight = 100;   // the composer's top edge
+  layout.askTop = 820; layout.askBottom = 900;   // ...and the Ask, wholly under it
+  world = [S(T, "question", 1, "scroll"), S(T2, "yourmove", 1, "other")];
+  win.scrollY = 0; sandbox.setPinned(T2); await poll();
+  win.scrollY = 0; sandbox.setPinned(T); await poll();
+  ok("landing: a Blocked Focus scrolls on until its Ask clears the composer",
+     win.scrollY === parked() + (layout.askBottom - (layout.barTop - 10)),
+     String(win.scrollY));
+  // What gives way is the PEEK and only the peek. The extra is capped at the
+  // seam's own distance from the sticky header, so the newest prose — the reply
+  // the Ask is asking about — is never scrolled off the top to make room.
+  layout.askBottom = 9000;   // an Ask far taller than the peek could ever buy
+  win.scrollY = 0; sandbox.setPinned(T2); await poll();
+  win.scrollY = 0; sandbox.setPinned(T); await poll();
+  ok("landing: and the peek is all it may spend — the newest prose is never lost",
+     win.scrollY === parked() + (layout.seamTop - 52), String(win.scrollY));
+  layout.askBottom = 900;
+
+  // The swipe hint is a FIXED, opaque strip standing on the composer until the
+  // first swipe, so while it is up it is the real bottom edge — and it was
+  // covering the Ask's second line.
+  layout.hintTop = 600;
+  win.scrollY = 0; sandbox.setPinned(T2); await poll();
+  win.scrollY = 0; sandbox.setPinned(T); await poll();
+  ok("landing: the swipe hint is part of that edge while it is still up",
+     win.scrollY === parked() + (layout.askBottom - (layout.hintTop - 10)),
+     String(win.scrollY));
+  layout.hintTop = 1e6;
+
+  // Unsent text already in the Run's own box is the other thing you must see
+  // before you type over it, and it sits under the Ask — so it is what the
+  // floor clears when there is one.
+  pendingText = "half a sentence I never sent";
+  layout.pendBottom = 1000;
+  win.scrollY = 0; sandbox.setPinned(T2); await poll();
+  win.scrollY = 0; sandbox.setPinned(T); await poll();
+  ok("landing: and the pending-input warning under it is what the floor clears",
+     findAll(focusWrap(), "pending").length === 1 &&
+     win.scrollY === parked() + (layout.pendBottom - (layout.barTop - 10)),
+     String(win.scrollY));
+  pendingText = "";
+  layout.pendBottom = 0;
+
+  // Nothing on an unblocked Focus renders below the read, so there is no floor
+  // there and the seam's 250px stands exactly as ADR 0017 measured it.
+  world[0].lane = "yourmove";
+  win.scrollY = 0; sandbox.setPinned(T2); await poll();
+  win.scrollY = 0; sandbox.setPinned(T); await poll();
+  ok("landing: an unblocked Focus has nothing below the read, so 250px stands",
+     win.scrollY === parked(), String(win.scrollY));
+
+  // `↓ newest` claims to go exactly where the landing put you, so on a Blocked
+  // Focus it has to replay the floor too, not just the pad.
+  world[0].lane = "question";
+  win.scrollY = 0; sandbox.setPinned(T2); await poll();
+  win.scrollY = 0; sandbox.setPinned(T); await poll();
+  win.scrollY = 0;
+  fbtns()[1].onclick();
+  ok("landing: `↓ newest` replays that floor, not just the seam's 250px",
+     win.scrollY === layout.seamTop - 250 + (layout.askBottom - (layout.barTop - 10)),
+     String(win.scrollY));
+  layout.barTop = 800; layout.askTop = 0; layout.askBottom = 0;
+  world[0].lane = "yourmove";
+
+  // A TINY Session — one Exchange, two entries, nothing folded above at all.
+  // The strip, the Records and the tally must all be absent rather than empty,
+  // and the seam parks under the header because there is no peek to buy.
+  const tiny = "99999999-9999-9999-9999-999999999999";
+  world = [S(tiny, "yourmove", 1, "tiny")];
+  sbOf[tiny] = [{role: "user", html: "<p>is this the whole session?</p>"},
+                {role: "assistant", html: "<p>yes — two entries and nothing else.</p>"}];
+  win.scrollY = 0; sandbox.setPinned(tiny); await poll();
+  ok("tiny: with one Exchange there is no strip, no record and no tally",
+     findAll(sbEl(), "ftop").length === 0 && recs().length === 0 &&
+     findAll(seam(), "seamn").length === 0 && findAll(sbEl(), "inrow").length === 0,
+     sbEl().textContent);
+  ok("tiny: but the seam and the read below it are still there, and honest",
+     findAll(seam(), "seaml")[0].textContent === "newest" &&
+     findAll(sbEl(), "live")[0].textContent.includes("two entries"),
+     findAll(sbEl(), "live").map((l) => l.textContent).join("|"));
+  ok("tiny: and with no peek to buy it parks under the header, not 250px down",
+     win.scrollY === layout.seamTop - 52, String(win.scrollY));
+
+  // One entry, nothing back yet: an Exchange with a prompt and no reply. Still
+  // the read, never a Record — folding the thing you just sent behind a summary
+  // would be the baseline's bug wearing the other mask.
+  sbOf[tiny] = [{role: "user", html: "<p>just sent this</p>"}];
+  world[0].updatedAt = 4242;
+  await poll();
+  ok("tiny: a lone prompt with nothing back is the read, and says so",
+     recs().length === 0 && findAll(sbEl(), "now").length === 1 &&
+     findAll(sbEl(), "live")[0].textContent.includes("nothing back yet"),
+     sbEl().textContent);
+
+  // A WORK RUN CROSSING THE SEAM. The Fold grades by distance from now, so an
+  // entry moves: a **work run** that was prose-side of the seam becomes a
+  // `.wkrow` in the run-up the moment a newer reply arrives. It must not
+  // re-collapse on the way — ADR 0017 promises one mechanism and not a second,
+  // and it is the same `openRuns` on both sides of the seam.
+  const X = "88888888-8888-8888-8888-888888888888";
+  world = [S(X, "yourmove", 1, "cross"), S(T2, "yourmove", 1, "other")];
+  sbOf[X] = [{role: "user", html: "<p>run the suite</p>"},
+             {role: "assistant", html: "<p>on it</p>"},
+             {role: "work", n: 2, calls: [{name: "Bash", detail: "pytest -q"},
+                                          {name: "Read", detail: "board.js"}]},
+             {role: "assistant", html: "<p>green</p>"}];
+  sandbox.setPinned(X); await poll();
+  const wlines = () => findAll(sbEl(), "wline");
+  ok("cross: a work run whose reply is the newest sits BELOW the seam, as prose",
+     findAll(sbEl(), "wkrow").length === 0 &&
+     findAll(findAll(sbEl(), "live")[0], "work").length === 1,
+     sbEl().textContent);
+  findAll(sbEl(), "roll")[0].onclick();
+  sbOf[X] = sbOf[X].concat([{role: "assistant", html: "<p>and pushed</p>"}]);
+  await poll();
+  ok("cross: a newer reply moves it above the seam and it stays open on the way",
+     findAll(sbEl(), "wkrow").length === 1 && wlines().length === 2,
+     findAll(sbEl(), "wkrow").length + " rows / " + wlines().length + " call lines");
+  // ADR 0016's own accepted flaw, INHERITED rather than added to: the open set is
+  // keyed by the stretch's first call, so a stretch still growing past
+  // `_RUN_CALLS` shifts that key and collapses once. The Fold changed nothing
+  // here — a Record keys on content for the same reason, and a past Exchange is
+  // by definition not growing, so no Record can hit it.
+  sbOf[X] = sbOf[X].slice();
+  sbOf[X][2] = {role: "work", n: 3,
+                calls: [{name: "Bash", detail: "pytest -q -x"},
+                        {name: "Bash", detail: "pytest -q"},
+                        {name: "Read", detail: "board.js"}]};
+  await poll();
+  ok("cross: a stretch that outgrows its own first call collapses once (ADR 0016)",
+     wlines().length === 0 && findAll(sbEl(), "wkrow").length === 1,
+     wlines().length + " call lines");
+
+  // A VERY LONG SINGLE TURN, and a very long prompt. The client clips a
+  // **Record**'s lines and nothing else: below the seam the read is whatever the
+  // server sent, because ADR 0014's clip is the server's and doing it twice would
+  // hide text with no way to reach it.
+  const Y = "aaaaaaaa-8888-8888-8888-888888888888";
+  const HUGE = "A prompt pasted in whole. ".repeat(96);          // ~2400 chars
+  const WALL = "<p>" + "One clipped turn. ".repeat(222) + "</p>";  // ~4000 chars
+  world = [S(Y, "yourmove", 1, "long"), S(T2, "yourmove", 1, "other")];
+  sbOf[Y] = [{role: "user", html: "<p>" + HUGE + "</p>"},
+             {role: "assistant", html: "<p>Done. Anything else?</p>"},
+             {role: "user", html: "<p>" + HUGE + "</p>"},
+             {role: "assistant", html: WALL}];
+  sandbox.setPinned(Y); await poll();
+  ok("long: a record's `you` line is one clipped line, however long the prompt",
+     values(recs()[0])[0].length <= 130 && values(recs()[0])[0].endsWith("…"),
+     values(recs()[0])[0].length + ": " + values(recs()[0])[0].slice(-24));
+  ok("long: the turn below the seam is whatever the server sent, clipped once",
+     findAll(findAll(sbEl(), "live")[0], "md")[0].innerHTML === WALL,
+     String(findAll(findAll(sbEl(), "live")[0], "md")[0].innerHTML.length));
+  // The one prompt on the page that has to be read in full: the Exchange you are
+  // standing in is never folded, so its prompt is not clipped either.
+  ok("long: and the prompt you are standing in is not clipped at all",
+     findAll(findAll(sbEl(), "nask")[0], "md")[0].innerHTML === "<p>" + HUGE + "</p>",
+     String(findAll(findAll(sbEl(), "nask")[0], "md")[0].innerHTML.length));
+
+  // THE LANE IS NAMED ONCE. `.fmeta` used to lead the age with a second word for
+  // the lane `.fbadge` says two inches to its left, and on the two **Blocked**
+  // lanes — whose badge is the widest of the five — that duplicate pushed the
+  // 390px header to 426px, which `width=device-width` answers by shrinking the
+  // WHOLE read to 91%. Measured in a browser at 390×844: 426px on the question
+  // and approval lanes, 390px on the other three, and `.fdir` — the project
+  // name — squeezed to zero.
+  world = [S(Y, "question", 1, "long")];
+  await poll();
+  const fmeta = () => findAll(focusWrap(), "fmeta")[0].textContent;
+  ok("header: the badge names the lane, and the meta is the age and nothing else",
+     findAll(focusWrap(), "fbadge")[0].textContent === "blocked · question" &&
+     /^[0-9]+[smhd]$/.test(fmeta()), fmeta());
+  ok("header: no lane word survives beside it to say the same thing twice",
+     !/waiting|idle|working/.test(fmeta()) && !SRC.includes("LANE_NOUN["), fmeta());
 
   layout.seamTop = 0;
   world = [S(T, "yourmove", 1, "scroll")];

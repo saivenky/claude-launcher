@@ -173,8 +173,9 @@ document.addEventListener("keydown", (e) => {
 
 const LANE_LABEL = {question: "blocked · question", approval: "blocked · approval",
                     yourmove: "your move", working: "working", snoozed: "snoozed"};
-const LANE_NOUN = {question: "waiting", approval: "waiting", yourmove: "idle",
-                   working: "working", snoozed: "snoozed"};
+// THERE IS NO LANE_NOUN. It captioned the age in the Focus's header with a
+// second word for the lane `.fbadge` beside it already names, and that duplicate
+// was 55-63px the 390px header did not have — see focusCard.
 const ROW_CLS = {question: "lane-q", approval: "lane-p", yourmove: "lane-m",
                  working: "lane-w", snoozed: "lane-w"};
 const ROW_BADGE = {question: "question", approval: "approval", yourmove: "your move",
@@ -1076,17 +1077,28 @@ const HEAD_PAD = 52;     // the sticky .fhead plus a hair — where a scroll par
                          // a node when there is no fold to peek at
 const PARKED = 40;       // px of drift still counted as "where the landing left
                          // you", i.e. still reading the end
+const FLOOR_GAP = 10;    // px of air between the **Ask** and the composer's top
 
 let liveSeam = null;     // the seam of the card now on screen. A frame scheduled
                          // by a card a poll has since replaced must not scroll to
                          // a node that is no longer in the document.
 let landedSig = null;    // the scrollback we have already landed on
 let landedY = 0;         // and where that landing left the page
+// The reader has opened something in the **Fold**, so the landing stops chasing
+// the live end. This is not the same test as the drift below, and it has to be
+// its own flag BECAUSE the unfold is anchored: keepAnchored's whole job is to
+// move the page 0px, so a reader who deliberately opened a Record two screens up
+// is still, by `landedY`, exactly where the landing left them — and the next
+// poll's entry would fire them straight back down onto the seam. The anchor's
+// success was defeating the parked test. Measured: open a Record, wait one 4s
+// poll, and the page jumped 984px (ADR 0017: "scroll up into history with a
+// Record half-read and you keep your place").
+let landHeld = false;
 
 // A Focus you have just swiped to is a read you have travelled nowhere in, so it
 // lands unconditionally. Called from renderFocus beside the open sets, which is
 // the one place that knows the Session changed.
-function resetLanding() { landedSig = null; landedY = 0; }
+function resetLanding() { landedSig = null; landedY = 0; landHeld = false; }
 
 const entriesSig = (entries) => entries.map(
   (t) => t.role + (t.html ? t.html.length : "") + (t.n || "") + (t.cmd || "")).join("|");
@@ -1096,6 +1108,11 @@ const entriesSig = (entries) => entries.map(
 // all the growth is below it — and for one that has drifted off the top edge it
 // holds the page still. Measured at 0px of drift (ADR 0017).
 function keepAnchored(node, mutate) {
+  // Every route into the Fold comes through here — a Record, a run-up row,
+  // `read all` — and every one of them is the reader leaving the live end. So
+  // this is where the landing is told to stop chasing it; `↓ newest` is the one
+  // move that gives it back (goNewest).
+  landHeld = true;
   const box = node.getBoundingClientRect ? node : null;
   const before = box ? box.getBoundingClientRect().top : 0;
   mutate();
@@ -1107,6 +1124,56 @@ function scrollToNode(node, pad) {
   if (!node.getBoundingClientRect) return;
   const y = (window.scrollY || 0) + node.getBoundingClientRect().top - pad;
   window.scrollTo(0, Math.max(0, y));
+}
+
+// The landing that is actually on screen, so `↓ newest` can replay it rather
+// than re-derive it — "exactly where you landed" has to include the pad the
+// landing chose and the floor it cleared, or on a **Blocked** Focus the button
+// would put the reader somewhere the landing never did.
+let liveLanding = null;
+
+// `↓ newest`: back to exactly where the landing put you, and the one thing that
+// re-arms it. Asking for the live end is saying you are done in history, so the
+// next entry may follow you down again.
+function goNewest(seam) {
+  const l = (liveLanding && liveLanding.seam === seam) ? liveLanding : null;
+  scrollToNode(seam, l ? l.pad : SEAM_PEEK);
+  if (l) clearFloor(seam, l.top, l.bot);
+  landHeld = false;
+  landedY = Math.max(0, window.scrollY || 0);
+}
+
+// A **Blocked** Focus's **Ask** — and the pending-input warning under it — render
+// BELOW the **Scrollback** (focusCard), so a landing that parks the seam 250px
+// down and stops leaves the blocker off screen: measured at 390×844, the seam at
+// 250 and 535px of live prose put the Ask's top at 778 behind a composer whose
+// top was 744. The option buttons were fine — they ride the sticky `.respond` —
+// so the page offered three answers to a question it was not showing. A Blocked
+// Run is the case the whole Board exists for, so the landing takes a FLOOR: park
+// the seam, then scroll on until the Ask clears the composer.
+//
+// What gives way is the PEEK, and only the peek: the extra is capped at
+// `seam − HEAD_PAD`, so the seam never rises past the header and the newest prose
+// — the reply the Ask is asking about — is never scrolled off the top to make
+// room for it. An Ask taller than what that buys keeps its top on screen and
+// runs under the bar; it is one flick away and the options are already up.
+function clearFloor(seam, top, bottom) {
+  if (!top || !top.getBoundingClientRect) return;
+  const bar = focusWrap.querySelector(".respond");
+  const vh = window.innerHeight || 0;
+  // The composer is not the only thing at this edge: the swipe hint is a fixed,
+  // OPAQUE strip standing on `--barh` until the first swipe, so until then it is
+  // the real bottom of the read — and it was covering the Ask's second line.
+  let floor = bar ? bar.getBoundingClientRect().top : vh;
+  if (hintEl && !hintEl.hidden && hintEl.getBoundingClientRect) {
+    floor = Math.min(floor, hintEl.getBoundingClientRect().top);
+  }
+  const limit = floor - FLOOR_GAP;
+  const over = (bottom || top).getBoundingClientRect().bottom - limit;
+  if (over <= 0) return;
+  const room = seam.getBoundingClientRect().top - HEAD_PAD;
+  const extra = Math.min(over, room);
+  if (extra > 0 && window.scrollBy) window.scrollBy(0, extra);
 }
 
 // The landing needs layout to measure against, and it must have the LAST word:
@@ -1128,14 +1195,16 @@ function nextFrame(fn) {
 // deafened copy of it instead. renderFocus grabs the reader's position BEFORE it
 // empties anything (grab) and restores it, so by this frame the page is where the
 // reader actually left it.
-function landOn(seam, sig, pad) {
+function landOn(seam, sig, pad, floorTop, floorBot) {
+  liveLanding = {seam: seam, pad: pad, top: floorTop, bot: floorBot};
   if (sig === landedSig) return;   // this scrollback has had its landing
   const first = landedSig === null;
   landedSig = sig;
   nextFrame(() => {
     if (seam !== liveSeam) return;   // a poll rebuilt the card under this frame
-    if (!first && Math.abs((window.scrollY || 0) - landedY) > PARKED) return;
+    if (!first && (landHeld || Math.abs((window.scrollY || 0) - landedY) > PARKED)) return;
     scrollToNode(seam, pad);
+    clearFloor(seam, floorTop, floorBot);
     landedY = Math.max(0, window.scrollY || 0);
     // A scroll THIS FILE performed is not the reader travelling, so the
     // scroll-driven chrome must not read it as one: showChrome re-anchors it at
@@ -1174,10 +1243,16 @@ function foldStrip(past, metas, rows, seam) {
   };
   top.append(bulk);
   const down = el("button", "fbtn fbtngo", "↓ newest");
-  down.onclick = () => scrollToNode(seam, SEAM_PEEK);   // exactly where you landed
+  down.onclick = () => goNewest(seam);   // exactly where you landed, and re-armed
   top.append(down);
   return top;
 }
+
+// The landing is ARMED by scrollbackEl and FIRED by focusCard, once the whole
+// card exists. It has to be that way round: on a **Blocked** Focus the landing's
+// floor is the **Ask**, and the Ask is a sibling BELOW the Scrollback that has
+// not been built yet when the seam is.
+let armedLanding = null;
 
 // The Scrollback itself, graded by distance from now (ADR 0017): the strip and
 // the **Records** above, the Exchange you are standing in as gutter rows, the
@@ -1190,6 +1265,7 @@ function foldStrip(past, metas, rows, seam) {
 // longer the thing the reader sees.
 function scrollbackEl(entries) {
   const sb = el("div", "sb");
+  armedLanding = null;
   if (!entries.length) {
     liveSeam = null;   // no seam on this card, so a frame a previous one queued
                        // must find nothing to land on rather than a stale node
@@ -1280,8 +1356,10 @@ function scrollbackEl(entries) {
 
   // Nothing above the seam at all — a first exchange, still being answered —
   // means there is no peek to buy, so the seam goes under the header instead of
-  // 250px down and the whole read is on screen.
-  landOn(seam, entriesSig(entries), (past.length || runup.length) ? SEAM_PEEK : HEAD_PAD);
+  // 250px down and the whole read is on screen. (And no peek means no room for
+  // the Ask's floor to spend either; clearFloor caps itself on exactly that.)
+  armedLanding = {seam: seam, sig: entriesSig(entries),
+                  pad: (past.length || runup.length) ? SEAM_PEEK : HEAD_PAD};
   return sb;
 }
 
@@ -1297,7 +1375,17 @@ function focusCard(f) {
   // sessionId is the one nobody reads there — CSS drops it under 560px rather
   // than let the title and the badge wrap to two lines each.
   head.append(el("span", "fsid", (f.sessionId || "").slice(0, 8)));
-  head.append(el("span", "fmeta", (LANE_NOUN[f.lane] || "") + " " + age(f.updatedAt)));
+  // THE AGE ONLY. `LANE_NOUN` used to lead it, and on every lane it said in one
+  // word what `.fbadge` two inches left had already said in two — `waiting`
+  // beside BLOCKED · QUESTION, `working` beside WORKING. Measured at 390×844:
+  // that noun cost 55-63px in a strip that had none, and on the two **Blocked**
+  // lanes — whose badge is the widest of the five — the row overflowed to 426px.
+  // A page wider than the phone is not a wrap: `width=device-width` shrink-to-fits
+  // the WHOLE read to 91%, which is every measurement in ADR 0017 quietly wrong,
+  // and it does it on exactly the Runs the Board exists for. `.fdir` — the
+  // project name, the one thing here you actually read — was down to two
+  // characters. It gets those pixels.
+  head.append(el("span", "fmeta", age(f.updatedAt)));
   // The queue's way in on a phone. It lives HERE, in the one strip that stays on
   // screen while you read, because the queue is a sheet at this width rather
   // than a stack under an unbounded **Scrollback** (board.html: .zones). CSS
@@ -1341,6 +1429,8 @@ function focusCard(f) {
   // what it then said — the run-up you need in order to answer. It has NO scroll
   // box of its own; it flows into the page scroll (see `.sb` in board.html).
   card.append(scrollbackEl(f.scrollback || []));
+  const land = armedLanding;   // captured before the Ask below can re-enter here
+  let askBox = null, warnBox = null;
 
   // An **Ask** is the blocker of a **Blocked** Run and of nothing else
   // (CONTEXT.md). An idle Run's closing question is now visibly the last turn
@@ -1352,6 +1442,7 @@ function focusCard(f) {
     ask.append(el("div", "lbl", "the ask"));
     ask.append(el("div", "qtext", f.ask));
     card.append(ask);
+    askBox = ask;
   }
 
   if (f.pendingInput) {   // there's already unsent text in this session's box
@@ -1362,6 +1453,7 @@ function focusCard(f) {
     clr.addEventListener("click", () => sendClear(f));
     warn.append(clr);
     card.append(warn);
+    warnBox = warn;
   }
 
   const respond = el("div", "respond");
@@ -1480,6 +1572,11 @@ function focusCard(f) {
 
   card.append(actions);
   card.append(respond);   // last child — the sticky composer (board.html: .respond)
+  // LAST, and only now: the landing measures against a card that is complete, and
+  // its floor is the **Ask** (or, when there is unsent text you must see before
+  // you type over it, that warning under it). Nothing on an unblocked Focus is
+  // below the read, so there is no floor there and the seam's 250px stands.
+  if (land) landOn(land.seam, land.sig, land.pad, askBox, warnBox || askBox);
   return card;
 }
 

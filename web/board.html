@@ -300,6 +300,10 @@ background:rgba(224,108,117,.08)}
 .plbl{font-size:10.5px;color:var(--red);margin-bottom:4px}
 .ptext{font-size:12px;color:var(--fg);white-space:pre-wrap;word-break:break-word;opacity:.85}
 .pending .ghost{margin-top:7px;border-color:var(--red);color:var(--red)}
+/* The **Ask** is BELOW the read, so it is below the seam the page lands on — and
+on a 390px phone that put it under the composer. The landing takes a floor for it
+rather than this box moving (board.js: clearFloor): the peek above the seam is
+what pays, so nothing here is sticky and the read keeps the whole column. */
 .ask{padding:12px 16px;background:var(--panel2)}
 .ask .lbl{font-size:10px;letter-spacing:1px;text-transform:uppercase;color:var(--accent)}
 .ask .qtext{font-size:13.5px;margin-top:4px;color:#fff}
