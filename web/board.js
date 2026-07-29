@@ -817,6 +817,12 @@ function commandEl(t) {
 // a different Exchange four seconds later.
 let openRecords = new Set();
 
+// And which run-up rows — the things Claude said on the way to now, inside the
+// Exchange you are standing in. A third set rather than a third meaning for one:
+// a Record is an Exchange and a run-up row is one entry inside one, so they can
+// never collide and neither can hide the other's state.
+let openInner = new Set();
+
 // The only place a turn's html is touched outside of rendering it for real. The
 // node is built detached, read as text, and dropped; `foldVoid` never reaches a
 // document, but it is a class so a stray one is visible rather than mystifying.
@@ -909,6 +915,12 @@ function recordKey(ex) {
   return h + " ⋮ " + tail;
 }
 
+// The same identity, one level down: a single entry inside the Exchange you are
+// standing in. Content only, for the same reason recordKey is.
+function entryKey(t) {
+  return t.role === "work" ? "w:" + runKey(t) : "a:" + foldText(t).slice(0, 70);
+}
+
 // The three lines. None of them is a summary of the Exchange — each answers a
 // different question the reader actually came back with, which is what a
 // one-sentence gist could not do.
@@ -967,7 +979,7 @@ function recordBody(ex, skipHead) {
 // Toggling rewrites this box in place, never the card — a re-render would take
 // the half-typed reply and the reading position with it (fillWork makes the same
 // call for the same reason).
-function fillRecord(box, ex, key) {
+function fillRecord(box, ex, key, no) {
   const open = openRecords.has(key);
   const f = recordFields(ex);
   box.textContent = "";
@@ -977,6 +989,11 @@ function fillRecord(box, ex, key) {
 
   const hd = el("button", "rhd");
   hd.setAttribute("aria-expanded", open ? "true" : "false");
+  // The number ascends from the top, and the Exchange you are standing in carries
+  // the next one, so the count never runs backwards. Everything on this page
+  // points one way: `earlier` is above, `↓ newest` is below, and a Record whose
+  // reply put a question to you is answered by the very next row DOWN.
+  hd.append(el("span", "rn", String(no)));
   const grid = el("div", "rf");
   fieldLine(grid, "you",
     f.you || (f.noAsk ? "(prompt is off the top of the window)" : ""),
@@ -991,63 +1008,192 @@ function fillRecord(box, ex, key) {
   }
   hd.append(grid);
   hd.append(el("span", "rcar", open ? "▴" : "▾"));
-  hd.onclick = () => {
+  // ANCHORED: opening a Record above the read would otherwise slide the read down
+  // by exactly what the Record gained. Measured at 0px of drift (ADR 0017).
+  hd.onclick = () => keepAnchored(box, () => {
     if (open) openRecords.delete(key); else openRecords.add(key);
-    fillRecord(box, ex, key);
-  };
+    fillRecord(box, ex, key, no);
+  });
   box.append(hd);
   if (open) box.append(recordBody(ex, f.grunt));
 }
 
-function recordEl(ex) {
+function recordEl(ex, no) {
   const box = el("div", "rec");
-  fillRecord(box, ex, recordKey(ex));
+  fillRecord(box, ex, recordKey(ex), no);
   return box;
 }
 
-// The **Scrollback**, grouped by speaker: one `claude` block per contiguous
-// stretch of assistant prose and **work runs**, and only something YOU did — a
-// turn or a slash command — breaks it (ADR 0016). Every assistant turn used to
-// repay the caption and its margin, so "prose, work, prose, work, prose" spent
-// five captions to say one thing: Claude is still going.
-//
-// Grouping is presentation and NOT budget: the server still charges each entry
-// inside a chain against _SCROLLBACK_TURNS, because that count is what bounds
-// the payload (ADR 0014) and one chain can hold ten 4000-char turns.
-function chainInto(sb, entries) {
-  // The live chain: the one Claude is speaking in, which is the last one only
-  // if nothing of yours follows it. Reply and nothing is live — exactly as the
-  // last *turn* used to carry the rail only when it ended the scrollback.
-  const last = entries[entries.length - 1];
-  const liveTail = last.role !== "user" && last.role !== "command";
-
-  let chain = null;
-  entries.forEach((t, i) => {
-    if (t.role === "user" || t.role === "command") {
-      chain = null;
-      sb.append(t.role === "command" ? commandEl(t) : proseEl(t, "turn you"));
-      return;
-    }
-    if (!chain) {
-      // The rail is decided as the block is opened, not toggled onto it after:
-      // this file builds class strings at construction and owns no classList.
-      chain = el("div", "chain" + (liveTail && !entries.slice(i + 1).some(
-        (e) => e.role === "user" || e.role === "command") ? " live" : ""));
-      chain.append(el("div", "who", "claude"));
-      sb.append(chain);
-    }
-    chain.append(t.role === "work" ? workEl(t) : proseEl(t, "cm"));
+// A run-up row: ONE thing Claude said on the way to now, inside the Exchange you
+// are standing in — distance 1 of the **Fold**. Same 40px gutter and the same
+// word as a Record above, but one field only: at this distance "what did it
+// touch" is already answered by the work rows sitting beside it in full.
+function fillInner(box, t, key) {
+  const open = openInner.has(key);
+  box.textContent = "";
+  box.className = "inrow" + (open ? " inopen" : "");
+  const hd = el("button", "rhd rhdin");
+  hd.setAttribute("aria-expanded", open ? "true" : "false");
+  const grid = el("div", "rf");
+  fieldLine(grid, "claude",
+    open ? "▾" : (firstSentence(foldText(t), 200) || "(no text)"), "rs");
+  hd.append(grid);
+  hd.append(el("span", "rcar", open ? "▴" : "▾"));
+  hd.onclick = () => keepAnchored(box, () => {
+    if (open) openInner.delete(key); else openInner.add(key);
+    fillInner(box, t, key);
   });
-  return sb;
+  box.append(hd);
+  if (open) box.append(proseEl(t, "cm inbody"));
 }
 
-// The Scrollback itself: the **Fold** above, the read below. Everything older
-// than the Exchange you are standing in is a **Record**; that Exchange and
-// anything after it is prose, chained and railed exactly as before.
+function innerEl(t) {
+  const box = el("div", "inrow");
+  fillInner(box, t, entryKey(t));
+  return box;
+}
+
+// A **work run** in the run-up keeps ADR 0016's own one-line collapsible AND its
+// own open state (openRuns) and simply moves in under the same gutter — so there
+// is one mechanism and not a second, and `work` means here exactly what it means
+// on a Record above.
+function workRow(t) {
+  const box = el("div", "wkrow");
+  box.append(el("span", "rl rw", "work"));
+  box.append(workEl(t));
+  return box;
+}
+
+// --- The **Seam**, and the landing (ADR 0017) --------------------------------
+//
+// The `NEWEST` rule cuts the **Fold** from the live prose, and the page lands on
+// it: parked 250px down, not hard against the sticky header, so the tail of the
+// run-up peeks above. That peek is load-bearing — it is how a reader learns there
+// IS a Fold and that it is skimmable. Measured at exactly 250px on all four
+// fixture Sessions, with 535-575px of newest prose below it.
+const SEAM_PEEK = 250;   // px down the viewport the seam parks at
+const HEAD_PAD = 52;     // the sticky .fhead plus a hair — where a scroll parks
+                         // a node when there is no fold to peek at
+const PARKED = 40;       // px of drift still counted as "where the landing left
+                         // you", i.e. still reading the end
+
+let liveSeam = null;     // the seam of the card now on screen. A frame scheduled
+                         // by a card a poll has since replaced must not scroll to
+                         // a node that is no longer in the document.
+let landedSig = null;    // the scrollback we have already landed on
+let landedY = 0;         // and where that landing left the page
+
+// A Focus you have just swiped to is a read you have travelled nowhere in, so it
+// lands unconditionally. Called from renderFocus beside the open sets, which is
+// the one place that knows the Session changed.
+function resetLanding() { landedSig = null; landedY = 0; }
+
+const entriesSig = (entries) => entries.map(
+  (t) => t.role + (t.html ? t.html.length : "") + (t.n || "") + (t.cmd || "")).join("|");
+
+// Unfolding anything above the read slides the read down by exactly what it
+// gained. Anchor on the node's own top: for a row you can see that is a no-op —
+// all the growth is below it — and for one that has drifted off the top edge it
+// holds the page still. Measured at 0px of drift (ADR 0017).
+function keepAnchored(node, mutate) {
+  const box = node.getBoundingClientRect ? node : null;
+  const before = box ? box.getBoundingClientRect().top : 0;
+  mutate();
+  const after = box ? box.getBoundingClientRect().top : 0;
+  if (after !== before && window.scrollBy) window.scrollBy(0, after - before);
+}
+
+function scrollToNode(node, pad) {
+  if (!node.getBoundingClientRect) return;
+  const y = (window.scrollY || 0) + node.getBoundingClientRect().top - pad;
+  window.scrollTo(0, Math.max(0, y));
+}
+
+// The landing needs layout to measure against, and it must have the LAST word:
+// renderFocus is still building the card when this is called, and restore() puts
+// the reader's own scroll back straight after. So it goes in a frame of its own.
+function nextFrame(fn) {
+  if (window.requestAnimationFrame) window.requestAnimationFrame(fn);
+  else setTimeout(fn, 0);
+}
+
+// It fires ONCE PER SCROLLBACK, not once per poll. A new entry re-lands you only
+// if you were still parked where the last landing left you; scroll up into
+// history with a Record half-read and you keep your place, because an auto-scroll
+// that yanks a reader is the baseline's bug wearing the other mask.
+//
+// `window.scrollY` inside the frame is honest, and that is the one thing neither
+// prototype could lean on: they read it mid-rebuild, when the card had been
+// emptied and the browser had clamped the page to ~0, and both had to keep a
+// deafened copy of it instead. renderFocus grabs the reader's position BEFORE it
+// empties anything (grab) and restores it, so by this frame the page is where the
+// reader actually left it.
+function landOn(seam, sig, pad) {
+  if (sig === landedSig) return;   // this scrollback has had its landing
+  const first = landedSig === null;
+  landedSig = sig;
+  nextFrame(() => {
+    if (seam !== liveSeam) return;   // a poll rebuilt the card under this frame
+    if (!first && Math.abs((window.scrollY || 0) - landedY) > PARKED) return;
+    scrollToNode(seam, pad);
+    landedY = Math.max(0, window.scrollY || 0);
+    // A scroll THIS FILE performed is not the reader travelling, so the
+    // scroll-driven chrome must not read it as one: showChrome re-anchors it at
+    // the live end, which is exactly where the landing just put you. It costs
+    // nothing when the chrome is already up.
+    showChrome();
+  });
+}
+
+// The strip above the **Fold**: how much is up there, and the two blunt moves.
+// Everything on it points ONE way — `earlier` names what is below it and above
+// the seam, `↓ newest` names the direction of now — because the order is
+// chronological and down is later (ADR 0017; do not invert it).
+function foldStrip(past, metas, rows, seam) {
+  const top = el("div", "ftop");
+  top.append(el("span", "ftopl", "earlier"));
+  top.append(el("span", "ftopn",
+    past.length + (past.length === 1 ? " exchange" : " exchanges")));
+  top.append(el("span", "grow"));
+  const allOpen = () => metas.every((m) => openRecords.has(m.key));
+  const bulk = el("button", "fbtn", allOpen() ? "collapse all" : "read all");
+  bulk.onclick = () => {
+    const shut = allOpen();
+    // Anchored on the STRIP the button lives in — the one node the reader is
+    // certainly looking at when they press it. History unfolds downward from it
+    // and `↓ newest` an inch away is the way back. Anchoring the seam instead
+    // would fire them to the bottom of a page that just quadrupled (ADR 0017:
+    // 1362px → 4557px).
+    keepAnchored(top, () => {
+      metas.forEach((m, i) => {
+        if (shut) openRecords.delete(m.key); else openRecords.add(m.key);
+        fillRecord(rows[i], past[i], m.key, m.no);
+      });
+    });
+    bulk.textContent = shut ? "read all" : "collapse all";
+  };
+  top.append(bulk);
+  const down = el("button", "fbtn fbtngo", "↓ newest");
+  down.onclick = () => scrollToNode(seam, SEAM_PEEK);   // exactly where you landed
+  top.append(down);
+  return top;
+}
+
+// The Scrollback itself, graded by distance from now (ADR 0017): the strip and
+// the **Records** above, the Exchange you are standing in as gutter rows, the
+// **Seam**, and below it the live tail as full prose at full width.
+//
+// ADR 0016's chained `claude` caption is SUPPRESSED here rather than undone: the
+// label gutter carries who, once per row, above the seam, and below the seam the
+// seam itself does. The chain remains the payload-side grouping rule — the server
+// still charges every entry in one against _SCROLLBACK_TURNS — it is just no
+// longer the thing the reader sees.
 function scrollbackEl(entries) {
   const sb = el("div", "sb");
   if (!entries.length) {
-    sb.append(el("div", "who", "(nothing in the transcript tail yet)"));
+    liveSeam = null;   // no seam on this card, so a frame a previous one queued
+                       // must find nothing to land on rather than a stale node
+    sb.append(el("div", "rwait", "(nothing in the transcript tail yet)"));
     return sb;
   }
   const exchanges = exchangesOf(entries);
@@ -1058,15 +1204,85 @@ function scrollbackEl(entries) {
   // baseline's bug wearing the other mask.
   let ci = exchanges.length - 1;
   while (ci > 0 && !exchanges[ci].body.some((t) => t.role === "assistant")) ci--;
+  const past = exchanges.slice(0, ci);
+  const cur = exchanges[ci];
+  const pending = exchanges.slice(ci + 1);
 
-  exchanges.slice(0, ci).forEach((ex) => sb.append(recordEl(ex)));
+  // The split INSIDE that Exchange. Below the seam goes the last thing Claude
+  // said, plus the **work run** that produced it — already one line, and dropping
+  // it would break the causality that last paragraph is reporting — plus anything
+  // after. Everything earlier in the Exchange is a run-up row.
+  let cut = -1;
+  for (let i = cur.body.length - 1; i >= 0; i--) {
+    if (cur.body[i].role === "assistant") { cut = i; break; }
+  }
+  if (cut < 0) cut = cur.body.length;
+  while (cut > 0 && cur.body[cut - 1].role === "work") cut--;
+  const runup = cur.body.slice(0, cut);
+  const tail = cur.body.slice(cut);
 
-  const tail = [];
-  exchanges.slice(ci).forEach((ex) => {
-    if (ex.head) tail.push(ex.head);
-    ex.body.forEach((t) => tail.push(t));
+  const seam = el("div", "seam");
+  liveSeam = seam;
+
+  if (past.length) {
+    const metas = past.map((ex, i) => ({key: recordKey(ex), no: i + 1}));
+    const rows = past.map((ex, i) => recordEl(ex, i + 1));
+    sb.append(foldStrip(past, metas, rows, seam));
+    rows.forEach((r) => sb.append(r));
+  }
+
+  // Your prompt is never folded: "what did I ask" is the frame for everything
+  // under it. It rides the same gutter as the Records above rather than the
+  // `.turn you` bubble, so a one-word prompt costs one line and needs no special
+  // case — and the column runs unbroken from the top of the fold to the seam.
+  const now = el("div", "now");
+  const head = el("div", "nhead");
+  head.append(el("span", "rn rnow", String(past.length + 1)));
+  const hg = el("div", "rf");
+  hg.append(el("span", "rl ru", "you"));
+  if (cur.head && cur.head.role === "command") hg.append(commandEl(cur.head));
+  else if (cur.head) hg.append(proseEl(cur.head, "nask"));
+  else hg.append(el("span", "rv ru rdim", "(prompt is off the top of the window)"));
+  head.append(hg);
+  now.append(head);
+
+  runup.forEach((t) => now.append(t.role === "work" ? workRow(t) : innerEl(t)));
+
+  seam.append(el("span", "seaml", "newest"));
+  seam.append(el("span", "seamrule"));
+  if (runup.length) {
+    const st = stepsOf(runup);
+    seam.append(el("span", "seamn",
+      runup.length + " above" + (st ? " · ⚙" + st : "")));
+  }
+  now.append(seam);
+
+  // Below the seam the gutter stops and the read takes the full column. That
+  // boundary is the whole design in one line: labelled rows above, prose below.
+  const live = el("div", "live");
+  tail.forEach((t) => live.append(t.role === "work" ? workEl(t) : proseEl(t, "cm")));
+  if (!tail.length) live.append(el("div", "rwait", "…nothing back yet"));
+  now.append(live);
+  sb.append(now);
+
+  // A prompt with nothing back yet: below the read, where you left it, and it
+  // takes the NEXT number — the count never runs backwards.
+  pending.forEach((ex, i) => {
+    const p = el("div", "pend");
+    const g = el("div", "rf rfpend");
+    g.append(el("span", "rn rnow", String(past.length + 2 + i)));
+    g.append(el("span", "rl ru", "you"));
+    g.append(ex.head.role === "command" ? commandEl(ex.head) : proseEl(ex.head, "nask"));
+    p.append(g);
+    p.append(el("div", "rwait", "…nothing back yet"));
+    sb.append(p);
   });
-  return chainInto(sb, tail);
+
+  // Nothing above the seam at all — a first exchange, still being answered —
+  // means there is no peek to buy, so the seam goes under the header instead of
+  // 250px down and the whole read is on screen.
+  landOn(seam, entriesSig(entries), (past.length || runup.length) ? SEAM_PEEK : HEAD_PAD);
+  return sb;
 }
 
 function focusCard(f) {
@@ -1544,9 +1760,14 @@ function renderFocus(f) {
   if (sig === focusSig) return;   // nothing about the Focus moved — hands off it
   const old = focusWrap.querySelector(".focus");
   const keep = (old && f && focusSid === f.sessionId) ? grab(old) : null;
-  // Opened **work runs** and opened **Records** belong to the Session you opened
-  // them in. A new Focus starts folded, and neither set grows across Sessions.
-  if (!f || focusSid !== f.sessionId) { openRuns = new Set(); openRecords = new Set(); }
+  // Opened **work runs**, **Records** and run-up rows belong to the Session you
+  // opened them in. A new Focus starts folded, and no set grows across Sessions —
+  // and it has no reading position to keep either, so it re-lands on its seam
+  // unconditionally (ADR 0017).
+  if (!f || focusSid !== f.sessionId) {
+    openRuns = new Set(); openRecords = new Set(); openInner = new Set();
+    resetLanding();
+  }
   focusSig = sig;
   focusSid = f ? f.sessionId : null;
   focusWrap.textContent = "";

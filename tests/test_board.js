@@ -28,8 +28,13 @@ const HTML = fs.readFileSync(path.join(ROOT, "web/board.html"), "utf8");
 // height the swipe hint and the toast stand on (syncBarHeight — there is no dock
 // to measure since ADR 0015). The stub lays out those two and nothing else —
 // enough to drive the scroll-chrome rule, nowhere near enough to pretend CSS ran.
-const layout = {cardBottom: 0, barHeight: 0};
-const rect = (b) => ({top: 0, left: 0, right: 0, width: 0, bottom: b, height: b});
+// `seamTop` is the third: the landing measures the **Seam**'s viewport-relative
+// top and parks it 250px down (board.js::landOn). No CSS runs here, so this is
+// not where the seam IS — it is what the client is told it is, which is what
+// makes the landing's arithmetic assertable. Where the seam actually lands on a
+// 390×844 phone is a browser measurement and belongs in one.
+const layout = {cardBottom: 0, barHeight: 0, seamTop: 0};
+const rect = (b, t) => ({top: t || 0, left: 0, right: 0, width: 0, bottom: b, height: b});
 
 // The composer's own metrics. The reply box is a textarea whose height is
 // MEASURED rather than declared (board.js::growComposer — `field-sizing:content`
@@ -98,6 +103,7 @@ class El {
     const cls = " " + this._cls + " ";
     if (cls.includes(" focus ")) return rect(layout.cardBottom);
     if (cls.includes(" respond ")) return rect(layout.barHeight);
+    if (cls.includes(" seam ")) return rect(0, layout.seamTop);
     return rect(0);
   }
   querySelector(sel) {   // class selectors only — all board.js asks for
@@ -255,6 +261,11 @@ const win = {prompt: () => "secret",
              confirm: (m) => { confirmLog.push(m); return confirmReply; },
              alert: (m) => { alertLog.push(m); },
              scrollY: 0, scrollTo: (x, y) => { win.scrollY = y; },
+             // Every unfold above the read is anchored on its own node's top
+             // (board.js::keepAnchored). With no CSS the stub's boxes never move,
+             // so this can only ever be a no-op here — the 0px of drift ADR 0017
+             // measures is a browser number, not one this file can produce.
+             scrollBy: (x, y) => { win.scrollY = Math.max(0, win.scrollY + y); },
              innerHeight: 800,
              // The composer measures itself off this (board.js::growComposer). The
              // stub answers with the metrics `.ti` sets in board.html, since a
@@ -580,26 +591,34 @@ const W = "wwwwwwww-3333-3333-3333-333333333333";
   ];
   sandbox.setPinned(T);
   await settle();
-  const chains = () => findAll(sbEl(), "chain");
-  const runs = () => findAll(chains()[0], "work");
-  // Scoped to the live chain, not the whole Scrollback: an opened **Record**
-  // renders its own Exchange's work runs, and ADR 0016 keys open state by a run's
-  // FIRST CALL, so two runs that started the same way open together.
-  const lines = () => findAll(chains()[0], "wline");
+  // The Exchange you are standing in: the run-up rows, the **Seam**, and the live
+  // prose under it. Scoped to that, not to the whole Scrollback — an opened
+  // **Record** renders its own Exchange's work runs, and ADR 0016 keys open state
+  // by a run's FIRST CALL, so two runs that started the same way open together.
+  const nowEx = () => findAll(sbEl(), "now")[0];
+  const runs = () => findAll(nowEx(), "work");
+  const lines = () => findAll(nowEx(), "wline");
+  const seam = () => findAll(sbEl(), "seam")[0];
   // A **Record** and its three lines. `recs()[0]` is the oldest Exchange, which
   // is the order everything on this page counts in.
   const recs = () => findAll(sbEl(), "rec");
   const labels = (r) => findAll(r, "rl").map((s) => s.textContent);
   const values = (r) => findAll(r, "rv").map((s) => s.textContent);
 
-  // Three assistant entries in a row — prose, work, prose — and ONE caption over
-  // the lot. Unchained this was three captions and three margins to say one
-  // thing: Claude is still going.
-  ok("scrollback: a contiguous assistant stretch is ONE claude block",
-     chains().length === 1 && findAll(chains()[0], "who").length === 1,
-     chains().map((c) => c.className).join(" | "));
-  ok("scrollback: your own turn breaks the chain and keeps its bubble",
-     findAll(sbEl(), "turn").length === 1 && hasCls(findAll(sbEl(), "turn")[0], "you"));
+  // ADR 0016's `claude` caption is SUPPRESSED, not undone (ADR 0017): above the
+  // **Seam** the 40px label gutter says who, once per row, and below it the seam
+  // itself does — so a contiguous assistant stretch still repays no caption.
+  ok("scrollback: no caption repeats over the read — the gutter and the seam say who",
+     findAll(sbEl(), "who").length === 0 && findAll(sbEl(), "chain").length === 0 &&
+     findAll(sbEl(), "live").length === 1,
+     findAll(sbEl(), "who").length + " captions");
+  // Your prompt rides the same gutter as the Records above rather than the
+  // `.turn you` bubble, so the column runs unbroken from the top of the fold to
+  // the seam and a one-word prompt costs one line.
+  ok("scrollback: the current prompt is a gutter row, not a bubble",
+     findAll(sbEl(), "turn").length === 0 && findAll(sbEl(), "nask").length === 1 &&
+     findAll(findAll(sbEl(), "nhead")[0], "rl")[0].textContent === "you",
+     findAll(sbEl(), "nask").length + " prompts");
 
   // The ADR 0006 / ADR 0003 split, in one pair of assertions: the ONE field the
   // server rendered escape-first becomes markup; every other field of the same
@@ -631,8 +650,12 @@ const W = "wwwwwwww-3333-3333-3333-333333333333";
      detail.textContent === "<img src=x onerror=alert(1)>" && detail.innerHTML === "",
      JSON.stringify([detail.textContent, detail.innerHTML]));
 
-  ok("scrollback: the block Claude is speaking in wears the live rail",
-     hasCls(chains()[0], "live"));
+  // The rail marks the reply you are answering. Below the seam that is all there
+  // is, so the rail moved onto the live tail rather than onto a block.
+  ok("scrollback: the prose below the seam wears the live rail",
+     findAll(sbEl(), "live").length === 1 &&
+     findAll(sbEl(), "live")[0].textContent.includes("done — 3 files"),
+     findAll(sbEl(), "live").map((l) => l.textContent).join(" | "));
 
   // An opened run must survive the card being rebuilt, because on a working Run
   // that happens every poll — a run that re-collapsed under you every four
@@ -662,12 +685,16 @@ const W = "wwwwwwww-3333-3333-3333-333333333333";
   // mechanical and costs the payload nothing. The newest is the read; every
   // older one is a **Record**: three lines in one 40px label gutter.
   ok("fold: everything older than the exchange you are in is one record each",
-     recs().length === 2 && chains().length === 1,
-     recs().length + " records, " + chains().length + " chains");
-  ok("fold: and the newest exchange is still the read — prose, chain and rail",
-     findAll(sbEl(), "turn").length === 1 && hasCls(chains()[0], "live") &&
-     chains()[0].textContent.includes("done — 3 files"),
-     chains()[0].textContent);
+     recs().length === 2 && findAll(sbEl(), "now").length === 1,
+     recs().length + " records");
+  // Graded by distance from now: the run-up inside the Exchange you are standing
+  // in is one gutter row per thing Claude said, and only the live tail is prose.
+  ok("fold: and the newest exchange is rows above the seam, prose below it",
+     findAll(sbEl(), "inrow").length === 2 &&
+     findAll(findAll(sbEl(), "inrow")[0], "rv")[0].textContent === "on it" &&
+     findAll(sbEl(), "live")[0].textContent.includes("and then this"),
+     findAll(sbEl(), "inrow").length + " run-up rows / " +
+     findAll(sbEl(), "live")[0].textContent);
 
   // The fixed shape is the point: the same three words in the same column on
   // every Record, so the eye can run down it without reading a value.
@@ -785,10 +812,138 @@ const W = "wwwwwwww-3333-3333-3333-333333333333";
   // answer it would be the landing bug wearing the other mask.
   sbOf[T3] = sbOf[T3].concat([{role: "user", html: "<p>and the docs</p>"}]);
   await poll();
+  // It sits BELOW the read, where you left it, and takes the NEXT number — the
+  // count never runs backwards.
   ok("fold: a prompt with nothing back yet does not fold the read behind it",
-     recs().length === 1 && findAll(sbEl(), "turn").length === 2,
-     recs().length + " records, " + findAll(sbEl(), "turn").length + " turns");
+     recs().length === 1 && findAll(sbEl(), "pend").length === 1 &&
+     findAll(findAll(sbEl(), "pend")[0], "rn")[0].textContent === "3",
+     recs().length + " records, " + findAll(sbEl(), "pend").length + " pending");
 
+  // --- The **Seam**, and the landing (ADR 0017) ------------------------------
+  // The `NEWEST` rule cuts the **Fold** from the live prose, and the page lands
+  // on it — parked 250px down, so the tail of the run-up peeks above and the
+  // reader learns there IS a fold. The stub runs no CSS, so where the seam
+  // actually sits on a 390×844 phone is a browser measurement; what IS provable
+  // here is the arithmetic and, far more importantly, WHEN the landing fires.
+  layout.seamTop = 900;
+  world = [S(T, "yourmove", 1, "scroll"), S(T2, "yourmove", 1, "other")];
+  sandbox.setPinned(T2); await poll();
+  win.scrollY = 0;
+  sandbox.setPinned(T); await poll();
+
+  const strip = () => findAll(sbEl(), "ftop")[0];
+  const fbtns = () => findAll(strip(), "fbtn");
+  const nums = () => findAll(sbEl(), "rn").map((n) => n.textContent);
+
+  ok("seam: a NEWEST rule cuts the fold from the live read",
+     !!seam() && findAll(seam(), "seaml")[0].textContent === "newest" &&
+     findAll(sbEl(), "live").length === 1, seam() && seam().textContent);
+  // 4 things Claude said on the way here, and 9 calls under them — the tally is
+  // what is folded ABOVE the seam, which is the peek the landing buys.
+  ok("seam: and it carries the tally of what is folded above it",
+     findAll(seam(), "seamn")[0].textContent === "4 above · ⚙9",
+     findAll(seam(), "seamn").map((n) => n.textContent).join("|"));
+
+  ok("landing: the page parks the seam 250px down, not against the header",
+     win.scrollY === layout.seamTop - 250, String(win.scrollY));
+
+  // Once per **Scrollback**, not once per poll. The Focus card is rebuilt every
+  // time its payload moves — on a working Run that is every four seconds — and a
+  // page that re-scrolled itself each time would be unusable.
+  world[0].updatedAt = 1001;
+  win.scrollY = 300;
+  await poll();
+  ok("landing: a rebuild whose scrollback did not move does not re-land you",
+     win.scrollY === 300, String(win.scrollY));
+  ok("landing: and the reading position survives that rebuild",
+     recs().length === 2 && !!seam(), String(recs().length));
+
+  // A new entry DOES re-land you — but only because you were still parked where
+  // the last landing left you, i.e. still reading the end.
+  win.scrollY = layout.seamTop - 250;
+  sbOf[T] = sbOf[T].concat([{role: "assistant", html: "<p>and a newer one</p>"}]);
+  await poll();
+  ok("landing: a new entry re-lands you while you are parked at the end",
+     win.scrollY === (layout.seamTop - 250) + layout.seamTop - 250, String(win.scrollY));
+
+  // ...and does not, once you have scrolled up into history with a Record
+  // half-read. An auto-scroll that yanks a reader is the baseline's bug wearing
+  // the other mask (ADR 0017).
+  win.scrollY = 200;
+  sbOf[T] = sbOf[T].concat([{role: "assistant", html: "<p>and a newer one still</p>"}]);
+  await poll();
+  ok("landing: but a reader who scrolled away is never yanked back",
+     win.scrollY === 200, String(win.scrollY));
+
+  // A Run you swiped to is a read you have travelled nowhere in, so it has no
+  // place to keep and lands unconditionally.
+  sandbox.setPinned(T2); await poll();
+  ok("landing: switching Focus lands the new Session whatever the old one left",
+     win.scrollY === 200 + layout.seamTop - 52, String(win.scrollY));
+  // Nothing above the seam at all — one Exchange, still being answered — means
+  // there is no peek to buy, so it parks under the header instead.
+  ok("landing: with nothing folded above it the seam goes under the header",
+     findAll(sbEl(), "ftop").length === 0 && findAll(sbEl(), "inrow").length === 0);
+
+  win.scrollY = 0;
+  sandbox.setPinned(T); await poll();
+
+  // The strip: how much is up there, and the two blunt moves. Everything on it
+  // points ONE way, because the order is chronological and down is later.
+  ok("strip: it names what is earlier, and how much of it",
+     findAll(strip(), "ftopl")[0].textContent === "earlier" &&
+     findAll(strip(), "ftopn")[0].textContent === "2 exchanges",
+     strip().textContent);
+  ok("strip: the number column ascends, and the exchange you are in takes the next",
+     nums().join("/") === "1/2/3", nums().join("/"));
+
+  // `read all` restores the linear read; pressing it again folds it back. It is
+  // anchored on the strip it lives in — anchoring the seam would fire the reader
+  // to the bottom of a page that just quadrupled — which no CSS-less DOM can
+  // prove, so what is asserted here is the toggle.
+  ok("read all: the strip offers it, and the jump back to the seam",
+     fbtns().map((b) => b.textContent).join("/") === "read all/↓ newest",
+     fbtns().map((b) => b.textContent).join("/"));
+  fbtns()[0].onclick();
+  ok("read all: it unfolds every record at once and offers the way back",
+     recs().every((r) => hasCls(r, "recopen")) && fbtns()[0].textContent === "collapse all",
+     recs().map((r) => r.className).join(" | "));
+  fbtns()[0].onclick();
+  ok("read all: and collapse all folds the lot back to three lines each",
+     recs().every((r) => !hasCls(r, "recopen")) && fbtns()[0].textContent === "read all",
+     recs().map((r) => r.className).join(" | "));
+
+  win.scrollY = 0;
+  fbtns()[1].onclick();
+  ok("read all: `↓ newest` goes exactly where the landing put you",
+     win.scrollY === layout.seamTop - 250, String(win.scrollY));
+
+  // A run-up row — distance 1 of the **Fold**: one gutter row per thing Claude
+  // said on the way here, opening in place to that entry's prose.
+  const inrows = () => findAll(sbEl(), "inrow");
+  ok("run-up: each thing Claude said on the way here is one gutter row",
+     inrows().length >= 1 &&
+     findAll(inrows()[0], "rl")[0].textContent === "claude" &&
+     findAll(inrows()[0], "rv")[0].textContent === "on it",
+     inrows().map((r) => r.textContent).join(" | "));
+  findAll(inrows()[0], "rhd")[0].onclick();
+  ok("run-up: and tapping one opens it to that entry's prose, in place",
+     hasCls(inrows()[0], "inopen") &&
+     findAll(inrows()[0], "md")[0].innerHTML === "<p>on it</p>",
+     inrows()[0].className);
+  // Same reason and same idiom as openRuns and openRecords: the card is rebuilt
+  // every poll, so the open set is module state keyed by content.
+  sbOf[T] = sbOf[T].concat([{role: "assistant", html: "<p>later still</p>"}]);
+  await poll();
+  ok("run-up: an opened row stays open when the Focus's data moves",
+     hasCls(inrows()[0], "inopen"), inrows()[0].className);
+  sandbox.setPinned(T2); await poll();
+  sandbox.setPinned(T); await poll();
+  ok("run-up: but it does not follow you to another Session",
+     inrows().every((r) => !hasCls(r, "inopen")),
+     inrows().map((r) => r.className).join(" | "));
+
+  layout.seamTop = 0;
   world = [S(T, "yourmove", 1, "scroll")];
   sandbox.setPinned(T);
   await poll();
@@ -1512,6 +1667,26 @@ const W = "wwwwwwww-3333-3333-3333-333333333333";
      rule(".rv"));
   ok("fold: the detached node foldText reads through is never drawn",
      rule(".foldvoid") === "display:none", rule(".foldvoid"));
+  // Below the seam the gutter stops and the read takes the full column — the
+  // whole design in one line, and only the stylesheet can say it. The rail moved
+  // here from ADR 0016's chained block: below the seam the tail IS the reply you
+  // are answering.
+  ok("seam: below it the read takes the full column and wears the live rail",
+     rule(".live").includes("border-left:2px solid var(--lane)") &&
+     rule(".chain") === "(no rule for .chain)", rule(".live"));
+  ok("seam: and the seam itself is a rule with the lane's own accent on it",
+     /text-transform:uppercase/.test(rule(".seaml")) &&
+     rule(".seaml").includes("var(--lane)") && /linear-gradient/.test(rule(".seamrule")),
+     rule(".seaml"));
+  // Density is part of ADR 0017's decision, not a coat of paint: the baseline set
+  // this whole read in 13px monospace at 1.6, which is what made it read like a
+  // log file. Monospace survives exactly where it MEANS machine.
+  ok("density: prose is in the system UI face, not the log-file monospace",
+     /-apple-system/.test(rule(".md")) && /-apple-system/.test(rule(".sb")),
+     rule(".md"));
+  ok("density: and the machine face survives where it means machine",
+     /ui-monospace/.test(rule(".md code,.md pre")) && /ui-monospace/.test(rule(".rl")) &&
+     /ui-monospace/.test(rule(".rv.rw")), rule(".md code,.md pre"));
   ok("swipe: the landing cue is a fixed overlay — a cue may not move the read",
      rule(".edge").includes("position:fixed") && /\.edge\.on\{opacity/.test(HTML),
      rule(".edge"));

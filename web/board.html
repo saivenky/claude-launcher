@@ -87,29 +87,27 @@ scroll instead; that is the whole point of the change. */
 lives here (board.js: the return path). Vertical panning is the read and stays
 the browser's; the horizontal axis is ours, and claiming it stops a finger's
 sideways travel being spent scrolling nothing. */
-.sb{padding:10px 16px 12px;font-size:13px;border-bottom:1px solid var(--line);touch-action:pan-y}
+/* TYPOGRAPHY IS PART OF THE DECISION, NOT A COAT OF PAINT (ADR 0017). The
+baseline set this whole read in 13px monospace at 1.6, which is what made it read
+like a log file and skim like one. Prose moves to the system UI face; monospace
+survives exactly where it MEANS machine — the label gutter, tool names, paths,
+counts, code — so the eye tells a path from a sentence without reading either.
+The height comes from the **Fold**; the read is not squeezed. */
+.sb{padding:7px 15px 14px;font-size:13px;border-bottom:1px solid var(--line);touch-action:pan-y;
+font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text",Inter,system-ui,sans-serif}
 .turn{margin-bottom:15px} .turn:last-child{margin-bottom:2px}
-.who{font-size:9.5px;letter-spacing:1.1px;text-transform:uppercase;color:var(--dim);margin-bottom:4px}
+/* Only an OPENED **Record** draws this now: above the seam your prompt is a
+gutter row like everything else, and below it there is no prompt to draw. */
 .turn.you{background:var(--panel2);border:1px solid var(--line);
 border-radius:10px 10px 10px 3px;padding:8px 11px;opacity:.9}
-.turn.you .who{color:var(--m)}
 
-/* --- one claude block per stretch (ADR 0016) ---
-A contiguous run of assistant prose and **work runs** is ONE block with ONE
-caption; only something you did breaks it. Every assistant turn used to repay
-the caption and its 15px, so "prose, work, prose, work, prose" spent five
-captions to say one thing — Claude is still going. Across thirteen live
-Sessions the last 14 entries held 143 captions between them; chained, 29. */
-.chain{margin-bottom:15px}
-.chain:last-child{margin-bottom:2px}
-.chain .who{color:var(--accent)}
-/* The live chain — the one Claude is speaking in, i.e. the thing you are
-answering. It is the block that wears the rail now, not the last paragraph of
-it, which is the point: the rail marks the reply you are answering, and that
-reply is the whole stretch. */
-.chain.live{border-left:2px solid var(--lane);padding-left:11px;margin-left:-13px}
-.chain .md{margin-bottom:10px}
-.chain>:last-child{margin-bottom:0}
+/* --- one claude block per stretch (ADR 0016), now carried by the gutter ---
+A contiguous run of assistant prose and **work runs** is still ONE block with
+ONE caption — the caption is just no longer a `claude` heading. Above the seam
+the 40px label gutter says who, once per row; below it the seam itself does. So
+0016's economy (143 captions across thirteen Sessions' last 14 entries, chained
+to 29) is honoured rather than undone, and the chain survives as what it always
+was server-side: the payload's grouping rule (ADR 0017). */
 
 /* --- a **work run**: a contiguous stretch of tool calls, on one line ---
 It used to be one dimmed chip per call, each in its own turn, each costing a
@@ -117,7 +115,12 @@ slot of the 14 — measured at 5-8 of them on a live Session, evicting the prose
 ADR 0014 exists to show. Now the whole run is one entry: how many steps and
 roughly what of, until you tap it open. The rail is what says "work happened
 here" now that the caption above it is shared. */
-.work{margin-bottom:10px;border-left:1px solid var(--line);padding-left:10px}
+/* A work run is machine through and through — step counts, tool names, paths —
+so it keeps the monospace face the prose around it gave up (ADR 0017). That
+contrast IS the point: the eye tells a path from a sentence without reading
+either. */
+.work{margin-bottom:10px;border-left:1px solid var(--line);padding-left:10px;
+font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
 .roll{font-size:11.5px;color:var(--dim);cursor:pointer;display:flex;gap:8px;align-items:baseline}
 .roll:hover{color:var(--fg)}
 .rollct{color:var(--accent);opacity:.8;flex:0 0 auto}
@@ -197,6 +200,72 @@ display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical}
 and drops it. Declared anyway: a stray one is then invisible rather than a
 duplicate of a turn nobody can explain. */
 .foldvoid{display:none}
+
+/* --- the strip, the number column, the run-up, and the **Seam** (ADR 0017) ---
+Everything here points ONE way. The number ascends from the top and the Exchange
+you are standing in carries the next one; `earlier` names what is below the strip
+and above the seam; `↓ newest` names the direction of now. That is why the order
+is not negotiable: a Record that went teal was answered by the very next row
+DOWN, and an inverted document makes that relation unreadable. */
+.ftop{display:flex;align-items:baseline;gap:8px;padding:1px 0 5px}
+.ftopl{font:700 9px/1 ui-monospace,Menlo,monospace;letter-spacing:1.5px;
+text-transform:uppercase;color:var(--w)}
+.ftopn{font:9px/1 ui-monospace,Menlo,monospace;letter-spacing:.6px;color:var(--dim)}
+.fbtn{background:none;border:1px solid var(--line);border-radius:999px;color:var(--dim);
+font:10.5px/1 ui-monospace,Menlo,monospace;padding:4px 8px;cursor:pointer}
+.fbtn:hover{color:var(--fg);border-color:var(--w)}
+.fbtngo{color:var(--lane);border-color:color-mix(in srgb,var(--lane) 40%,var(--line))}
+.rn{flex:0 0 13px;text-align:right;font:600 9.5px/1.85 ui-monospace,Menlo,monospace;color:var(--w)}
+.recq .rn{color:var(--q)}
+.rnow{color:var(--lane)}
+
+/* the Exchange you are standing in: your prompt on the same gutter as the
+Records above, then one row per thing Claude said on the way here */
+.now{margin-top:13px}
+.nhead{display:flex;align-items:flex-start;gap:7px;padding:0 0 3px}
+/* it WRAPS rather than ellipsising: this is the one prompt on the page that has
+to be read in full, and it still costs less than the bubble it replaces */
+.nask{grid-column:2/4;min-width:0}
+.nask .md{font-size:13px;line-height:1.42;color:#cfd8e1}
+.nask .md p{margin:0 0 5px}
+.nask .md>:last-child{margin-bottom:0}
+/* a run-up row is indented by the number column it does not use — these are
+steps within ONE Exchange, not Exchanges */
+.inrow{border-bottom:1px solid #151a1f;margin-left:20px}
+.inrow .rhd{padding:4px 0}
+.inopen{background:var(--panel2);border-radius:7px;margin:3px 0 3px 20px;padding:0 9px;
+border-bottom-color:transparent}
+.inbody{padding:0 0 9px}
+.wkrow{display:flex;align-items:baseline;gap:8px;margin-left:20px;padding:3px 0;
+border-bottom:1px solid #151a1f}
+.wkrow>.rl.rw{flex:0 0 40px}
+.wkrow .work{flex:1;min-width:0;margin:0;border-left:0;padding-left:0}
+
+/* The seam is where the page lands — parked 250px down, not against the header,
+so the tail of the run-up peeks above it. That peek is load-bearing: it is how a
+reader learns there IS a Fold and that it is skimmable (board.js: SEAM_PEEK). */
+.seam{display:flex;align-items:center;gap:8px;margin:12px 0 10px}
+.seaml{font:700 9.5px/1 ui-monospace,Menlo,monospace;letter-spacing:1.6px;
+text-transform:uppercase;color:var(--lane)}
+.seamrule{flex:1;height:1px;background:linear-gradient(90deg,var(--lane),transparent);opacity:.45}
+.seamn{font:9.5px/1 ui-monospace,Menlo,monospace;color:var(--w)}
+
+/* Below the seam the gutter stops and the read takes the full column — the whole
+design in one line. This is where ADR 0016's live rail lives now: it marks the
+reply you are answering, and below the seam that is everything there is. */
+.live{border-left:2px solid var(--lane);padding-left:11px;margin-left:-13px}
+.live .md{color:var(--fg);font-size:14.5px;line-height:1.5}
+.live .cm{margin-bottom:10px}
+.live>:last-child{margin-bottom:0}
+/* a prompt with nothing back yet, below the read, taking the NEXT number */
+.pend{margin-top:14px}
+.rfpend{display:grid;grid-template-columns:13px 40px minmax(0,1fr);column-gap:7px;
+align-items:baseline}
+.rfpend .rn{flex:0 0 auto;grid-column:1}
+.rfpend .rl{grid-column:2}
+.rfpend .nask,.rfpend .cmd{grid-column:3}
+.cm{margin-bottom:10px}
+.cm:last-child{margin-bottom:0}
 /* A **Turn** is arbitrary transcript prose: file paths, URLs, long inline code.
 The box this replaced was `overflow-y:auto`, which quietly contained overflow on
 BOTH axes — dropping the scroll box dropped that containment too, and a single
@@ -206,10 +275,16 @@ off-screen (deleted since, ADR 0015 — the failure mode is not: any fixed
 full-width surface at this edge goes the same way). The
 scrollback wraps hard; only a table is allowed to scroll, on its own axis. */
 .sb,.turn,.md{min-width:0;overflow-wrap:anywhere}
-/* markdown rendered server-side, escape-first (ADR 0006) */
-.md h3,.md h4,.md h5,.md h6{font-size:12px;letter-spacing:.4px;color:var(--accent);margin:14px 0 6px}
-.md p{margin:8px 0} .md strong{color:#fff}
-.md code{background:var(--panel2);border:1px solid var(--line);border-radius:4px;padding:0 4px;font-size:12px;color:var(--q)}
+/* markdown rendered server-side, escape-first (ADR 0006), set in the system UI
+face (ADR 0017) — looser per line and tighter per block than the log-file
+monospace it replaces. Code and paths keep the machine face, which is the whole
+distinction the change exists to make. */
+.md{font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text",Inter,system-ui,sans-serif;
+font-size:13.5px;line-height:1.54;color:#b9c4ce}
+.md h3,.md h4,.md h5,.md h6{font-size:11.5px;letter-spacing:.5px;color:var(--accent);margin:12px 0 5px}
+.md p{margin:0 0 8px} .md strong{color:#fff;font-weight:600}
+.md code,.md pre{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px}
+.md code{background:var(--panel2);border:1px solid var(--line);border-radius:4px;padding:0 4px;color:var(--q)}
 .md ul{margin:6px 0;padding-left:18px} .md li{margin:3px 0}
 /* A table cannot wrap its way narrow, so it is the one thing that keeps a
 scrollbar — its own, on its own axis, instead of the whole page's. */
