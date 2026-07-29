@@ -139,6 +139,64 @@ font-size:11.5px;line-height:1.75;margin-top:2px}
 drops (ADR 0016). */
 .cmd{margin-bottom:15px;font-size:12px;color:var(--m)}
 .cmd b{color:var(--accent);font-weight:600}
+
+/* --- the Fold: an older Exchange is one Record (ADR 0017) ---
+Measured on a 390×844 phone over live transcripts, the flat Scrollback was
+5064px — six screens — and the page opened at the top of it, i.e. at the OLDEST
+entry in the window. Everything older than the Exchange you are standing in
+folds to this: three lines, one 40px label gutter, `you` / `work` / `claude`.
+The gutter says WHO, and it is the same column on every Record, which is the
+whole value — the eye runs down it without reading a value. It costs ~52px a
+Record against a 26px prose gist, paid knowingly for a column the gist could not
+give at all. */
+.rec{border-bottom:1px solid #171c22}
+.rec:first-of-type{border-top:1px solid #171c22}
+.rhd{display:flex;align-items:flex-start;gap:7px;width:100%;text-align:left;
+background:transparent;border:0;color:var(--fg);font:inherit;padding:6px 0 7px;cursor:pointer}
+/* `auto` for the ⚙ count so it sits at the column edge and never pushes the
+artifacts, which are what the line is actually read for. */
+.rf{flex:1;min-width:0;display:grid;grid-template-columns:40px minmax(0,1fr) auto;
+column-gap:8px;align-items:baseline}
+.rl{grid-column:1;font:600 8.5px/1.85 ui-monospace,Menlo,monospace;letter-spacing:.9px;
+text-transform:uppercase;color:#4c5660}
+.rl.ru{color:#5d6a7a}
+/* Every line is ONE line: nowrap + ellipsis, because a Record that changed
+height with its contents would stop being a shape you can skim. */
+.rv{grid-column:2;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+font:12.6px/1.4 -apple-system,BlinkMacSystemFont,"SF Pro Text",Inter,system-ui,sans-serif;
+color:#b3bec9}
+/* your prompt is the Record's title, so it carries the weight; the reply under
+it is the answer and sits back a shade */
+.rv.ru{color:#ccd6e0}
+.rv.rs{color:#98a4b0}
+/* only the artifacts stay machine-faced — that is how a path stops looking like
+a sentence without anyone reading either */
+.rv.rw{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:10.6px;
+line-height:1.6;color:var(--accent);opacity:.62}
+.rv.rdim{color:var(--w);font-style:italic}
+.rgear{grid-column:3;font:10px/1.6 ui-monospace,Menlo,monospace;color:var(--accent);opacity:.55}
+/* It closed by putting a question to YOU — and in chronological order the answer
+to it is the very next row DOWN, which is the relation an inverted order
+destroys. This one line is allowed two, because it is the one you came back for. */
+.rl.rq{color:var(--q)}
+.rv.rq{color:#9fd8ce;white-space:normal;
+display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical}
+.recq .rl.ru{color:var(--q);opacity:.7}
+.rcar{flex:0 0 auto;font-size:8.5px;color:var(--w);padding-top:5px}
+.rhd:hover .rv{color:var(--fg)}
+/* Opened, the `you` line stays as the Record's title and the read appears under
+it — you already said which Exchange you wanted by tapping it, so it unfolds to
+PROSE and not to a second set of rows. */
+.recopen{background:var(--panel2);border-radius:9px;margin:4px -9px;padding:0 9px;
+border-bottom-color:transparent;box-shadow:0 0 0 1px var(--line)}
+.recopen .rv{white-space:normal;
+display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical}
+.rbody{padding:2px 0 11px}
+.rwait{font-size:11.5px;color:var(--dim);padding:3px 0}
+/* Never rendered into a document — foldText builds it detached, reads its text
+and drops it. Declared anyway: a stray one is then invisible rather than a
+duplicate of a turn nobody can explain. */
+.foldvoid{display:none}
 /* A **Turn** is arbitrary transcript prose: file paths, URLs, long inline code.
 The box this replaced was `overflow-y:auto`, which quietly contained overflow on
 BOTH axes — dropping the scroll box dropped that containment too, and a single

@@ -793,6 +793,218 @@ function commandEl(t) {
   return d;
 }
 
+// --- The **Fold** (ADR 0017) -------------------------------------------------
+//
+// The Scrollback is read in **Exchanges** — one turn of yours plus everything
+// the Run said and did in reply — folded by distance from now. The Exchange you
+// are standing in is the read, full prose, exactly as ADR 0014/0016 render it.
+// Every OLDER Exchange is one **Record**: a fixed three-line shape in a 40px
+// label gutter, `you` / `work` / `claude`, opening in place to the whole thing.
+//
+// Grouping and folding are PRESENTATION. The payload is still ADR 0014's bounded
+// list of entries; nothing here asks the server for more of them, and nothing
+// here fetches. The 5064px this replaces was six screens of a 390×844 phone, and
+// the page opened at the top of it — the oldest thing in the window.
+//
+// The security rule of the section above holds here without an exception: a
+// Record's lines are DERIVED from a turn's `html` by rendering it into a
+// DETACHED prose node and reading `.textContent`, then re-emitted through el().
+// So the one innerHTML sink is still proseEl's and there is still only one.
+
+// Which **Records** the reader has opened, keyed by content for the same reason
+// and by the same idiom as `openRuns`: the Focus card is rebuilt whenever its
+// payload moves, and the Scrollback is a sliding window, so an index would name
+// a different Exchange four seconds later.
+let openRecords = new Set();
+
+// The only place a turn's html is touched outside of rendering it for real. The
+// node is built detached, read as text, and dropped; `foldVoid` never reaches a
+// document, but it is a class so a stray one is visible rather than mystifying.
+function foldText(t) {
+  if (!t || !t.html) return "";
+  return (proseEl(t, "foldvoid").textContent || "").replace(/\s+/g, " ").trim();
+}
+
+function clipText(s, max) {
+  if (!s) return "";
+  return s.length > max ? s.slice(0, max - 1).replace(/\s+\S*$/, "") + "…" : s;
+}
+
+// Split on a terminator FOLLOWED BY SPACE, never on any `.`: a path is full of
+// full stops and none of them ends a sentence. A colon is not a terminator
+// either — "Confirmed from the repo:" is a lead-in and the half worth reading is
+// the half after it.
+const sentencesOf = (s) => (s || "").split(/(?<=[.!?…])\s+/).filter((x) => x.trim());
+
+function firstSentence(s, max) {
+  const ss = sentencesOf(s);
+  return clipText(ss.length ? ss[0] : s, max);
+}
+
+// The reply's LAST sentence, but only when it put a question to YOU — that is
+// what is still open, and in chronological order the next row down is the answer
+// to it. Short trailing fragments ("ok?") are not the question the record means.
+function trailingQuestion(s) {
+  const ss = sentencesOf(s);
+  const last = ss.length ? ss[ss.length - 1].trim() : "";
+  if (!/\?["'’)\]]?$/.test(last) || last.length < 8) return "";
+  return clipText(last, 130);
+}
+
+// A Record's `work` line: `callLabel`'s one-word labels folded across the WHOLE
+// Exchange rather than inside one **work run**, because across five runs `git`
+// would otherwise be named three times and saying it three times is the noise
+// this line exists to remove. So the count and the labels come from different
+// levels: `n` is the true number of calls, the labels are the distinct artifacts.
+function artifactsOf(body) {
+  const seen = new Map();
+  const order = [];
+  body.forEach((t) => {
+    if (t.role !== "work") return;
+    (t.calls || []).forEach((c) => {
+      const l = callLabel(c);
+      if (seen.has(l)) { seen.set(l, seen.get(l) + 1); return; }
+      seen.set(l, 1);
+      order.push(l);
+    });
+  });
+  const shown = order.slice(0, 5).map((l) => (seen.get(l) > 1 ? l + " ×" + seen.get(l) : l));
+  if (order.length > 5) shown.push("+" + (order.length - 5));
+  return shown.join(", ");
+}
+
+const stepsOf = (body) => body.reduce(
+  (n, t) => n + (t.role === "work" ? (t.n || (t.calls || []).length) : 0), 0);
+
+// An **Exchange** opens on something YOU did — a turn or a slash command — which
+// is exactly the boundary ADR 0016 already uses to break a `claude` block, so
+// the grouping introduces no new judgement and no new payload field. Entries
+// before the first of those are the tail of an Exchange whose prompt has slid
+// out of the window: a real Exchange with no prompt, labelled as such rather
+// than hidden.
+function exchangesOf(entries) {
+  const out = [];
+  let cur = null;
+  entries.forEach((t) => {
+    if (t.role === "user" || t.role === "command") {
+      cur = {head: t, body: []};
+      out.push(cur);
+      return;
+    }
+    if (!cur) { cur = {head: null, body: []}; out.push(cur); }
+    cur.body.push(t);
+  });
+  return out;
+}
+
+// Identity across polls: content only, so a rebuild — or a window that has slid
+// by an entry — finds the same key and leaves the Record open.
+function recordKey(ex) {
+  const h = ex.head
+    ? (ex.head.role === "command" ? (ex.head.cmd || "") : foldText(ex.head).slice(0, 90))
+    : "«earlier»";
+  const b = ex.body[0];
+  const tail = !b ? ""
+    : b.role === "work" ? runKey(b) : foldText(b).slice(0, 50);
+  return h + " ⋮ " + tail;
+}
+
+// The three lines. None of them is a summary of the Exchange — each answers a
+// different question the reader actually came back with, which is what a
+// one-sentence gist could not do.
+function recordFields(ex) {
+  const cmd = !!ex.head && ex.head.role === "command";
+  // `cmd` already carries its slash (server.py::_CMD_RE) and is untrusted
+  // transcript text, so it goes to the line as-is and through textContent.
+  const ask = ex.head ? (cmd ? (ex.head.cmd || "") : foldText(ex.head)) : "";
+  const replies = ex.body.filter((t) => t.role === "assistant");
+  const said = replies.length ? foldText(replies[replies.length - 1]) : "";
+  const q = trailingQuestion(said);
+  // A short prompt of PROSE — "yes", "do it", "a" — is an ANSWER and not a
+  // subject, so it is quoted rather than set as a title, and an opened Record
+  // does not then repeat it in a bubble 40px lower. A slash command is short for
+  // a different reason: `/ship` NAMES the thing you asked for, so it is a title
+  // however few characters it is, and its own row still has to stand in for the
+  // skill body the server drops (ADR 0016).
+  const grunt = !cmd && ask.length > 0 && ask.length < 16;
+  return {
+    you: !ask ? "" : cmd ? ask : grunt ? "“" + ask + "”" : clipText(ask, 130),
+    grunt: grunt,
+    noAsk: !ex.head,
+    work: artifactsOf(ex.body),
+    steps: stepsOf(ex.body),
+    said: q || firstSentence(said, 130),
+    openQ: !!q,
+    waiting: !ex.body.length,
+  };
+}
+
+// One helper builds every labelled line, so `you`, `work` and `claude` are the
+// same 40px column to the pixel. That column IS the landmark: the eye runs down
+// it without reading a value. A line with nothing to say is omitted, never blank
+// — three empty labels would make the column noise instead of a landmark.
+function fieldLine(grid, label, value, cls) {
+  if (!value) return;
+  grid.append(el("span", "rl " + cls, label));
+  grid.append(el("span", "rv " + cls, value));
+}
+
+// An opened Record is the Exchange as prose — you already said which one you
+// wanted by tapping it, so it unfolds to the read and not to a second set of
+// rows. `skipHead` is for a grunt: an open Record still carries "yes" whole on
+// its own `you` line, and repeating it in a bubble 40px lower is the only place
+// this layout would ever say the same thing twice.
+function recordBody(ex, skipHead) {
+  const box = el("div", "rbody");
+  if (ex.head && !skipHead) {
+    box.append(ex.head.role === "command" ? commandEl(ex.head) : proseEl(ex.head, "turn you"));
+  }
+  ex.body.forEach((t) => box.append(t.role === "work" ? workEl(t) : proseEl(t, "cm")));
+  if (!ex.body.length) box.append(el("div", "rwait", "…nothing back yet"));
+  return box;
+}
+
+// Toggling rewrites this box in place, never the card — a re-render would take
+// the half-typed reply and the reading position with it (fillWork makes the same
+// call for the same reason).
+function fillRecord(box, ex, key) {
+  const open = openRecords.has(key);
+  const f = recordFields(ex);
+  box.textContent = "";
+  // Teal when that reply closed by putting a question to YOU, and only while
+  // folded: opened, the question is on screen in full a line below.
+  box.className = "rec" + (open ? " recopen" : (f.openQ ? " recq" : ""));
+
+  const hd = el("button", "rhd");
+  hd.setAttribute("aria-expanded", open ? "true" : "false");
+  const grid = el("div", "rf");
+  fieldLine(grid, "you",
+    f.you || (f.noAsk ? "(prompt is off the top of the window)" : ""),
+    "ru" + (f.noAsk || f.grunt ? " rdim" : ""));
+  if (!open) {
+    if (f.work) {
+      fieldLine(grid, "work", f.work, "rw");
+      if (f.steps) grid.append(el("span", "rgear", "⚙" + f.steps));
+    }
+    fieldLine(grid, "claude", f.waiting ? "…nothing back yet" : f.said,
+      f.openQ ? "rq" : "rs");
+  }
+  hd.append(grid);
+  hd.append(el("span", "rcar", open ? "▴" : "▾"));
+  hd.onclick = () => {
+    if (open) openRecords.delete(key); else openRecords.add(key);
+    fillRecord(box, ex, key);
+  };
+  box.append(hd);
+  if (open) box.append(recordBody(ex, f.grunt));
+}
+
+function recordEl(ex) {
+  const box = el("div", "rec");
+  fillRecord(box, ex, recordKey(ex));
+  return box;
+}
+
 // The **Scrollback**, grouped by speaker: one `claude` block per contiguous
 // stretch of assistant prose and **work runs**, and only something YOU did — a
 // turn or a slash command — breaks it (ADR 0016). Every assistant turn used to
@@ -802,12 +1014,7 @@ function commandEl(t) {
 // Grouping is presentation and NOT budget: the server still charges each entry
 // inside a chain against _SCROLLBACK_TURNS, because that count is what bounds
 // the payload (ADR 0014) and one chain can hold ten 4000-char turns.
-function scrollbackEl(entries) {
-  const sb = el("div", "sb");
-  if (!entries.length) {
-    sb.append(el("div", "who", "(nothing in the transcript tail yet)"));
-    return sb;
-  }
+function chainInto(sb, entries) {
   // The live chain: the one Claude is speaking in, which is the last one only
   // if nothing of yours follows it. Reply and nothing is live — exactly as the
   // last *turn* used to carry the rail only when it ended the scrollback.
@@ -832,6 +1039,34 @@ function scrollbackEl(entries) {
     chain.append(t.role === "work" ? workEl(t) : proseEl(t, "cm"));
   });
   return sb;
+}
+
+// The Scrollback itself: the **Fold** above, the read below. Everything older
+// than the Exchange you are standing in is a **Record**; that Exchange and
+// anything after it is prose, chained and railed exactly as before.
+function scrollbackEl(entries) {
+  const sb = el("div", "sb");
+  if (!entries.length) {
+    sb.append(el("div", "who", "(nothing in the transcript tail yet)"));
+    return sb;
+  }
+  const exchanges = exchangesOf(entries);
+  // The Exchange you are STANDING IN is the newest one the Run has actually
+  // answered in. A prompt you sent a second ago with nothing back yet is not an
+  // Exchange to fold the read behind — it is a line under the read, and folding
+  // the reply you are still reading the moment you answer it would be the
+  // baseline's bug wearing the other mask.
+  let ci = exchanges.length - 1;
+  while (ci > 0 && !exchanges[ci].body.some((t) => t.role === "assistant")) ci--;
+
+  exchanges.slice(0, ci).forEach((ex) => sb.append(recordEl(ex)));
+
+  const tail = [];
+  exchanges.slice(ci).forEach((ex) => {
+    if (ex.head) tail.push(ex.head);
+    ex.body.forEach((t) => tail.push(t));
+  });
+  return chainInto(sb, tail);
 }
 
 function focusCard(f) {
@@ -1309,9 +1544,9 @@ function renderFocus(f) {
   if (sig === focusSig) return;   // nothing about the Focus moved — hands off it
   const old = focusWrap.querySelector(".focus");
   const keep = (old && f && focusSid === f.sessionId) ? grab(old) : null;
-  // Opened **work runs** belong to the Session you opened them in. A new Focus
-  // starts collapsed, and the set never grows across Sessions.
-  if (!f || focusSid !== f.sessionId) openRuns = new Set();
+  // Opened **work runs** and opened **Records** belong to the Session you opened
+  // them in. A new Focus starts folded, and neither set grows across Sessions.
+  if (!f || focusSid !== f.sessionId) { openRuns = new Set(); openRecords = new Set(); }
   focusSig = sig;
   focusSid = f ? f.sessionId : null;
   focusWrap.textContent = "";

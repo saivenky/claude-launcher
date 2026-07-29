@@ -69,7 +69,16 @@ class El {
   }
   set textContent(v) { this.children = []; if (v != null && v !== "") this.children.push({__text: String(v)}); }
   get innerHTML() { return this._html; }
-  set innerHTML(v) { this._html = String(v); this.children = []; }
+  // No parser runs here, so `innerHTML` is kept verbatim for the ADR 0006
+  // assertions AND flattened to its text, because the **Fold** derives every
+  // line of a **Record** by rendering a turn into a DETACHED prose node and
+  // reading `.textContent` (board.js::foldText). A stub that dropped the text
+  // would make every Record blank and prove nothing about the fields.
+  set innerHTML(v) {
+    this._html = String(v);
+    const txt = this._html.replace(/<[^>]*>/g, "");
+    this.children = txt ? [{__text: txt}] : [];
+  }
   get firstChild() { return this.children[0]; }
   // `tagName` because the arrow keys that walk the ring stand down while
   // anything is taking text, and that is what board.js reads to know.
@@ -548,23 +557,40 @@ const W = "wwwwwwww-3333-3333-3333-333333333333";
   const T = "77777777-5555-5555-5555-555555555555";
   foreignWorld = [];
   world = [S(T, "yourmove", 1, "scroll")];
+  // Three **Exchanges** (ADR 0017), so the two older ones fold to **Records** and
+  // the newest is the read. The tool calls sit in the FIRST one, where they are
+  // what the Record's `work` line is made of, and again in the last, where they
+  // are the ADR 0016 collapsible.
+  const WCALLS = [{name: "Bash", detail: "git status --short"},
+                  {name: "Bash", detail: "git commit -m wip"},
+                  // An injection attempt riding `detail` — the field that is NOT
+                  // the innerHTML'd one, in both renderings of it.
+                  {name: "Read", detail: "<img src=x onerror=alert(1)>"}];
   sbOf[T] = [
     {role: "user", html: "<p>consolidate the notes</p>"},
+    {role: "work", n: 9, calls: WCALLS},
+    {role: "assistant", html: "<p>Read both notes. Which of the two titles do you want on it?</p>"},
     {role: "command", cmd: "/ship"},
+    {role: "assistant", html: "<p>Shipped. Nothing else was touched.</p>"},
+    {role: "user", html: "<p>now the tests</p>"},
     {role: "assistant", html: "<p>on it</p>"},
-    // A **work run**: nine calls, of which the last three kept their detail. The
-    // third is an injection attempt riding `detail` — the field that is NOT the
-    // innerHTML'd one.
-    {role: "work", n: 9, calls: [{name: "Bash", detail: "git status --short"},
-                                 {name: "Bash", detail: "git commit -m wip"},
-                                 {name: "Read", detail: "<img src=x onerror=alert(1)>"}]},
+    // A **work run**: nine calls, of which the last three kept their detail.
+    {role: "work", n: 9, calls: WCALLS},
     {role: "assistant", html: "<p>done — <strong>3 files</strong></p>"},
   ];
   sandbox.setPinned(T);
   await settle();
   const chains = () => findAll(sbEl(), "chain");
-  const runs = () => findAll(sbEl(), "work");
-  const lines = () => findAll(sbEl(), "wline");
+  const runs = () => findAll(chains()[0], "work");
+  // Scoped to the live chain, not the whole Scrollback: an opened **Record**
+  // renders its own Exchange's work runs, and ADR 0016 keys open state by a run's
+  // FIRST CALL, so two runs that started the same way open together.
+  const lines = () => findAll(chains()[0], "wline");
+  // A **Record** and its three lines. `recs()[0]` is the oldest Exchange, which
+  // is the order everything on this page counts in.
+  const recs = () => findAll(sbEl(), "rec");
+  const labels = (r) => findAll(r, "rl").map((s) => s.textContent);
+  const values = (r) => findAll(r, "rv").map((s) => s.textContent);
 
   // Three assistant entries in a row — prose, work, prose — and ONE caption over
   // the lot. Unchained this was three captions and three margins to say one
@@ -574,15 +600,12 @@ const W = "wwwwwwww-3333-3333-3333-333333333333";
      chains().map((c) => c.className).join(" | "));
   ok("scrollback: your own turn breaks the chain and keeps its bubble",
      findAll(sbEl(), "turn").length === 1 && hasCls(findAll(sbEl(), "turn")[0], "you"));
-  ok("scrollback: the slash command you invoked stands in for the skill body",
-     findAll(sbEl(), "cmd").length === 1 && findAll(sbEl(), "cmd")[0].textContent.includes("/ship"),
-     JSON.stringify(findAll(sbEl(), "cmd").map((c) => c.textContent)));
 
   // The ADR 0006 / ADR 0003 split, in one pair of assertions: the ONE field the
   // server rendered escape-first becomes markup; every other field of the same
   // entry is untrusted text and cannot become an element.
   ok("scrollback: an entry's html reaches the DOM as markup (ADR 0006)",
-     findAll(sbEl(), "md")[0].innerHTML === "<p>consolidate the notes</p>",
+     findAll(sbEl(), "md")[0].innerHTML === "<p>now the tests</p>",
      JSON.stringify(findAll(sbEl(), "md").map((m) => m.innerHTML)));
 
   // A working Run emits long stretches of tool calls with no prose. One line for
@@ -631,6 +654,143 @@ const W = "wwwwwwww-3333-3333-3333-333333333333";
   ok("scrollback: and it does not follow you to another Session",
      lines().length === 0, JSON.stringify(lines().map((l) => l.textContent)));
   world = [S(T, "yourmove", 1, "scroll")];
+  await poll();
+
+  // --- The Scrollback folds into Exchanges (ADR 0017) -----------------------
+  // An **Exchange** opens on something YOU did and runs to the next such thing —
+  // the same boundary ADR 0016 uses to break a claude block, so the grouping is
+  // mechanical and costs the payload nothing. The newest is the read; every
+  // older one is a **Record**: three lines in one 40px label gutter.
+  ok("fold: everything older than the exchange you are in is one record each",
+     recs().length === 2 && chains().length === 1,
+     recs().length + " records, " + chains().length + " chains");
+  ok("fold: and the newest exchange is still the read — prose, chain and rail",
+     findAll(sbEl(), "turn").length === 1 && hasCls(chains()[0], "live") &&
+     chains()[0].textContent.includes("done — 3 files"),
+     chains()[0].textContent);
+
+  // The fixed shape is the point: the same three words in the same column on
+  // every Record, so the eye can run down it without reading a value.
+  ok("fold: a record is three lines — you, work, claude",
+     labels(recs()[0]).join("/") === "you/work/claude", labels(recs()[0]).join("/"));
+  ok("fold: `you` is your prompt",
+     values(recs()[0])[0] === "consolidate the notes", JSON.stringify(values(recs()[0])));
+  // Run-length-encoded across the WHOLE Exchange, not inside one run: across five
+  // runs `git` would otherwise be named three times. The count and the labels
+  // come from different levels — `n` is the true number of calls.
+  ok("fold: `work` is the exchange's calls, deduped, with the true count",
+     values(recs()[0])[1] === "git ×2, <img" &&
+     findAll(recs()[0], "rgear")[0].textContent === "⚙9",
+     JSON.stringify(values(recs()[0])) + " " +
+     JSON.stringify(findAll(recs()[0], "rgear").map((g) => g.textContent)));
+
+  // A line with nothing to say is omitted, never blank — three empty labels
+  // would make the gutter noise instead of a landmark.
+  ok("fold: a line whose content is absent is omitted, not left blank",
+     labels(recs()[1]).join("/") === "you/claude" &&
+     findAll(recs()[1], "rgear").length === 0, labels(recs()[1]).join("/"));
+  ok("fold: a slash command opens an exchange too, and titles its record",
+     values(recs()[1])[0] === "/ship", JSON.stringify(values(recs()[1])));
+
+  // Teal when that reply closed by putting a question to YOU. In chronological
+  // order the answer to it is the very next row DOWN — which is the relation an
+  // inverted order destroys, and why the order is not negotiable.
+  ok("fold: a record goes teal when that reply put a question to you",
+     hasCls(recs()[0], "recq") &&
+     values(recs()[0])[2] === "Which of the two titles do you want on it?",
+     recs()[0].className + " " + JSON.stringify(values(recs()[0])));
+  ok("fold: and a reply that asked nothing is its first sentence, not teal",
+     !hasCls(recs()[1], "recq") && values(recs()[1])[1] === "Shipped.",
+     recs()[1].className + " " + JSON.stringify(values(recs()[1])));
+
+  // Every line of every Record is DERIVED from a turn's html by rendering it
+  // into a detached prose node and reading .textContent (board.js::foldText), so
+  // the one innerHTML sink is still proseEl's. Proved by walking the whole
+  // Scrollback: nothing but a `.md` may carry markup.
+  const sinks = () => {
+    const out = [];
+    const walk = (n) => {
+      for (const c of (n.children || [])) {
+        if (!(c instanceof El)) continue;
+        if (c.innerHTML) out.push(c.className + " := " + c.innerHTML);
+        walk(c);
+      }
+    };
+    walk(sbEl());
+    return out;
+  };
+  ok("fold: no transcript text reaches an innerHTML sink except through proseEl",
+     sinks().every((s) => s.startsWith("md ")) && sinks().length > 0,
+     JSON.stringify(sinks()));
+  ok("fold: so a record's own lines are text, and injection-shaped text stays text",
+     findAll(recs()[0], "rv").every((s) => s.innerHTML === "") &&
+     values(recs()[0])[1].includes("<img"),
+     JSON.stringify(findAll(recs()[0], "rv").map((s) => s.innerHTML)));
+
+  // Tap it and it opens in place — to PROSE, not to a second set of rows: you
+  // already said which Exchange you wanted by tapping it.
+  findAll(recs()[1], "rhd")[0].onclick();
+  ok("fold: tapping a record opens it in place, to the whole exchange as prose",
+     hasCls(recs()[1], "recopen") && findAll(recs()[1], "rbody").length === 1 &&
+     findAll(recs()[1], "md")[0].innerHTML === "<p>Shipped. Nothing else was touched.</p>",
+     recs()[1].className);
+  ok("fold: an opened record still names the slash command it opened on (ADR 0016)",
+     findAll(recs()[1], "cmd").length === 1 &&
+     findAll(recs()[1], "cmd")[0].textContent.includes("/ship"),
+     JSON.stringify(findAll(recs()[1], "cmd").map((c) => c.textContent)));
+  ok("fold: and the folded lines it replaces are gone while it is open",
+     labels(recs()[1]).join("/") === "you", labels(recs()[1]).join("/"));
+
+  // The Focus card is rebuilt on every poll of a working Run, so which Records
+  // are open is module state keyed by CONTENT — the same reason and the same
+  // idiom as ADR 0016's `openRuns`. An index would name a different Exchange
+  // four seconds later: the Scrollback is a sliding window.
+  sbOf[T] = sbOf[T].concat([{role: "assistant", html: "<p>and one more</p>"}]);
+  await poll();
+  ok("fold: an opened record stays open when the Focus's data moves",
+     recs().length === 2 && hasCls(recs()[1], "recopen"),
+     recs().map((r) => r.className).join(" | "));
+  world = [S(T, "yourmove", 1, "scroll"), S(T2, "yourmove", 1, "other")];
+  sandbox.setPinned(T2); await poll();
+  sandbox.setPinned(T); await poll();
+  ok("fold: but it does not follow you to another Session",
+     recs().every((r) => !hasCls(r, "recopen")),
+     recs().map((r) => r.className).join(" | "));
+
+  findAll(recs()[1], "rhd")[0].onclick();
+  findAll(recs()[1], "rhd")[0].onclick();
+  ok("fold: and tapping it again folds it back to the same three lines",
+     !hasCls(recs()[1], "recopen") && labels(recs()[1]).join("/") === "you/claude",
+     recs()[1].className + " " + labels(recs()[1]).join("/"));
+
+  // An Exchange whose opening turn has slid out of the window is a real
+  // Exchange with no prompt — labelled as such rather than hidden, because the
+  // Scrollback is a bounded tail and this is what its top edge looks like.
+  const T3 = "77777777-7777-7777-7777-777777777777";
+  world = [S(T3, "yourmove", 1, "lead")];
+  sbOf[T3] = [
+    {role: "assistant", html: "<p>Picked it back up. All four suites are green.</p>"},
+    {role: "user", html: "<p>carry on</p>"},
+    {role: "assistant", html: "<p>Carrying on.</p>"},
+  ];
+  sandbox.setPinned(T3);
+  await poll();
+  ok("fold: a leading assistant entry is an exchange whose prompt slid out",
+     recs().length === 1 && labels(recs()[0]).join("/") === "you/claude" &&
+     values(recs()[0])[0] === "(prompt is off the top of the window)",
+     JSON.stringify(values(recs()[0])));
+
+  // A prompt you sent a second ago with nothing back yet is not an Exchange to
+  // fold the read behind: folding the reply you are still reading the moment you
+  // answer it would be the landing bug wearing the other mask.
+  sbOf[T3] = sbOf[T3].concat([{role: "user", html: "<p>and the docs</p>"}]);
+  await poll();
+  ok("fold: a prompt with nothing back yet does not fold the read behind it",
+     recs().length === 1 && findAll(sbEl(), "turn").length === 2,
+     recs().length + " records, " + findAll(sbEl(), "turn").length + " turns");
+
+  world = [S(T, "yourmove", 1, "scroll")];
+  sandbox.setPinned(T);
   await poll();
 
   // An **Ask** is the blocker of a **Blocked** Run and of nothing else. On an
@@ -1342,6 +1502,16 @@ const W = "wwwwwwww-3333-3333-3333-333333333333";
      mqBlock.slice(0, 200));
   ok("swipe: the Scrollback keeps the vertical axis and claims only the horizontal",
      rule(".sb").includes("touch-action:pan-y"), rule(".sb"));
+  // The stub runs no CSS, so only the stylesheet can say that the gutter is ONE
+  // column — which is the whole value of the Record, and the thing a variable
+  // prose gist could not give (ADR 0017).
+  ok("fold: the label gutter is one 40px column, the same on every record",
+     /grid-template-columns:40px minmax\(0,1fr\) auto/.test(rule(".rf")), rule(".rf"));
+  ok("fold: and every folded line is ONE line — a record's height is fixed",
+     rule(".rv").includes("white-space:nowrap") && rule(".rv").includes("text-overflow:ellipsis"),
+     rule(".rv"));
+  ok("fold: the detached node foldText reads through is never drawn",
+     rule(".foldvoid") === "display:none", rule(".foldvoid"));
   ok("swipe: the landing cue is a fixed overlay — a cue may not move the read",
      rule(".edge").includes("position:fixed") && /\.edge\.on\{opacity/.test(HTML),
      rule(".edge"));
