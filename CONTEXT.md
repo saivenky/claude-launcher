@@ -167,8 +167,12 @@ The recent **turns** and **work** of the Focus's **Session**, newest last —
 what the Focus shows in place of a single message. A *window on the
 transcript*, not the transcript itself: it is a bounded tail, and a **Foreign
 Run**'s Session has one just as a Managed Run's does, because it is read from
-the transcript and not from a pane. Distinct from the **rendered pane**, which
-is the live TUI and the only place a permission prompt exists (ADR 0009).
+the transcript and not from a pane. Read as **exchanges** rather than as a flat
+list: they are **folded** by distance from now, cut by a **seam**, and the page
+lands on that seam so the newest prose is on screen before you move (ADR 0017).
+That grouping is presentation only — the payload is still the bounded list of
+entries ADR 0014 bounds. Distinct from the **rendered pane**, which is the live
+TUI and the only place a permission prompt exists (ADR 0009).
 _Avoid_: history, log, transcript (the file on disk — the scrollback is a
 read of its tail), context (was the old single-message field; see ADR 0014)
 
@@ -178,8 +182,9 @@ assistant reply. Never tool calls: those are **Work**, the scrollback's other
 kind of entry, and no row of the transcript carries both (ADR 0016). A slash
 command you invoked is a Turn of yours; the skill body it injects is not,
 because you did not send it.
-_Avoid_: message (overloaded), exchange (that is a pair), event; entry (a Turn
-is one *kind* of scrollback entry, not the general word for one)
+_Avoid_: message (overloaded), exchange (an **Exchange** is a whole group of
+entries — a Turn of yours is only what *opens* one), event; entry (a Turn is one
+*kind* of scrollback entry, not the general word for one)
 
 **Work**:
 One entry of a **Scrollback** standing for a contiguous stretch of tool calls —
@@ -191,6 +196,51 @@ prose the Scrollback exists to show (ADR 0016).
 _Avoid_: tool run / run of calls (**Run** is one `claude` process here, and that
 collision is not survivable), step, activity, action, tool use (the atom, not
 the stretch)
+
+**Exchange**:
+One **turn** of yours plus everything the **Run** said and did in reply — the
+unit the **Scrollback** is read in. Its boundary is not a judgement call: an
+Exchange opens on something *you* did (a Turn or a slash command) and runs to the
+next such thing, which is the same boundary ADR 0016 uses to break a `claude`
+block. Derived in the client from the entries the payload already carries; it is
+not a field and it costs `/api/board` nothing. A **Foreign Run**'s Session groups
+into Exchanges exactly as a Managed one's does.
+_Avoid_: chapter (the prototype's word, and it implies an author chose where the
+break went), thread, block (that is ADR 0016's chained assistant run), pair (an
+Exchange holds one prompt and any number of replies and **Works**), conversation
+
+**Record**:
+A past **Exchange** folded to a fixed three-line shape in one 40px label gutter:
+`you` (your prompt), `work` (what it touched — the **Works**' calls
+run-length-encoded, with a `⚙n` count), `claude` (the reply's first sentence, or
+that reply's closing question to you, in teal). The label says *who*, and the
+same three words are used at every depth of the **Fold**. Fixed shape is the
+whole value — the column can be skimmed without reading a value — which is why it
+beat a variable-length prose gist (ADR 0017). Tap it and it opens to prose in
+place, anchored, at 0px of drift.
+_Avoid_: card (the **Focus**'s rendering, and this is not it), row (names the
+shape, not the thing), summary / gist / headline (each was the rejected design —
+a Record is three answers, not one sentence), entry (a **Turn** and a **Work**
+are entries; a Record folds several of them)
+
+**Fold**:
+How much of an **Exchange** the **Scrollback** shows, graded by distance from
+now: the live tail is full prose, the run-up inside the Exchange you are standing
+in is one gutter row per thing that was said, and every older Exchange is one
+**Record**. Presentation and nothing else — folded or unfolded, the payload is
+the same. `read all` unfolds the lot and restores the linear read.
+_Avoid_: collapse (names one direction of one row), truncation (nothing is
+dropped — it is all one tap away), summary, digest
+
+**Seam**:
+The `NEWEST` rule that cuts the **Fold** from the live prose below it, and the
+thing the page *lands on* — parked 250px down, not against the header, so the tail
+of the run-up peeks above it. That peek is load-bearing: it is how a reader learns
+there is a Fold and that it is skimmable. Below the seam the label gutter stops
+and the read takes the full column.
+_Avoid_: divider / rule (names the pixels, not the landing), fold (the Fold is
+the folded region; the seam is its edge), anchor (that is the scroll mechanic
+every unfold uses), marker
 
 **Ask**:
 The specific input a **Blocked** **Run** needs from you — the concrete
@@ -331,6 +381,20 @@ _Avoid_: access, availability
 - A **Work** is delimited by **turns**: it begins when something stops being
   said and ends when something is said again. So a Scrollback never holds two
   adjacent Works, and what a Work contains is never a matter of judgement
+- An **Exchange** groups a **Scrollback**'s entries; it never changes them or how
+  many there are. So the bound is still ADR 0014's — a fixed number of **turns**
+  and **Works** — and an Exchange whose opening Turn has slid out of the window is
+  a real Exchange with no prompt, labelled as such rather than hidden
+- The **Fold** is graded by distance from now, so the **Exchange** you are
+  standing in is never a **Record**: its run-up is rows and its tail is prose.
+  Only Exchanges you have finished with fold that far
+- A **Record** goes teal when its Exchange ended by putting a question to you.
+  In chronological order your answer is the very next row *down* — which is the
+  relation an inverted order destroys, and the reason the order is not negotiable
+- The **Seam** is where the page lands, once per **Scrollback**, and only if you
+  are still parked where the last landing left you. Scroll up into history and it
+  leaves you there: an auto-scroll that yanks a reader is the same bug as landing
+  at the oldest entry, facing the other way
 - **Rotation** advances the **Focus** only on your action or when the Focus
   resolves. New work surfaces as a count on the queue — never by replacing
   what you are reading or typing in
@@ -413,6 +477,17 @@ _Avoid_: access, availability
   list. The tell that this was close: the payload field is `role: "work"` and
   the code still calls the loop variable a run in its own comments, where the
   surrounding text makes the sense unambiguous.
+- "asked" was drafted as a **Record**'s label for your prompt, and rejected —
+  twice, in two prototypes, which is why it is written down. **Ask** is a narrow
+  thing here (a **Blocked** Run's concrete blocker) and `asked` is it in the past
+  tense, so a label reading `ASKED` on every folded row would have made the
+  glossary's tightest term the page's loosest word. It failed on pixels too
+  (`REPLIED` will not fit a 40px gutter; `ASKED` and `ASKS` are two letters apart
+  at 8.5px uppercase). The labels say *who* — `you` / `work` / `claude` — and the
+  verb question is closed (ADR 0017)
+- "chapter" named an **Exchange** through three rounds of prototyping — retired.
+  It reads as something an author chose to break, where an Exchange's boundary is
+  mechanical: it opens on something *you* did, the same cut ADR 0016 already makes
 - "the ask" was used for any question a **Run** left hanging — resolved and
   narrowed to **Blocked** Runs only. The prose-`?` heuristic that fed it on an
   **idle** Run produced a second copy of the last **turn**, not new
