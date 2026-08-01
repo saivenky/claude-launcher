@@ -139,15 +139,24 @@ body{line-height:calc(1.6*var(--lhx))}
 
 # --- 5. the knob panel -----------------------------------------------------
 # Bottom-LEFT: the composer's send button owns the bottom-right, and the swipe
-# hint owns the bottom strip until it is dismissed. Collapsed to a 34px dot so
-# it costs the read nothing while you are actually reading.
+# hint owns the bottom strip until it is dismissed.
+#
+# THE DOT IS DELIBERATELY LOUD, and the first cut was not — which is why this
+# comment exists. It was `background:var(--panel)` with a `--line` hairline,
+# on the reasoning that a prototype control should cost the read nothing. But
+# it sits 66px up the left edge, which on a phone is directly over the sticky
+# composer, and .respond's background is `var(--panel)` too: a #14181d circle
+# on a #14181d field, hairlined in #232a31. Present in the DOM, invisible on
+# the glass. Accent fill, and it is the one thing on the page that is allowed
+# to shout — it is not part of the Board and should never be mistaken for it.
 PANEL_CSS = """
 /* ================= PROTOTYPE KNOBS — NOT PART OF THE BOARD ================= */
-#kb{position:fixed;left:10px;bottom:calc(var(--barh) + 14px);z-index:60;
-font:11px/1.3 var(--mono)}
-#kbdot{width:34px;height:34px;border-radius:999px;background:var(--panel);
-border:1px solid var(--line);color:var(--dim);font:16px/1 var(--mono);cursor:pointer;
-box-shadow:0 3px 12px var(--shadow-soft);padding:0}
+#kb{position:fixed;left:10px;z-index:60;font:11px/1.3 var(--mono);
+bottom:calc(var(--barh) + 16px + env(safe-area-inset-bottom,0px))}
+#kbdot{width:42px;height:42px;border-radius:999px;background:var(--accent);
+border:2px solid var(--on-accent);color:var(--on-accent);
+font:700 15px/1 var(--mono);cursor:pointer;
+box-shadow:0 4px 16px rgba(0,0,0,.5);padding:0}
 #kbpanel{display:none;background:var(--panel);border:1px solid var(--line);
 border-radius:12px;padding:11px 12px 12px;box-shadow:0 8px 30px var(--shadow-sheet);
 min-width:238px;max-width:calc(100vw - 24px)}
