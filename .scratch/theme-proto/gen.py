@@ -210,9 +210,15 @@ PANEL_HTML = """
 </div>
 """
 
-PANEL_JS = """
-<script>
-/* ============ PROTOTYPE KNOBS — NOT PART OF THE BOARD ============
+# IT HAS TO BE AN EXTERNAL FILE. The server sends
+#   Content-Security-Policy: default-src 'none'; script-src 'self'; ...
+# and `script-src 'self'` drops inline <script> on the floor — silently, as far
+# as the page is concerned: board.js runs (external, same-origin), the panel's
+# markup parses and renders, and the handler simply never attaches, so the dot
+# is there and tapping it does nothing. Note the inline <style> above is fine;
+# the policy carries `style-src 'unsafe-inline'` and no such allowance for
+# script. Served at /proto.js off the same whitelist as board.js.
+PANEL_JS = """/* ============ PROTOTYPE KNOBS — NOT PART OF THE BOARD ============
    No persistence, deliberately: this panel exists for one sitting, to settle
    four values. Whatever wins gets written into board.html by hand. */
 (function(){
@@ -255,7 +261,6 @@ PANEL_JS = """
 
   apply();
 })();
-</script>
 """
 
 
@@ -307,8 +312,11 @@ def main() -> None:
     # -- light palette, density, panel CSS: appended inside <style>, so they
     # -- win every cascade tie against the rules above.
     html = html.replace("\n</style>", "\n" + LIGHT + DENSITY + PANEL_CSS + "</style>")
-    html = html.replace('<script src="board.js"></script>',
-                        PANEL_HTML + '<script src="board.js"></script>' + PANEL_JS)
+    html = html.replace(
+        '<script src="board.js"></script>',
+        PANEL_HTML + '<script src="board.js"></script>\n<script src="proto.js"></script>')
+    with open(os.path.join(ROOT, "web", "proto.js"), "w", encoding="utf-8") as fh:
+        fh.write(PANEL_JS)
     html = html.replace("<title>claude board</title>",
                         "<title>claude board — proto</title>")
 
