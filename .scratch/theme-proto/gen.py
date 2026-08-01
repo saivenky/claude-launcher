@@ -177,6 +177,9 @@ font:13px/1 var(--mono);cursor:pointer;padding:2px 4px}
 #kbpanel{position:relative}
 #kbnow{color:var(--dim);font-size:8.5px;margin-top:9px;letter-spacing:.4px;
 white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+/* Which of the serif stack the DEVICE actually has — the thing a screenshot
+   cannot tell you and the thing the face decision turns on. */
+#kbfonts{color:var(--accent);font-size:8.5px;margin-top:3px;line-height:1.5;opacity:.85}
 """
 
 PANEL_HTML = """
@@ -206,6 +209,7 @@ PANEL_HTML = """
         ><button data-v=1.16>roomy</button>
       </div></div>
     <div id=kbnow></div>
+    <div id=kbfonts></div>
   </div>
 </div>
 """
@@ -232,6 +236,25 @@ PANEL_JS = """/* ============ PROTOTYPE KNOBS — NOT PART OF THE BOARD ========
   var kb = document.getElementById('kb');
   var root = document.documentElement;
 
+  /* WHICH face actually rendered. A stack silently falls through, so on a
+     phone you cannot tell Charter from Georgia from Times by looking — and
+     the answer decides whether a serif is safe to ship or needs a webfont.
+     Width-comparison rather than document.fonts.check, which is unreliable
+     for locally-installed families: set the candidate ahead of a generic,
+     and if the measured width moved, the candidate exists. */
+  function have(name){
+    var c = document.createElement('canvas').getContext('2d');
+    var s = 'mmmmmmmmwwwwwwwwiiiiiiiil1I0O';
+    return ['monospace','serif','sans-serif'].some(function(g){
+      c.font = '72px ' + g;
+      var base = c.measureText(s).width;
+      c.font = '72px "' + name + '",' + g;
+      return c.measureText(s).width !== base;
+    });
+  }
+  var PROBE = ['Charter','Iowan Old Style','Georgia','Palatino','Baskerville',
+               'Hoefler Text','Times New Roman','Avenir Next','Verdana'];
+
   function apply(){
     root.setAttribute('data-theme', state.theme);
     root.style.setProperty('--fs', state.fs);
@@ -246,6 +269,8 @@ PANEL_JS = """/* ============ PROTOTYPE KNOBS — NOT PART OF THE BOARD ========
     document.getElementById('kbnow').textContent =
       state.theme + ' \\u00b7 ' + state.fs + '\\u00d7 \\u00b7 ' + state.face +
       ' \\u00b7 lh ' + state.lhx;
+    document.getElementById('kbfonts').textContent =
+      'on this device: ' + PROBE.filter(have).join(', ');
   }
 
   kb.addEventListener('click', function(e){

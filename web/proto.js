@@ -12,6 +12,25 @@
   var kb = document.getElementById('kb');
   var root = document.documentElement;
 
+  /* WHICH face actually rendered. A stack silently falls through, so on a
+     phone you cannot tell Charter from Georgia from Times by looking — and
+     the answer decides whether a serif is safe to ship or needs a webfont.
+     Width-comparison rather than document.fonts.check, which is unreliable
+     for locally-installed families: set the candidate ahead of a generic,
+     and if the measured width moved, the candidate exists. */
+  function have(name){
+    var c = document.createElement('canvas').getContext('2d');
+    var s = 'mmmmmmmmwwwwwwwwiiiiiiiil1I0O';
+    return ['monospace','serif','sans-serif'].some(function(g){
+      c.font = '72px ' + g;
+      var base = c.measureText(s).width;
+      c.font = '72px "' + name + '",' + g;
+      return c.measureText(s).width !== base;
+    });
+  }
+  var PROBE = ['Charter','Iowan Old Style','Georgia','Palatino','Baskerville',
+               'Hoefler Text','Times New Roman','Avenir Next','Verdana'];
+
   function apply(){
     root.setAttribute('data-theme', state.theme);
     root.style.setProperty('--fs', state.fs);
@@ -26,6 +45,8 @@
     document.getElementById('kbnow').textContent =
       state.theme + ' \u00b7 ' + state.fs + '\u00d7 \u00b7 ' + state.face +
       ' \u00b7 lh ' + state.lhx;
+    document.getElementById('kbfonts').textContent =
+      'on this device: ' + PROBE.filter(have).join(', ');
   }
 
   kb.addEventListener('click', function(e){

@@ -739,6 +739,9 @@ font:13px/1 var(--mono);cursor:pointer;padding:2px 4px}
 #kbpanel{position:relative}
 #kbnow{color:var(--dim);font-size:8.5px;margin-top:9px;letter-spacing:.4px;
 white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+/* Which of the serif stack the DEVICE actually has — the thing a screenshot
+   cannot tell you and the thing the face decision turns on. */
+#kbfonts{color:var(--accent);font-size:8.5px;margin-top:3px;line-height:1.5;opacity:.85}
 </style></head>
 <body><div class=zscrim id=zscrim hidden></div><div class=iscrim id=iscrim hidden></div><div class=wrap>
 <header><h1>◆ claude board</h1><span class=sub id=summary>loading…</span></header>
@@ -809,6 +812,7 @@ its dropup above it, where a dropup goes), then **Recover**, then resume by
         ><button data-v=1.16>roomy</button>
       </div></div>
     <div id=kbnow></div>
+    <div id=kbfonts></div>
   </div>
 </div>
 <script src="board.js"></script>
