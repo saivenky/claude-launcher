@@ -1,0 +1,860 @@
+<!doctype html><html lang=en><head><meta charset=utf-8>
+<meta name=viewport content="width=device-width,initial-scale=1">
+<title>claude board — proto</title>
+<style>
+:root{
+/* ---- PROTOTYPE KNOBS (see the panel, bottom-left) ---- */
+--fs:1;      /* type scale: one multiplier on the root, everything is rem */
+--lhx:1;     /* density: one multiplier on every line-height and gap */
+--face:-apple-system,BlinkMacSystemFont,"SF Pro Text",Inter,system-ui,sans-serif;
+--mono:ui-monospace,SFMono-Regular,Menlo,monospace;
+
+/* ---- DARK: byte-identical to board.html today ---- */
+--bg:#0c0e11;--panel:#14181d;--panel2:#0a0c0f;--fg:#dde3e9;--dim:#6b7681;
+--line:#232a31;--accent:#e6b450;--q:#7fd1c4;--p:#e6b450;--m:#8ab4f8;--w:#5b646d;--red:#e06c75;
+--line2:#171c22;--line3:#151a1f;
+--fg-max:#fff;--fg1:#ccd6e0;--fg2:#b9c4ce;--fg3:#98a4b0;
+--lbl:#4c5660;--lbl-you:#5d6a7a;--q-soft:#9fd8ce;--on-accent:#000;
+--scrim:rgba(0,0,0,.62);--shadow-strong:rgba(0,0,0,.75);--shadow-sheet:rgba(0,0,0,.6);
+--shadow-mid:rgba(0,0,0,.5);--shadow-soft:rgba(0,0,0,.45);--red-wash:rgba(224,108,117,.08);
+/* --- the reading column ---
+ONE bounded column for every surface on this page: the Board's header, the Focus
+card, the queue, the Foreign Runs, and the **Intake** sheet alike. Nothing here
+was ever laid out for a wide screen — 640px of transcript reads short, and a
+bottom sheet spanning viewport-edge-to-edge under a centred card made a monitor
+look like a stretched phone. 740px is what a prototype on real turns settled on.
+`--gut` is the whole trick: on a phone `max()` pins it to today's 14px, so the
+phone is pixel-identical to before; past ~768px it becomes the centring margin. */
+--col:740px;--gut:max(14px,calc(50% - var(--col)/2));
+/* The split rail's width, and 0 everywhere it does not exist. Every surface
+that spans the page — the reading column, the Intake sheet, the edge cue, the
+toast — offsets by it rather than sliding under it, so on a phone (where it is
+0px) the arithmetic below collapses to exactly what it was. Set to 290px by the
+>=900px media query at the bottom of this sheet, and nowhere else. */
+--rail:0px;
+/* THERE IS NO --dockh ANY MORE (ADR 0015). It measured the intake dock the
+composer used to stand on; **Intake** is a sheet behind a ＋ in the **Focus**'s
+header now, so the bottom edge is the composer and nothing else. Every offset
+that stood on it — .wrap's padding, #toast, .swipehint, .respond's sticky bottom
+and its .hid transform — lost the term rather than gained a zero. */
+/* The composer's height, and the only measured offset left. Only the swipe hint
+stands on it, and only until the first swipe — but a Blocked Focus grows this bar
+by a row of options, and the reply box is a textarea that grows per keystroke
+(board.js: growComposer), so it has to be measured rather than assumed, and
+re-measured as you type. */
+--barh:52px;}
+html{font-size:calc(16px * var(--fs))}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);
+font:0.875rem/1.6 var(--mono)}
+/* The bottom padding no longer clears a fixed dock (ADR 0015) — nothing is fixed
+at this edge but the composer, which is sticky and inside the card. It does still
+own the page's own safe-area inset, which the dock used to absorb for it. */
+.wrap{margin-left:var(--rail);padding:14px var(--gut) calc(28px + env(safe-area-inset-bottom,0px))}
+/* The summary is four counts and a separator each; on a 390px phone it does not
+fit beside the title, and an unwrapped flex row pushed it off the right edge. */
+header{display:flex;align-items:baseline;gap:4px 10px;padding-bottom:12px;flex-wrap:wrap}
+h1{font-size:0.875rem;margin:0;letter-spacing:.5px}
+.sub{color:var(--dim);font-size:0.75rem;margin-left:auto}
+.sub b{color:var(--accent)}
+
+.empty{border:1px dashed var(--line);border-radius:10px;padding:26px 16px;text-align:center;color:var(--dim)}
+
+/* No `overflow:hidden` any more: it would clip the sticky chrome below out of
+existence. The card's own children carry the corners instead. */
+.focus{background:var(--panel);border:1px solid var(--line);border-top:2px solid var(--m);
+border-radius:10px;--lane:var(--m)}
+.focus.bq{border-top-color:var(--q);--lane:var(--q)}
+.focus.bp{border-top-color:var(--p);--lane:var(--p)}
+
+/* --- the Focus's chrome: pixels only where it earns them ---
+The header and the composer are `position:sticky`, so the **turns** scroll UNDER
+them rather than around them, and `.hid` slides each one out with a transform.
+That pairing is the whole point: hidden chrome must reserve NO layout and hand
+its pixels straight to the read. A `max-height`/`display:none` hide cannot —
+it reflows the entire **Scrollback** and gives the reader nothing until it
+lands. Who wears `.hid` and when is board.js::syncChrome. */
+.fhead{display:flex;align-items:center;gap:8px;padding:11px 14px;border-bottom:1px solid var(--line);
+position:sticky;top:0;z-index:2;background:var(--panel);border-radius:9px 9px 0 0;
+transition:transform .2s ease,opacity .2s ease}
+.fhead.hid{transform:translateY(-110%);opacity:0}
+.fdir{font-weight:600;font-size:0.875rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
+.fbadge{font-size:0.625rem;text-transform:uppercase;letter-spacing:.7px;color:var(--m);
+border:1px solid var(--line);border-radius:4px;padding:1px 6px}
+.bq .fbadge{color:var(--q)} .bp .fbadge{color:var(--p)}
+.fmeta{color:var(--dim);font-size:0.6875rem;white-space:nowrap;flex:0 0 auto}
+.fsid{color:var(--dim);font-size:0.6875rem;white-space:nowrap;flex:0 0 auto}
+.fhead .fbadge{flex:0 0 auto}
+/* Four things do not fit across a 390px header once the queue count joins them.
+The sessionId is the one you never read on a phone — it is for pasting into a
+resume, which is not something you do from this strip. */
+@media(max-width:560px){.fsid{display:none}}
+.about{padding:8px 14px;border-bottom:1px solid var(--line);background:var(--panel2);font-size:0.78125rem}
+.albl{color:var(--dim);text-transform:uppercase;font-size:0.5625rem;letter-spacing:1px;margin-right:9px}
+
+/* --- the Scrollback: the Focus's recent turns, oldest first (ADR 0014) ---
+NO max-height and NO overflow, deliberately. The `max-height:46vh;overflow-y:auto`
+this replaces letterboxed a long run-up into ~388px of an 844px phone and put a
+second scrollbar inside the page's own. The scrollback flows into ordinary page
+scroll instead; that is the whole point of the change. */
+/* `touch-action:pan-y` because the horizontal gesture that moves the **Focus**
+lives here (board.js: the return path). Vertical panning is the read and stays
+the browser's; the horizontal axis is ours, and claiming it stops a finger's
+sideways travel being spent scrolling nothing. */
+/* TYPOGRAPHY IS PART OF THE DECISION, NOT A COAT OF PAINT (ADR 0017). The
+baseline set this whole read in 13px monospace at 1.6, which is what made it read
+like a log file and skim like one. Prose moves to the system UI face; monospace
+survives exactly where it MEANS machine — the label gutter, tool names, paths,
+counts, code — so the eye tells a path from a sentence without reading either.
+The height comes from the **Fold**; the read is not squeezed. */
+.sb{padding:7px 15px 14px;font-size:0.8125rem;border-bottom:1px solid var(--line);touch-action:pan-y;
+font-family:var(--face)}
+.turn{margin-bottom:15px} .turn:last-child{margin-bottom:2px}
+/* Only an OPENED **Record** draws this now: above the seam your prompt is a
+gutter row like everything else, and below it there is no prompt to draw. */
+.turn.you{background:var(--panel2);border:1px solid var(--line);
+border-radius:10px 10px 10px 3px;padding:8px 11px;opacity:.9}
+
+/* --- one claude block per stretch (ADR 0016), now carried by the gutter ---
+A contiguous run of assistant prose and **work runs** is still ONE block with
+ONE caption — the caption is just no longer a `claude` heading. Above the seam
+the 40px label gutter says who, once per row; below it the seam itself does. So
+0016's economy (143 captions across thirteen Sessions' last 14 entries, chained
+to 29) is honoured rather than undone, and the chain survives as what it always
+was server-side: the payload's grouping rule (ADR 0017). */
+
+/* --- a **work run**: a contiguous stretch of tool calls, on one line ---
+It used to be one dimmed chip per call, each in its own turn, each costing a
+slot of the 14 — measured at 5-8 of them on a live Session, evicting the prose
+ADR 0014 exists to show. Now the whole run is one entry: how many steps and
+roughly what of, until you tap it open. The rail is what says "work happened
+here" now that the caption above it is shared. */
+/* A work run is machine through and through — step counts, tool names, paths —
+so it keeps the monospace face the prose around it gave up (ADR 0017). That
+contrast IS the point: the eye tells a path from a sentence without reading
+either. */
+.work{margin-bottom:10px;border-left:1px solid var(--line);padding-left:10px;
+font-family:var(--mono)}
+.roll{font-size:0.71875rem;color:var(--dim);cursor:pointer;display:flex;gap:8px;align-items:baseline}
+.roll:hover{color:var(--fg)}
+.rollct{color:var(--accent);opacity:.8;flex:0 0 auto}
+/* The summary is a skim, so it stays ONE line however many steps it names —
+`nowrap` + ellipsis rather than wrap. Opening the run is what the detail is for. */
+.rollsum{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
+.rollcar{flex:0 0 auto;opacity:.5;font-size:0.5625rem;margin-left:auto}
+/* One line per call, opened. `grid` rather than flex so every detail starts on
+the same x: the tool names form a gutter you can skim without reading the
+arguments beside them. Each detail is ONE line — a Bash heredoc is 200 chars of
+one-lined transcript and would otherwise wrap into a wall. */
+.wline{display:grid;grid-template-columns:auto 1fr;gap:9px;align-items:baseline;
+font-size:0.71875rem;line-height:1.75;margin-top:2px}
+.wname{color:var(--accent);opacity:.8}
+.wdetail{color:var(--dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
+.wmore{font-size:0.65625rem;color:var(--w);margin-top:3px}
+
+/* The slash command you invoked, standing in for the skill body the server
+drops (ADR 0016). */
+.cmd{margin-bottom:15px;font-size:0.75rem;color:var(--m)}
+.cmd b{color:var(--accent);font-weight:600}
+
+/* --- the Fold: an older Exchange is one Record (ADR 0017) ---
+Measured on a 390×844 phone over live transcripts, the flat Scrollback was
+5064px — six screens — and the page opened at the top of it, i.e. at the OLDEST
+entry in the window. Everything older than the Exchange you are standing in
+folds to this: three lines, one 40px label gutter, `you` / `work` / `claude`.
+The gutter says WHO, and it is the same column on every Record, which is the
+whole value — the eye runs down it without reading a value. It costs ~52px a
+Record against a 26px prose gist, paid knowingly for a column the gist could not
+give at all. */
+.rec{border-bottom:1px solid var(--line2)}
+.rec:first-of-type{border-top:1px solid var(--line2)}
+.rhd{display:flex;align-items:flex-start;gap:7px;width:100%;text-align:left;
+background:transparent;border:0;color:var(--fg);font:inherit;padding:6px 0 7px;cursor:pointer}
+/* `auto` for the ⚙ count so it sits at the column edge and never pushes the
+artifacts, which are what the line is actually read for. */
+.rf{flex:1;min-width:0;display:grid;grid-template-columns:40px minmax(0,1fr) auto;
+column-gap:8px;align-items:baseline}
+.rl{grid-column:1;font:600 0.53125rem/1.85 var(--mono);letter-spacing:.9px;
+text-transform:uppercase;color:var(--lbl)}
+.rl.ru{color:var(--lbl-you)}
+/* Every line is ONE line: nowrap + ellipsis, because a Record that changed
+height with its contents would stop being a shape you can skim. */
+.rv{grid-column:2;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+font:0.7875rem/1.4 var(--face);
+color:var(--fg2)}
+/* your prompt is the Record's title, so it carries the weight; the reply under
+it is the answer and sits back a shade */
+.rv.ru{color:var(--fg1)}
+.rv.rs{color:var(--fg3)}
+/* only the artifacts stay machine-faced — that is how a path stops looking like
+a sentence without anyone reading either */
+.rv.rw{font-family:var(--mono);font-size:0.6625rem;
+line-height:1.6;color:var(--accent);opacity:.62}
+.rv.rdim{color:var(--w);font-style:italic}
+.rgear{grid-column:3;font:0.625rem/1.6 var(--mono);color:var(--accent);opacity:.55}
+/* It closed by putting a question to YOU — and in chronological order the answer
+to it is the very next row DOWN, which is the relation an inverted order
+destroys. This one line is allowed two, because it is the one you came back for. */
+.rl.rq{color:var(--q)}
+.rv.rq{color:var(--q-soft);white-space:normal;
+display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical}
+.recq .rl.ru{color:var(--q);opacity:.7}
+.rcar{flex:0 0 auto;font-size:0.53125rem;color:var(--w);padding-top:5px}
+.rhd:hover .rv{color:var(--fg)}
+/* Opened, the `you` line stays as the Record's title and the read appears under
+it — you already said which Exchange you wanted by tapping it, so it unfolds to
+PROSE and not to a second set of rows. */
+.recopen{background:var(--panel2);border-radius:9px;margin:4px -9px;padding:0 9px;
+border-bottom-color:transparent;box-shadow:0 0 0 1px var(--line)}
+.recopen .rv{white-space:normal;
+display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical}
+.rbody{padding:2px 0 11px}
+.rwait{font-size:0.71875rem;color:var(--dim);padding:3px 0}
+/* Never rendered into a document — foldText builds it detached, reads its text
+and drops it. Declared anyway: a stray one is then invisible rather than a
+duplicate of a turn nobody can explain. */
+.foldvoid{display:none}
+
+/* --- the strip, the number column, the run-up, and the **Seam** (ADR 0017) ---
+Everything here points ONE way. The number ascends from the top and the Exchange
+you are standing in carries the next one; `earlier` names what is below the strip
+and above the seam; `↓ newest` names the direction of now. That is why the order
+is not negotiable: a Record that went teal was answered by the very next row
+DOWN, and an inverted document makes that relation unreadable. */
+.ftop{display:flex;align-items:baseline;gap:8px;padding:1px 0 5px}
+.ftopl{font:700 0.5625rem/1 var(--mono);letter-spacing:1.5px;
+text-transform:uppercase;color:var(--w)}
+.ftopn{font:0.5625rem/1 var(--mono);letter-spacing:.6px;color:var(--dim)}
+.fbtn{background:none;border:1px solid var(--line);border-radius:999px;color:var(--dim);
+font:0.65625rem/1 var(--mono);padding:4px 8px;cursor:pointer}
+.fbtn:hover{color:var(--fg);border-color:var(--w)}
+.fbtngo{color:var(--lane);border-color:color-mix(in srgb,var(--lane) 40%,var(--line))}
+.rn{flex:0 0 13px;text-align:right;font:600 0.59375rem/1.85 var(--mono);color:var(--w)}
+.recq .rn{color:var(--q)}
+.rnow{color:var(--lane)}
+
+/* the Exchange you are standing in: your prompt on the same gutter as the
+Records above, then one row per thing Claude said on the way here */
+.now{margin-top:13px}
+.nhead{display:flex;align-items:flex-start;gap:7px;padding:0 0 3px}
+/* it WRAPS rather than ellipsising: this is the one prompt on the page that has
+to be read in full, and it still costs less than the bubble it replaces */
+.nask{grid-column:2/4;min-width:0}
+.nask .md{font-size:0.8125rem;line-height:1.42;color:var(--fg1)}
+.nask .md p{margin:0 0 5px}
+.nask .md>:last-child{margin-bottom:0}
+/* a run-up row is indented by the number column it does not use — these are
+steps within ONE Exchange, not Exchanges */
+.inrow{border-bottom:1px solid var(--line3);margin-left:20px}
+.inrow .rhd{padding:4px 0}
+.inopen{background:var(--panel2);border-radius:7px;margin:3px 0 3px 20px;padding:0 9px;
+border-bottom-color:transparent}
+.inbody{padding:0 0 9px}
+.wkrow{display:flex;align-items:baseline;gap:8px;margin-left:20px;padding:3px 0;
+border-bottom:1px solid var(--line3)}
+.wkrow>.rl.rw{flex:0 0 40px}
+.wkrow .work{flex:1;min-width:0;margin:0;border-left:0;padding-left:0}
+
+/* The seam is where the page lands — parked 250px down, not against the header,
+so the tail of the run-up peeks above it. That peek is load-bearing: it is how a
+reader learns there IS a Fold and that it is skimmable (board.js: SEAM_PEEK). */
+.seam{display:flex;align-items:center;gap:8px;margin:12px 0 10px}
+.seaml{font:700 0.59375rem/1 var(--mono);letter-spacing:1.6px;
+text-transform:uppercase;color:var(--lane)}
+.seamrule{flex:1;height:1px;background:linear-gradient(90deg,var(--lane),transparent);opacity:.45}
+.seamn{font:0.59375rem/1 var(--mono);color:var(--w)}
+
+/* Below the seam the gutter stops and the read takes the full column — the whole
+design in one line. This is where ADR 0016's live rail lives now: it marks the
+reply you are answering, and below the seam that is everything there is. */
+.live{border-left:2px solid var(--lane);padding-left:11px;margin-left:-13px}
+.live .md{color:var(--fg);font-size:0.90625rem;line-height:1.5}
+.live .cm{margin-bottom:10px}
+.live>:last-child{margin-bottom:0}
+/* a prompt with nothing back yet, below the read, taking the NEXT number */
+.pend{margin-top:14px}
+.rfpend{display:grid;grid-template-columns:13px 40px minmax(0,1fr);column-gap:7px;
+align-items:baseline}
+.rfpend .rn{flex:0 0 auto;grid-column:1}
+.rfpend .rl{grid-column:2}
+.rfpend .nask,.rfpend .cmd{grid-column:3}
+.cm{margin-bottom:10px}
+.cm:last-child{margin-bottom:0}
+/* A **Turn** is arbitrary transcript prose: file paths, URLs, long inline code.
+The box this replaced was `overflow-y:auto`, which quietly contained overflow on
+BOTH axes — dropping the scroll box dropped that containment too, and a single
+unbreakable token (`docs/plans/2026-07-24-processing-ui-plan.md`) was enough to
+push the whole page wider than the phone and strand the then-docked intake bar
+off-screen (deleted since, ADR 0015 — the failure mode is not: any fixed
+full-width surface at this edge goes the same way). The
+scrollback wraps hard; only a table is allowed to scroll, on its own axis. */
+.sb,.turn,.md{min-width:0;overflow-wrap:anywhere}
+/* markdown rendered server-side, escape-first (ADR 0006), set in the system UI
+face (ADR 0017) — looser per line and tighter per block than the log-file
+monospace it replaces. Code and paths keep the machine face, which is the whole
+distinction the change exists to make. */
+.md{font-family:var(--face);
+font-size:0.84375rem;line-height:1.54;color:var(--fg2)}
+.md h3,.md h4,.md h5,.md h6{font-size:0.71875rem;letter-spacing:.5px;color:var(--accent);margin:12px 0 5px}
+.md p{margin:0 0 8px} .md strong{color:var(--fg-max);font-weight:600}
+.md code,.md pre{font-family:var(--mono);font-size:0.75rem}
+.md code{background:var(--panel2);border:1px solid var(--line);border-radius:4px;padding:0 4px;color:var(--q)}
+.md ul{margin:6px 0;padding-left:18px} .md li{margin:3px 0}
+/* A table cannot wrap its way narrow, so it is the one thing that keeps a
+scrollbar — its own, on its own axis, instead of the whole page's. */
+.md table{border-collapse:collapse;margin:8px 0;font-size:0.75rem;width:100%;
+display:block;overflow-x:auto;max-width:100%}
+.md td,.md th{overflow-wrap:normal}
+.md th,.md td{border:1px solid var(--line);padding:3px 7px;text-align:left}
+.md th{color:var(--dim)}
+.md>:first-child{margin-top:0} .md>:last-child{margin-bottom:0}
+
+.pending{margin:10px 16px 0;padding:8px 10px;border:1px solid var(--red);border-radius:7px;
+background:var(--red-wash)}
+.plbl{font-size:0.65625rem;color:var(--red);margin-bottom:4px}
+.ptext{font-size:0.75rem;color:var(--fg);white-space:pre-wrap;word-break:break-word;opacity:.85}
+.pending .ghost{margin-top:7px;border-color:var(--red);color:var(--red)}
+/* The **Ask** is BELOW the read, so it is below the seam the page lands on — and
+on a 390px phone that put it under the composer. The landing takes a floor for it
+rather than this box moving (board.js: clearFloor): the peek above the seam is
+what pays, so nothing here is sticky and the read keeps the whole column. */
+.ask{padding:12px 16px;background:var(--panel2)}
+.ask .lbl{font-size:0.625rem;letter-spacing:1px;text-transform:uppercase;color:var(--accent)}
+.ask .qtext{font-size:0.84375rem;margin-top:4px;color:var(--fg-max)}
+/* THE COMPOSER *IS* THE BOTTOM EDGE (ADR 0015). It used to stand on the intake
+dock at `bottom:var(--dockh)`; the dock is deleted, so it stands on the viewport
+and owns the `env(safe-area-inset-bottom)` the dock absorbed on its behalf.
+`.actions` is still out of it and back in the card's flow, so the bar that
+follows you down the page is just the reply row: a full action strip riding this
+edge would spend the pixels ADR 0014 and ADR 0015 exist to recover. */
+.respond{padding:10px 16px calc(10px + env(safe-area-inset-bottom,0px));
+position:sticky;bottom:0;z-index:2;
+background:var(--panel);border-top:1px solid var(--line);border-radius:0 0 9px 9px;
+box-shadow:0 -10px 20px -12px var(--shadow-strong);
+transition:transform .2s ease,opacity .2s ease}
+/* `100%` is the bar's OWN height, so a composer grown to five rows still slides
+entirely off the bottom edge — one of the two things a growing box could have
+broken here. `bottom:0` sticky above is the other, and it holds too: the box grows
+UPWARD into the read, so the pixels it takes are only ever taken while you are
+actually typing into it. */
+.respond.hid{transform:translateY(100%);opacity:0}
+/* A working Focus keeps its reply box; this says where the text goes. */
+.queued{display:flex;align-items:center;gap:6px;color:var(--m);font-size:0.6875rem;margin:0 2px 7px}
+.opts{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px}
+.opt{background:transparent;border:1px solid var(--line);color:var(--fg);border-radius:6px;
+padding:5px 12px;font:inherit;font-size:0.8125rem;cursor:pointer}
+.opt:hover{border-color:var(--accent);color:var(--accent)}
+/* BOTTOM-ALIGNED, not centred: the box grows upward (see textarea.ti) and
+`respond →` must stay exactly where your thumb left it, so the row aligns on the
+one edge that does not move. Under the default `stretch` the button would have
+grown taller with every line typed, since its cross-size is `auto`. It keeps its
+own height here instead of matching the box's. */
+.replyrow{display:flex;gap:6px;align-items:flex-end}
+/* `flex:1` alone keeps `min-width:auto`, so the box refused to shrink below
+its placeholder and shoved `respond →` off the right edge of a 390px phone. */
+.ti{flex:1;min-width:0;background:var(--panel2);border:1px solid var(--line);color:var(--fg);
+border-radius:7px;padding:8px 10px;font:inherit;font-size:0.8125rem}
+/* THE REPLY BOX IS A TEXTAREA, ONE ROW AT REST (ADR 0015). **Respond** carries
+prose, and a single-line input showed the last few words of it through a keyhole.
+It deliberately declares NO font, padding, line-height or height of its own: it
+shares `.ti` above with the input it replaces, and `rows=1` states the height, so
+at rest it is that input to the pixel. That matters on every **Run** — a box three
+rows tall would hand back most of the pixels deleting the intake dock just
+recovered, including on the Runs you never type into.
+Growth is per keystroke and lands as an inline `height`, capped at five rows,
+because `field-sizing:content` would do it in CSS and is not in Safari yet — which
+is the phone this whole tool exists for. The cap is computed from this box's own
+line-height and padding rather than written here as a max-height (board.js:
+growComposer), so it follows the font instead of dating with it; past five rows the
+box scrolls inside itself.
+`resize:none` because a drag handle is desktop-only furniture, and it would fight
+the measured height anyway. */
+textarea.ti{display:block;resize:none;overflow-y:auto}
+.send{flex:0 0 auto}
+.send{background:var(--accent);color:var(--on-accent);border:0;border-radius:7px;padding:8px 16px;
+font:inherit;font-size:0.8125rem;font-weight:700;cursor:pointer}
+/* In the card's flow, above the sticky composer — not inside it. It wraps now,
+which it has to: the card lost `overflow:hidden` (see .focus), and this row of
+six controls was only ever fitting a phone by being clipped by it. */
+.actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:2px 16px 11px}
+.grow{flex:1}
+.prisel{font-size:0.71875rem;color:var(--dim);cursor:pointer}.prisel b{color:var(--accent)}
+.ghost{background:transparent;border:1px solid var(--line);color:var(--dim);border-radius:6px;
+padding:4px 10px;font:inherit;font-size:0.71875rem;cursor:pointer}
+.ghost:hover{border-color:var(--dim);color:var(--fg)}
+
+.qhead{display:flex;align-items:center;gap:8px;margin:22px 4px 8px;
+font-size:0.6875rem;letter-spacing:1px;text-transform:uppercase;color:var(--dim)}
+.qhead .ct{background:var(--line);border-radius:9px;padding:0 7px}
+/* `answered · still running` — the zone the Run you just replied to lands in.
+It is yours, so it is accented and it leads, and it is NOT dimmed: if you are
+reading this list, the Run did not resurface on its own and the old label
+("resurfaces when it needs you") was a promise nothing kept. */
+.qhead.mine{color:var(--accent)}
+.qhead.mine .ct{background:var(--accent);color:var(--on-accent);font-weight:700}
+.qsub{color:var(--dim);font-size:0.6875rem;line-height:1.5;margin:-4px 4px 9px}
+.qrow{display:flex;align-items:center;gap:9px;width:100%;text-align:left;background:var(--panel);
+border:1px solid var(--line);border-left:3px solid var(--w);border-radius:8px;
+padding:9px 11px;margin-bottom:6px;color:var(--fg);font:inherit}
+.qrow:hover{border-color:var(--dim)}
+.qrow.lane-q{border-left-color:var(--q)} .qrow.lane-p{border-left-color:var(--p)} .qrow.lane-m{border-left-color:var(--m)}
+/* "you are here". Deliberately AFTER the lane rules, so it takes the left rule
+too: in the rail this is the swipe's readout — move the Focus with a gesture and
+the accent moves with it, which is the only way a monitor shows where a gesture
+put you. */
+.qrow.now{border-color:var(--accent)}
+.qbadge{font-size:0.59375rem;text-transform:uppercase;letter-spacing:.5px;color:var(--dim);min-width:58px}
+.lane-q .qbadge{color:var(--q)} .lane-p .qbadge{color:var(--p)} .lane-m .qbadge{color:var(--m)}
+.qdir{font-weight:600;font-size:0.78125rem;white-space:nowrap}
+.qone{color:var(--dim);font-size:0.75rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex:1}
+.flag{color:var(--accent)}
+.dim{opacity:.5}
+.note{color:var(--dim);font-size:0.6875rem;margin-top:22px;border-top:1px solid var(--line);padding-top:10px}
+/* Clears the composer, so feedback never lands on the box you are about to type
+in next. It used to clear the dock plus a GUESSED one-line composer (`--dockh` +
+62px); with the dock gone (ADR 0015) it stands on the same measured `--barh` the
+swipe hint does, which is honest about a **Blocked** Focus's extra row too. */
+#toast{position:fixed;left:calc(50% + var(--rail)/2);bottom:calc(var(--barh) + 12px);transform:translateX(-50%);background:var(--panel);
+border:1px solid var(--line);color:var(--fg);padding:8px 14px;border-radius:8px;font-size:0.75rem;z-index:40}
+
+/* --- Intake: a sheet behind a ＋, never the bottom edge (ADR 0015) ---
+Every shape of **Intake** — the generic-dir launch row, **Recover**, **resume**
+by `sessionId`, the **Task** / **Dispatch** buttons — in ONE bottom sheet, opened
+by the ＋ in the **Focus**'s sticky header. It replaces the docked launch bar of
+ADR 0008 and the Recover pill above it: those two were a *create* surface holding
+the one strip that cannot be scrolled away from, for a verb used a handful of
+times a day, while the half you are actually using at the live end of a read is
+**Observe** / **Respond**.
+Deliberately THE SAME OBJECT as the queue sheet (.zones, below): over the read
+rather than under it, a scrim behind it, dismissed by the scrim or by acting. Two
+sheets, one idiom — and never both open, which board.js enforces.
+IT LIVES IN THE FLOW, between #pending and #app, and `position:fixed` lifts it
+out. That is what makes the inline case (.isheet.inline, below) need no node
+moved at runtime: drop the fixed positioning and it is already exactly where the
+empty Board wants it — above the card slot. */
+.isheet{position:fixed;left:var(--rail);right:0;bottom:0;z-index:43;
+background:var(--panel);border-top:1px solid var(--line);border-radius:16px 16px 0 0;
+max-height:86vh;overflow-y:auto;
+padding:8px var(--gut) calc(18px + env(safe-area-inset-bottom,0px));
+box-shadow:0 -8px 34px var(--shadow-sheet);
+transform:translateY(101%);visibility:hidden;transition:transform .22s ease,visibility .22s}
+.isheet.open{transform:none;visibility:visible}
+.iscrim{position:fixed;inset:0;z-index:42;background:var(--scrim)}
+.iscrim[hidden]{display:none}
+.igrab{width:38px;height:4px;border-radius:2px;background:var(--line);margin:2px auto 12px}
+.ihead{color:var(--dim);font-size:0.625rem;letter-spacing:1.1px;text-transform:uppercase;
+margin:0 0 10px 2px}
+/* The generic-dir launch row: ADR 0008 measured it as the hot path, so it is the
+sheet's first row. Was `.dockbar`, named for the bar that held the bottom edge —
+inside the sheet it is the launch row and carries no panel of its own. */
+.ilaunch{display:flex;align-items:center;gap:8px;margin-bottom:12px}
+/* A shadow belongs to a surface that floats over the page; the dropup is inside
+one now, so it keeps its border and loses the lift. */
+.isheet .dirpop{box-shadow:none}
+/* The one affordance that opens Intake, in the **Focus**'s sticky header — the
+only strip still on screen once the read has scrolled past everything else (ADR
+0015). AT EVERY WIDTH, unlike .zbtn below, which is display:none at >=900px
+because the rail draws the queue there: nothing draws Intake in the rail, so
+there is no duplicate to avoid and no breakpoint fork to maintain. It falls in
+behind the queue count when there is one and takes the header's `auto` when there
+is not. NO RECOVER BADGE ON IT — board.js::renderRecoverRow says why. */
+.iplus{flex:0 0 auto;margin-left:8px;width:28px;height:28px;border-radius:999px;
+background:var(--panel2);border:1px solid var(--line);color:var(--dim);
+font:inherit;font-size:0.9375rem;line-height:1;cursor:pointer;padding:0}
+.iplus:hover{border-color:var(--dim);color:var(--fg)}
+/* Marked while the sheet is open, in the same accent vocabulary as .zbtn.hot. */
+.iplus.hot{border-color:var(--accent);color:var(--accent)}
+.fhead .fmeta+.iplus{margin-left:auto}
+.fhead .zbtn+.iplus{margin-left:6px}
+/* **Recover**, a row in the sheet rather than a pill on the bottom edge. It keeps
+the accent — after a restart it is still the loud thing — but it is loud INSIDE
+the surface you opened, not on the edge you read over. Hidden outright when
+nothing is resumable, which is the condition the pill also had and which was
+nearly always true (board.js: renderRecoverRow). */
+.irecov{display:flex;align-items:center;gap:10px;width:100%;margin-bottom:12px;
+background:var(--panel2);border:1px solid var(--accent);color:var(--accent);
+border-radius:10px;padding:11px 13px;font:inherit;font-size:0.8125rem;font-weight:700;
+letter-spacing:.3px;cursor:pointer;text-align:left}
+.irecov[hidden]{display:none}
+.irecov:active{background:var(--accent);color:var(--on-accent)}
+.irecov .n{margin-left:auto;font-weight:400;font-size:0.71875rem;opacity:.85}
+/* THE EMPTY BOARD's second layout (ADR 0015). With no **Focus** there is no
+`.fhead`, so there is no ＋ and no way to open a sheet — so Intake stops being one
+and renders inline, open, in the page flow above the card slot, with no scrim and
+nothing that dismisses it. This is the post-reboot screen, where Intake is the
+only thing you can do, and it is what replaced the Recover pill as the thing that
+makes a **Resumable Session** obvious. Losing `position:fixed` is the whole move:
+the element is already at this point in the document. .wrap's own gutter supplies
+the column, hence padding:0. */
+.isheet.inline{position:static;transform:none;visibility:visible;max-height:none;
+overflow:visible;background:none;border:0;border-radius:0;box-shadow:none;
+padding:0;margin-bottom:16px}
+.isheet.inline .igrab{display:none}
+.dprompt{color:var(--dim);font-size:0.78125rem;white-space:nowrap}
+.dinp{flex:1;min-width:6ch;background:var(--panel2);color:var(--accent);border:0;
+border-bottom:1px dashed var(--dim);font:inherit;font-size:0.8125rem;padding:5px 6px;outline:0}
+.dinp:focus{border-bottom-color:var(--accent)}
+.dgo{flex:0 0 auto;background:transparent;border:1px solid var(--fg);color:var(--fg);border-radius:7px;
+padding:6px 13px;font:inherit;font-size:0.78125rem;cursor:pointer}
+.dgo:active{background:var(--fg);color:var(--bg)}
+.dirpop{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:6px;
+margin-bottom:8px;box-shadow:0 6px 22px var(--shadow-soft);max-height:44vh;overflow-y:auto}
+.dirpop[hidden]{display:none}
+.diritem{display:block;width:100%;text-align:left;background:transparent;border:0;color:var(--fg);
+font:inherit;font-size:0.8125rem;padding:9px 10px;border-radius:7px;cursor:pointer}
+.diritem:hover{background:var(--panel2)}
+.diritem:active{background:var(--panel2);color:var(--accent)}
+.dlbl{display:block;color:var(--dim);font-size:0.59375rem;letter-spacing:1px;text-transform:uppercase;margin:0 0 6px}
+.dlbl[hidden]{display:none}
+.drow{display:flex;align-items:center;gap:8px;margin-bottom:12px}
+.taskgroup{margin-bottom:8px}.taskgroup:last-child{margin-bottom:0}
+.tseed{width:100%;background:var(--panel2);color:var(--fg);border:1px solid var(--line);border-radius:7px;
+padding:7px 9px;font:inherit;font-size:0.8125rem;margin-bottom:6px;resize:vertical}
+.tbtns{display:flex;gap:6px;flex-wrap:wrap}
+.startcard{display:flex;align-items:center;gap:10px;background:var(--panel);border:1px solid var(--line);
+border-top:2px solid var(--dim);border-radius:10px;padding:12px 14px;margin-bottom:8px;color:var(--dim)}
+.spin{flex:0 0 auto;width:11px;height:11px;border:2px solid var(--line);border-top-color:var(--accent);
+border-radius:50%;animation:spin 1s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+@media(prefers-reduced-motion:reduce){.spin{animation:none}
+.fhead,.respond,.isheet{transition:none}
+.swipehint,.edge{transition:none}}
+.qbody{flex:1;min-width:0;display:flex;align-items:center;gap:9px;background:transparent;border:0;
+color:inherit;font:inherit;text-align:left;padding:0;cursor:pointer}
+.rowact{flex:0 0 auto;display:flex;gap:6px;margin-left:4px}
+.iconbtn{background:transparent;border:1px solid var(--line);color:var(--dim);border-radius:6px;
+min-width:30px;height:28px;font:inherit;font-size:0.75rem;cursor:pointer;padding:0 7px}
+a.iconbtn{display:inline-flex;align-items:center;justify-content:center;text-decoration:none}
+.iconbtn:hover{border-color:var(--dim);color:var(--fg)}
+.iconbtn.x:hover{border-color:var(--red);color:var(--red)}
+a.ghost{text-decoration:none;display:inline-block}
+
+/* --- Foreign Runs: the quiet section (ADR 0012) ---
+Deliberately unlike a .qrow: no lane colour, no left rule, a recessed panel and
+a lighter weight. It must read as "this exists elsewhere", never as a row
+waiting its turn in the queue. */
+.fgnote{color:var(--dim);font-size:0.6875rem;line-height:1.5;margin:-2px 4px 8px}
+.fgbox{opacity:.72}
+.frow{background:var(--panel2);border:1px solid var(--line);border-radius:8px;
+padding:8px 11px;margin-bottom:6px}
+.fghead{display:flex;align-items:center;gap:9px}
+.fgbadge{font-size:0.59375rem;text-transform:uppercase;letter-spacing:.5px;color:var(--dim);
+min-width:58px;flex:0 0 auto}
+.fgdir{font-weight:600;font-size:0.78125rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.fgage{margin-left:auto;color:var(--dim);font-size:0.6875rem;flex:0 0 auto}
+.fgpath,.fgone{color:var(--dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.fgpath{font-size:0.6875rem;margin-top:3px}
+.fgone{font-size:0.75rem;margin-top:2px}
+/* The one thing a Foreign Run can be told to do. A labelled button, not a third
+.iconbtn glyph beside ↗ — the glyph row belongs to the queue, and borrowing it
+here would make these rows read as work waiting on you. Full row width so it is
+a comfortable phone target, dim until touched so the section stays quiet. */
+.fgxfer{display:block;width:100%;margin-top:7px;background:transparent;
+border:1px solid var(--line);border-radius:6px;color:var(--dim);font:inherit;
+font-size:0.71875rem;letter-spacing:.3px;padding:6px 8px;cursor:pointer}
+.fgxfer:hover{border-color:var(--dim);color:var(--fg)}
+.fgxfer:disabled{cursor:default;opacity:.55}
+
+/* --- Recover: the picker overlay (slice 04) ---
+The pill that used to sit above the launch bar and carry the recovery-set count is
+gone (ADR 0015): its one condition was `recoverSessions.length === 0`, so it was
+on the bottom edge whenever anything at all was resumable — nearly always — for a
+verb that answers a restart. It is `.irecov`, a row in the Intake sheet, now.
+The picker it opens is unchanged: a bottom-sheet overlay (not an inline dropup
+like dirpop), because a batch multi-select with a live count and a confirm needs
+more room than a tap-to-fill list — a sheet gives it a header, a scroll, and a
+sticky action. */
+.recovpanel{position:fixed;inset:0;z-index:50;display:flex;align-items:flex-end;justify-content:center;
+background:var(--shadow-sheet)}
+.recovpanel[hidden]{display:none}
+.recovsheet{width:100%;max-width:var(--col);background:var(--panel);border:1px solid var(--line);
+border-radius:14px 14px 0 0;max-height:86vh;display:flex;flex-direction:column;box-shadow:0 -6px 30px var(--shadow-mid)}
+.recovhead{display:flex;align-items:center;gap:8px;padding:14px 16px 6px}
+.recovheadt{font-weight:700;font-size:0.875rem;letter-spacing:.3px}
+.recovx{margin-left:auto;background:transparent;border:1px solid var(--line);color:var(--dim);
+border-radius:6px;min-width:30px;height:30px;font:inherit;font-size:1rem;line-height:1;cursor:pointer;padding:0}
+.recovx:hover{border-color:var(--dim);color:var(--fg)}
+.recovsub{color:var(--dim);font-size:0.71875rem;line-height:1.5;padding:0 16px 8px}
+.recovlist{flex:1;overflow-y:auto;padding:0 8px}
+.recovempty{color:var(--dim);font-size:0.75rem;text-align:center;padding:26px 16px}
+.recovrow{display:flex;align-items:center;gap:11px;padding:11px 8px;border-bottom:1px solid var(--line);cursor:pointer}
+.recovrow:last-child{border-bottom:0}
+.recovrow input{flex:0 0 auto;width:18px;height:18px;accent-color:var(--accent)}
+.recovmid{flex:1;min-width:0}
+.recovtitle2{font-size:0.8125rem;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.recovdir{color:var(--dim);font-size:0.6875rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:2px}
+.recovtime{flex:0 0 auto;color:var(--dim);font-size:0.6875rem;white-space:nowrap}
+.recovfoot{padding:10px 16px calc(12px + env(safe-area-inset-bottom,0px));border-top:1px solid var(--line)}
+.recovgo{width:100%;background:var(--accent);color:var(--on-accent);border:0;border-radius:9px;padding:11px;
+font:inherit;font-size:0.875rem;font-weight:700;cursor:pointer}
+.recovgo:disabled{opacity:.45;cursor:default}
+
+/* --- the return path, narrow: the swipe's cue and its one-off hint ---
+A gesture leaves no mark on a screen, so it needs both halves. The EDGE flashes
+on the side you moved toward and the toast names the Run you landed on — you
+have to know that something happened AND where it put you, and on a phone there
+is no rail to read it off. The HINT is the other half: nothing on the page says
+the gesture exists, so one dim line says it, until the first time the gesture is
+used (board.js: markSwipeUsed, remembered per device). It rides the same chrome
+state as everything else at this edge — read up into history and it clears. */
+.edge{position:fixed;top:0;bottom:0;width:3px;z-index:45;background:var(--accent);
+opacity:0;transition:opacity .3s ease;pointer-events:none}
+.edge.l{left:var(--rail)} .edge.r{right:0} .edge.on{opacity:.9}
+/* A strip across the column, not a floating pill. A pill is narrower than the
+line it covers, so the **Scrollback** showed through on both sides of it and the
+whole thing read as a rendering fault rather than a hint.
+Anchored on `--barh` — the composer's MEASURED height (board.js: syncBarHeight) —
+not a guessed offset: a **Blocked** Focus adds a row of options and grows that
+bar, the textarea grows it again on every keystroke, and a constant would put this
+underneath it exactly when either happens. It used to add `--dockh` to that; the
+dock is gone (ADR 0015), so the composer it stands on is the bottom edge and the
+term went with the dock. */
+.swipehint{position:fixed;left:var(--rail);right:0;
+bottom:var(--barh);z-index:29;color:var(--dim);font-size:0.6875rem;
+background:var(--bg);padding:6px var(--gut) 8px;text-align:center;pointer-events:none;
+transition:transform .2s ease,opacity .2s ease}
+.swipehint[hidden]{display:none}
+.swipehint.hid{transform:translateY(150%);opacity:0}
+
+/* --- the return path, wide: the split rail (>=900px) ---
+The same ring the swipe walks, spent as 290px of width a monitor never misses:
+always visible, no tap to open it and no gesture to remember. It is not an
+alternative to the swipe — they reinforce each other, because `.qrow.now` above
+moves as you swipe, so on a monitor the gesture has a readout.
+BELOW 900px THE RAIL DOES NOT EXIST. `--rail` stays 0px, every offset above
+collapses, and the phone keeps its zones and its swipe — cramming two panes into
+390px is the thing this breakpoint exists to refuse. */
+/* --- the return path, narrow: the queue as a sheet ---
+The rail is the wide answer; this is the same list at the same rank on a phone,
+where 290px of permanent width does not exist. It is a SHEET rather than a stack
+under the Focus: cards below the **Scrollback** put the queue at the end of an
+unbounded read, so the further you read the further the rest of the Board got —
+which is the wasted-real-estate complaint wearing a different hat. One tap on the
+count in the (sticky) card header brings it up over the read; a tap on a row
+takes the **Focus** and puts it away again. Reverted to ordinary flow at >=900px
+by the media query below, where the rail has already drawn it. */
+.zones{position:fixed;left:0;right:0;bottom:0;z-index:41;background:var(--panel);
+border-top:1px solid var(--line);border-radius:16px 16px 0 0;max-height:82vh;overflow-y:auto;
+padding:8px 14px calc(16px + env(safe-area-inset-bottom,0px));box-shadow:0 -8px 34px var(--shadow-sheet);
+transform:translateY(101%);visibility:hidden;transition:transform .22s ease,visibility .22s}
+.zones.open{transform:none;visibility:visible}
+.zgrab{width:38px;height:4px;border-radius:2px;background:var(--line);margin:2px auto 10px}
+.zscrim{position:fixed;inset:0;z-index:40;background:var(--scrim)}
+.zscrim[hidden]{display:none}
+/* The count, in the Focus's own sticky header — the one strip that is always on
+screen while you read. Hidden at >=900px: the rail is the queue there. It set the
+precedent the Intake ＋ follows (ADR 0015): this strip is already where the
+Board's *other* surface is entered, which is why .iplus above sits beside it —
+but .iplus is NOT in the display:none below, because nothing draws Intake in the
+rail. The `margin-left:auto` here is what .iplus inherits the job of when there
+is no queue at all. */
+.zbtn{margin-left:auto;flex:0 0 auto;background:var(--line);color:var(--fg);border:0;
+border-radius:999px;font:inherit;font-size:0.65625rem;letter-spacing:.4px;padding:4px 10px;cursor:pointer}
+.zbtn.hot{background:var(--accent);color:var(--on-accent);font-weight:700}
+.fhead .fmeta+.zbtn{margin-left:8px}
+
+.rail{display:none}
+@media(min-width:900px){
+.zones{position:static;transform:none;visibility:visible;background:none;border:0;
+border-radius:0;max-height:none;overflow:visible;padding:0;box-shadow:none}
+.zgrab,.zscrim,.zbtn{display:none}
+:root{--rail:290px;--gut:max(14px,calc(50% - var(--rail)/2 - var(--col)/2))}
+.rail{display:block;position:fixed;left:0;top:0;bottom:0;width:var(--rail);z-index:31;background:var(--panel2);border-right:1px solid var(--line);overflow-y:auto;padding:12px 10px calc(14px + env(safe-area-inset-bottom,0px))}
+.railhead{display:flex;align-items:baseline;gap:8px;padding:2px 4px 8px;color:var(--dim);font-size:0.625rem;letter-spacing:1.1px;text-transform:uppercase}
+.railhead b{color:var(--accent);font-size:0.75rem;letter-spacing:.3px}
+.rail .qhead{margin:15px 3px 7px}
+.rail .qrow{font-size:0.71875rem;padding:8px 9px}
+/* Two lines at 290px: badge + project, then the one-liner under them. The row's
+flex container is .qbody, so THAT is what has to wrap — wrapping .qrow instead
+left the one-liner laid over the badge. */
+.rail .qbody{flex-wrap:wrap;gap:6px}
+.rail .qbadge{min-width:0;white-space:nowrap}
+.rail .qdir{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis}
+.rail .qone{flex:0 0 100%;margin-top:1px;font-size:0.6875rem}
+/* The queue lives IN the rail here; drawn again under the card it would be the
+same list twice, three headings apart. The Foreign section is NOT part of it and
+stays in the flow — it is outside the triage surface and never in the ring. */
+.queues{display:none}
+}
+
+html[data-theme=light]{
+--bg:#f4f2ee;--panel:#fffefb;--panel2:#eceae4;--fg:#1c2126;--dim:#6a7078;
+--line:#dcd8d0;--accent:#96690a;--q:#0d7565;--p:#96690a;--m:#2f5fbf;--w:#9aa0a8;--red:#b83a30;
+--line2:#e6e3dc;--line3:#eceae4;
+--fg-max:#000;--fg1:#2a3038;--fg2:#3c434b;--fg3:#5a626b;
+--lbl:#9aa0a8;--lbl-you:#7c848d;--q-soft:#0f6a5c;--on-accent:#fff;
+--scrim:rgba(28,33,38,.34);--shadow-strong:rgba(28,33,38,.18);--shadow-sheet:rgba(28,33,38,.16);
+--shadow-mid:rgba(28,33,38,.14);--shadow-soft:rgba(28,33,38,.10);--red-wash:rgba(184,58,48,.07);
+}
+/* The Focus's top rule and the swipe edge are 2-3px of pure lane colour; at
+   light-theme saturation they hold, but the gradient seam rule needs help. */
+html[data-theme=light] .seamrule{opacity:.6}
+/* .dim is opacity:.5 — fine on black, washes out to nothing on white. */
+html[data-theme=light] .dim{opacity:.62}
+html[data-theme=light] .fgbox{opacity:.85}
+
+/* ---- PROTOTYPE: density, one multiplier over the vertical rhythm ---- */
+body{line-height:calc(1.6*var(--lhx))}
+.md{line-height:calc(1.54*var(--lhx))}
+.live .md{line-height:calc(1.5*var(--lhx))}
+.nask .md{line-height:calc(1.42*var(--lhx))}
+.rv{line-height:calc(1.4*var(--lhx))}
+.wline{line-height:calc(1.75*var(--lhx))}
+.md p{margin:0 0 calc(8px*var(--lhx))}
+.turn{margin-bottom:calc(15px*var(--lhx))}
+.cm{margin-bottom:calc(10px*var(--lhx))}
+.cm:last-child{margin-bottom:0}
+.live>:last-child{margin-bottom:0}
+.work{margin-bottom:calc(10px*var(--lhx))}
+.rhd{padding:calc(6px*var(--lhx)) 0 calc(7px*var(--lhx))}
+.inrow .rhd{padding:calc(4px*var(--lhx)) 0}
+.sb{padding:calc(7px*var(--lhx)) 15px calc(14px*var(--lhx))}
+.qrow{padding:calc(9px*var(--lhx)) 11px}
+.recovrow{padding:calc(11px*var(--lhx)) 8px}
+
+/* ================= PROTOTYPE KNOBS — NOT PART OF THE BOARD ================= */
+#kb{position:fixed;left:10px;bottom:calc(var(--barh) + 14px);z-index:60;
+font:11px/1.3 var(--mono)}
+#kbdot{width:34px;height:34px;border-radius:999px;background:var(--panel);
+border:1px solid var(--line);color:var(--dim);font:16px/1 var(--mono);cursor:pointer;
+box-shadow:0 3px 12px var(--shadow-soft);padding:0}
+#kbpanel{display:none;background:var(--panel);border:1px solid var(--line);
+border-radius:12px;padding:11px 12px 12px;box-shadow:0 8px 30px var(--shadow-sheet);
+min-width:238px;max-width:calc(100vw - 24px)}
+#kb.open #kbpanel{display:block}
+#kb.open #kbdot{display:none}
+.kbrow{margin-bottom:9px}
+.kbrow:last-child{margin-bottom:0}
+.kbl{display:block;color:var(--dim);font-size:8.5px;letter-spacing:1.1px;
+text-transform:uppercase;margin-bottom:4px}
+.kbseg{display:flex;gap:0;border:1px solid var(--line);border-radius:7px;overflow:hidden}
+.kbseg button{flex:1;min-width:0;background:transparent;border:0;
+border-right:1px solid var(--line);color:var(--dim);font:10.5px/1 var(--mono);
+padding:7px 2px;cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.kbseg button:last-child{border-right:0}
+.kbseg button.on{background:var(--accent);color:var(--on-accent);font-weight:700}
+#kbclose{position:absolute;top:6px;right:8px;background:none;border:0;color:var(--dim);
+font:13px/1 var(--mono);cursor:pointer;padding:2px 4px}
+#kbpanel{position:relative}
+#kbnow{color:var(--dim);font-size:8.5px;margin-top:9px;letter-spacing:.4px;
+white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+</style></head>
+<body><div class=zscrim id=zscrim hidden></div><div class=iscrim id=iscrim hidden></div><div class=wrap>
+<header><h1>◆ claude board</h1><span class=sub id=summary>loading…</span></header>
+<div id=pending></div>
+<!-- **Intake**, every shape of it, in one sheet opened by the ＋ in the Focus's
+sticky header (ADR 0015). It is authored HERE, in the flow just above the card
+slot, and `position:fixed` lifts it out to the bottom edge — so the empty Board's
+inline mode is one class (.isheet.inline) rather than a node moved at runtime.
+Order is deliberate: the dir launch ADR 0008 measured as the hot path first (with
+its dropup above it, where a dropup goes), then **Recover**, then resume by
+`sessionId`, then the **Task** / **Dispatch** buttons — rarest last. -->
+<div class=isheet id=isheet role=group aria-label=intake>
+  <div class=igrab></div>
+  <div class=ihead id=ihead>intake · start something new</div>
+  <div class=dirpop id=dirpop role=listbox hidden></div>
+  <div class=ilaunch>
+    <span class=dprompt id=dirroot>~/projects/</span>
+    <input class=dinp id=dir placeholder=subdir autocomplete=off role=combobox aria-autocomplete=list aria-controls=dirpop aria-expanded=false aria-label="project subdir under the projects root">
+    <button class=dgo id=launch>launch</button>
+  </div>
+  <button class=irecov id=recover aria-haspopup=dialog hidden>recover</button>
+  <label class=dlbl>resume a session</label>
+  <div class=drow><span class=dprompt>$ cl --resume </span><input class=dinp id=sid placeholder=sessionId autocomplete=off aria-label="session id to resume"><button class=dgo id=resume>resume</button></div>
+  <label class=dlbl id=taskslbl hidden>tasks</label>
+  <div id=tasks></div>
+</div>
+<div id=app></div>
+<div class=note>one card at a time, rest queued by urgency · new work waits its turn, it never cuts in · the card moves when you do.</div>
+<noscript>This board needs JavaScript to reach the live session API.</noscript>
+</div>
+<nav class=rail id=rail aria-label="board queue"></nav>
+<div class="edge l" id=edgel></div>
+<div class="edge r" id=edger></div>
+<div class=swipehint id=swipehint hidden>◂&nbsp; drag sideways to move between Runs &nbsp;▸</div>
+<div class=recovpanel id=recovpanel hidden role=dialog aria-modal=true aria-label="recover sessions">
+  <div class=recovsheet>
+    <div class=recovhead><span class=recovheadt id=recovtitle>recover</span><button class=recovx id=recovclose aria-label="close recover">×</button></div>
+    <div class=recovsub id=recovsub></div>
+    <div class=recovlist id=recovlist></div>
+    <div class=recovfoot><button class=recovgo id=recovgo disabled>resume 0</button></div>
+  </div>
+</div>
+<div id=toast role=status aria-live=polite hidden></div>
+
+<!-- ============ PROTOTYPE KNOBS — NOT PART OF THE BOARD ============ -->
+<div id=kb>
+  <button id=kbdot title="theme + type knobs">Aa</button>
+  <div id=kbpanel>
+    <button id=kbclose>×</button>
+    <div class=kbrow><span class=kbl>theme</span>
+      <div class=kbseg data-knob=theme>
+        <button data-v=dark>dark</button><button data-v=light>light</button>
+      </div></div>
+    <div class=kbrow><span class=kbl>type scale</span>
+      <div class=kbseg data-knob=fs>
+        <button data-v=0.95>0.95</button><button data-v=1>1.0</button
+        ><button data-v=1.1>1.1</button><button data-v=1.25>1.25</button
+        ><button data-v=1.4>1.4</button>
+      </div></div>
+    <div class=kbrow><span class=kbl>prose face</span>
+      <div class=kbseg data-knob=face>
+        <button data-v=system>system</button><button data-v=avenir>Avenir</button
+        ><button data-v=verdana>Verdana</button><button data-v=charter>Charter</button>
+      </div></div>
+    <div class=kbrow><span class=kbl>density</span>
+      <div class=kbseg data-knob=lhx>
+        <button data-v=0.88>compact</button><button data-v=1>normal</button
+        ><button data-v=1.16>roomy</button>
+      </div></div>
+    <div id=kbnow></div>
+  </div>
+</div>
+<script src="board.js"></script>
+<script>
+/* ============ PROTOTYPE KNOBS — NOT PART OF THE BOARD ============
+   No persistence, deliberately: this panel exists for one sitting, to settle
+   four values. Whatever wins gets written into board.html by hand. */
+(function(){
+  var FACES = {
+    system:'-apple-system,BlinkMacSystemFont,"SF Pro Text",Inter,system-ui,sans-serif',
+    avenir:'"Avenir Next","Avenir",system-ui,sans-serif',
+    verdana:'Verdana,"DejaVu Sans",Geneva,sans-serif',
+    charter:'Charter,"Iowan Old Style",Georgia,"Times New Roman",serif'
+  };
+  var state = {theme:'dark', fs:'1', face:'system', lhx:'1'};
+  var kb = document.getElementById('kb');
+  var root = document.documentElement;
+
+  function apply(){
+    root.setAttribute('data-theme', state.theme);
+    root.style.setProperty('--fs', state.fs);
+    root.style.setProperty('--lhx', state.lhx);
+    root.style.setProperty('--face', FACES[state.face]);
+    kb.querySelectorAll('.kbseg').forEach(function(seg){
+      var k = seg.dataset.knob;
+      seg.querySelectorAll('button').forEach(function(b){
+        b.classList.toggle('on', b.dataset.v === state[k]);
+      });
+    });
+    document.getElementById('kbnow').textContent =
+      state.theme + ' \u00b7 ' + state.fs + '\u00d7 \u00b7 ' + state.face +
+      ' \u00b7 lh ' + state.lhx;
+  }
+
+  kb.addEventListener('click', function(e){
+    var b = e.target.closest('button');
+    if (!b) return;
+    if (b.id === 'kbdot') { kb.classList.add('open'); return; }
+    if (b.id === 'kbclose') { kb.classList.remove('open'); return; }
+    var seg = b.closest('.kbseg');
+    if (!seg) return;
+    state[seg.dataset.knob] = b.dataset.v;
+    apply();
+  });
+
+  apply();
+})();
+</script>
+
+</body></html>
