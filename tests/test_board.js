@@ -1898,8 +1898,11 @@ const W = "wwwwwwww-3333-3333-3333-333333333333";
   // The stub runs no CSS, so only the stylesheet can say that the gutter is ONE
   // column — which is the whole value of the Record, and the thing a variable
   // prose gist could not give (ADR 0017).
-  ok("fold: the label gutter is one 40px column, the same on every record",
-     /grid-template-columns:40px minmax\(0,1fr\) auto/.test(rule(".rf")), rule(".rf"));
+  // 2.5rem rather than 40px since ADR 0018 made the read scalable: a gutter
+  // pinned in px stops lining up with the type at any other root size. Still
+  // ONE column, which is the thing under test.
+  ok("fold: the label gutter is one column, the same on every record",
+     /grid-template-columns:2\.5rem minmax\(0,1fr\) auto/.test(rule(".rf")), rule(".rf"));
   ok("fold: and every folded line is ONE line — a record's height is fixed",
      rule(".rv").includes("white-space:nowrap") && rule(".rv").includes("text-overflow:ellipsis"),
      rule(".rv"));
@@ -1919,12 +1922,22 @@ const W = "wwwwwwww-3333-3333-3333-333333333333";
   // Density is part of ADR 0017's decision, not a coat of paint: the baseline set
   // this whole read in 13px monospace at 1.6, which is what made it read like a
   // log file. Monospace survives exactly where it MEANS machine.
-  ok("density: prose is in the system UI face, not the log-file monospace",
-     /-apple-system/.test(rule(".md")) && /-apple-system/.test(rule(".sb")),
-     rule(".md"));
+  //
+  // The two faces are named ONCE as variables (ADR 0018 set the read in a serif
+  // and let the phone pick the theme), so the assertion is that prose wears the
+  // reading face and never the machine one — asserting a font stack here would
+  // pin the design to whichever family it happened to name.
+  ok("density: prose wears the reading face, not the log-file monospace",
+     /var\(--face\)/.test(rule(".md")) && /var\(--face\)/.test(rule(".sb")) &&
+     !/var\(--mono\)/.test(rule(".sb")), rule(".md"));
   ok("density: and the machine face survives where it means machine",
-     /ui-monospace/.test(rule(".md code,.md pre")) && /ui-monospace/.test(rule(".rl")) &&
-     /ui-monospace/.test(rule(".rv.rw")), rule(".md code,.md pre"));
+     /var\(--mono\)/.test(rule(".md code,.md pre")) && /var\(--mono\)/.test(rule(".rl")) &&
+     /var\(--mono\)/.test(rule(".rv.rw")), rule(".md code,.md pre"));
+  // …and the variables resolve to real stacks, so the indirection above cannot
+  // pass against a face that was never defined.
+  ok("density: the two faces are defined, and they are a serif and a monospace",
+     /--face:[^;]*serif/.test(HTML) && /--mono:ui-monospace/.test(HTML),
+     (HTML.match(/--face:[^;]*/) || [""])[0]);
   ok("swipe: the landing cue is a fixed overlay — a cue may not move the read",
      rule(".edge").includes("position:fixed") && /\.edge\.on\{opacity/.test(HTML),
      rule(".edge"));
