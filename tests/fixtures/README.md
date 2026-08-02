@@ -5,10 +5,37 @@ evidence. The inline literals in `test_server.py` (`_ASK_PANE`, `_PERMISSION_PAN
 stay where they are; a capture this size, whose exact whitespace is the thing
 under test, does not belong in a Python literal.
 
+## Taking one
+
+```
+tools/capture-widget.py <name> --pane %59      # or --run <uuid> / --session <uuid>
+tools/capture-widget.py --list                 # what is live, with its version
+```
+
+Writes `<name>.pane` (`capture-pane -p`, exactly what `_pane_contents` sees),
+`<name>.ansi` (`-e`, the attributes `-p` drops) and `<name>.jsonl` (the last few
+conversational transcript rows, ending on the pending `tool_use`), then appends
+a stanza here with two TODOs to fill in. **Capture before you edit the renderer
+vocabulary in `server.py`** — every one of ADR 0020's four version-pinned bugs
+survived because the renderer was reasoned about instead of read.
+
+Adding a capture extends the test matrix by existing:
+`test_server.py::PaneFixtureMatrixTests` globs this directory and runs every
+`.pane` through every pane parser. The name is load-bearing — `ask_*` MUST parse
+as the AskUserQuestion widget, anything else must NOT.
+
+## Version stamps
+
+The Claude Code version is the tmux window name, so it is recorded with each
+capture below. It is what makes "which renderer is this?" a line to read rather
+than an excavation — the TUI is unversioned from our side and changes with no
+changelog, which is the whole premise of ADR 0020.
+
 ## `ask_multi.*` — a two-question AskUserQuestion, tmux renderer
 
-Captured 2026-08-02 from a live **Blocked** Run in `~/projects/strength-log`
-(session `c6b5e741…`, pane `%59`), blocked on an `AskUserQuestion` carrying two
+**Claude Code 2.1.220.** Captured 2026-08-02 from a live **Blocked** Run in
+`~/projects/strength-log` (session `c6b5e741…`, pane `%59`), blocked on an
+`AskUserQuestion` carrying two
 questions (`Granularity`, `Expand/contract`). 99 of 425 asks across
 `~/.claude/projects` carry more than one question, so this is the ordinary case,
 not an exotic one.
@@ -34,8 +61,9 @@ wrong-answer table).
 
 ## `ask_single.*` — a one-question AskUserQuestion, bare checkbox header
 
-Captured 2026-08-02 from the `claude-launcher` session that wrote ADR 0020
-(`ac51fb45…`). 326 of the 425 asks on disk hold one question, so this is the
+**Claude Code 2.1.220.** Captured 2026-08-02 from the `claude-launcher` session
+that wrote ADR 0020 (`ac51fb45…`, pane `%64`). 326 of the 425 asks on disk hold
+one question, so this is the
 **common** shape, not a degenerate one: no tab strip, a bare ` ☐ multiSelect`
 header, three options.
 
@@ -47,8 +75,9 @@ header, three options.
 
 ## `ask_toggled.*` — a multiSelect mid-answer, two rows ticked
 
-Captured 2026-08-02 by driving a probe `AskUserQuestion` (`Space`, `Down`,
-`Space`) in the same session and grabbing the frame. It is the only capture that
+**Claude Code 2.1.220.** Captured 2026-08-02 by driving a probe
+`AskUserQuestion` (`Space`, `Down`, `Space`) in the same session
+(`ac51fb45…`, pane `%64`) and grabbing the frame. It is the only capture that
 shows a *ticked* row, and it corrects two things the earlier pair could not:
 
 - The toggle box renders **inside the label** — `1. [✔] Row one`, `3. [ ] Row
@@ -61,3 +90,20 @@ shows a *ticked* row, and it corrects two things the earlier pair could not:
 It also carries a cursor that is *not* on row 1 (it sits on `Row two`), so the
 keystroke counts derived from it are signed — which no other capture exercises.
 Its free-text row renders `Type something` with no full stop.
+
+## `idle_box.*` — an ordinary idle frame, no widget, empty input box
+
+**Claude Code 2.1.220.** Captured 2026-08-02 from pane `%59`, Session
+`c6b5e741…` (`~/projects/strength-log`), idle between turns.
+
+- `idle_box.pane` / `.ansi` — the frame, `-p` and `-e`.
+- No `.jsonl`: nothing about this frame depends on the transcript, and a
+  transcript tail is verbatim conversation — not published without a reason.
+
+The only NEGATIVE capture, and the matrix's negative branch runs on it alone: it
+must NOT parse as a widget. Every widget assertion in this suite says "we can
+still read the thing"; nothing said "we do not read it where it is not there",
+and a `_HEADER_RE` that drifted loose — a tick of prose, a `✓` in a status line
+— would suppress the real input box and the unsent-text read with it. It also
+carries the two shapes those parsers must survive on an ordinary screen: a
+status line full of glyphs, and an empty `❯` prompt between two rules.

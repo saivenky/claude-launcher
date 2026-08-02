@@ -1,5 +1,8 @@
+import contextlib
+import io
 import json
 import os
+import re
 import shutil
 import signal
 import socket
@@ -1401,6 +1404,31 @@ class AskWidgetPaneTests(unittest.TestCase):
         self.assertEqual(server._pane_widget(self.toggled)["options"],
                          ["Row one", "Row two", "Row three"])
 
+    def test_an_unread_cursor_is_none_and_never_a_defaulted_zero(self):
+        # THE archetype this slice generalises. A defaulted 0 is
+        # indistinguishable from "the cursor is genuinely on row 0", so a parse
+        # failure looked exactly like a reading and drove keystrokes for months
+        # (ADR 0020). None forces every caller to decide, and `_ask_set` refuses.
+        unmarked = self.multi.replace("❯ 1. Keep split", "  1. Keep split")
+        self.assertIsNone(server._pane_widget(unmarked)["cursor"])
+        self.assertEqual(server._pane_widget(unmarked)["options"],
+                         ["Keep split (Recommended)", "Merge into one"])
+
+    def test_a_row_whose_label_reads_as_empty_voids_the_whole_widget(self):
+        # `startswith("")` is True for every option, so ONE blank label makes the
+        # Ask Set's cross-check vacuous and hands back a tappable Ask whose rows
+        # were never matched — a parse failure producing an action, which is the
+        # rule this slice enforces. Refuse the widget instead.
+        blanked = self.multi.replace("  2. Merge into one", "  2. ─────")
+        self.assertEqual(server._pane_widget(blanked), {})
+
+    def test_a_selector_with_no_highlight_reports_no_cursor(self):
+        # Same rule on the permission lane, which `_parse_selector` still serves.
+        unmarked = _PERMISSION_PANE.replace("❯ 1. Yes", "  1. Yes")
+        sel = server._parse_selector(unmarked)
+        self.assertEqual(len(sel["options"]), 3)
+        self.assertIsNone(sel["cursor"])
+
     def test_the_prompt_is_read_off_a_tab_strip_frame(self):
         # `_pane_question` shares the anchor, so the multi shape reaches it too.
         self.assertTrue(server._pane_question(self.multi).startswith(
@@ -1422,6 +1450,179 @@ def _fixture_rows(name: str) -> list:
 
 def _questions(rows: list) -> list:
     return server._pending_tool_use(rows)["input"]["questions"]
+
+
+def _capture_tool():
+    """`tools/capture-widget.py` as a module — imported, not reimplemented.
+
+    The matrix checks a property the script is responsible for (that a fixture's
+    `-p` and `-e` frames are the same paint), and a second copy of "the same
+    frame" would drift from the one that writes the files. Hyphenated filename,
+    hence the loader."""
+    import importlib.util
+    path = os.path.join(os.path.dirname(_FIXTURES), "..", "tools", "capture-widget.py")
+    spec = importlib.util.spec_from_file_location("capture_widget", os.path.normpath(path))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+class PaneFixtureMatrixTests(unittest.TestCase):
+    """EVERY capture in tests/fixtures/ through EVERY pane parser, held to the
+    invariants that must hold for ANY frame of the AskUserQuestion widget.
+
+    This is the test that would have caught `☒` before a human stumbled on it.
+    ADR 0020's four version-pinned assumptions were each found by accident,
+    months apart, because coverage was written one capture at a time against the
+    property that capture was added for — so a NEW capture proved a new property
+    and re-proved none of the old ones. Here the fixtures are globbed: adding a
+    capture (`tools/capture-widget.py <name> --pane %N`) extends the matrix by
+    existing, with no test to remember to write. That is the whole design.
+
+    The naming convention is load-bearing: `ask_*.pane` is a capture of the
+    widget and MUST parse as one; anything else must NOT be read as a widget, so
+    a captured permission menu or plain input box tightens the discriminator
+    rather than merely sitting there.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.names = sorted(n[:-5] for n in os.listdir(_FIXTURES) if n.endswith(".pane"))
+
+    def test_the_matrix_actually_has_captures_to_run(self):
+        # A glob that silently matches nothing passes every test below it — the
+        # same shape of silent success this whole slice is about. Named, not
+        # counted: each of these covers a shape the others do not (multi-question
+        # tab strip, bare header, mid-answer multiSelect, and no widget at all),
+        # so losing one must fail loudly rather than shrink the matrix quietly.
+        for required in ("ask_multi", "ask_single", "ask_toggled", "idle_box"):
+            self.assertIn(required, self.names)
+
+    def test_every_capture_is_read_as_the_shape_its_name_claims(self):
+        for name in self.names:
+            with self.subTest(fixture=name):
+                pr = server._read_pane(_capture(name + ".pane"))
+                self.assertTrue(pr.captured)
+                widget = bool(pr.widget)
+                self.assertEqual(widget, name.startswith("ask_"),
+                                 f"{name}: widget detection disagrees with the name")
+                self.assertEqual(server._is_question_widget(_capture(name + ".pane")), widget)
+
+    def test_no_widget_capture_produces_a_false_unsent_text_warning(self):
+        # THE original bug: the widget's body sits between the same horizontal
+        # rules the input box does, so an undetected widget is read as unsent
+        # text and the phone paints ⚠ over the question — beside a button that
+        # would fire hundreds of BSpace into a live selector (ADR 0020).
+        #
+        # Asserted in two halves so it cannot pass by construction: the RAW
+        # reader must still be fooled (that is the hazard, and if it stops being
+        # true the suppression is proving nothing), and `_read_pane` must
+        # suppress it (that is the fix).
+        for name in (n for n in self.names if n.startswith("ask_")):
+            with self.subTest(fixture=name):
+                pane = _capture(name + ".pane")
+                self.assertTrue(server._pane_input(pane),
+                                "the raw reader is no longer fooled — this test "
+                                "has stopped testing the suppression")
+                self.assertEqual(server._read_pane(pane).unsent, "")
+
+    def test_a_frame_with_no_widget_still_reads_its_input_box(self):
+        # The other direction, and the one that needs a NEGATIVE capture: the
+        # suppression above must not become "the unsent-text read is off". A
+        # `_HEADER_RE` that drifted loose would swallow ordinary frames and take
+        # the real ⚠ with it — silently, since nothing on screen would say so.
+        for name in (n for n in self.names if not n.startswith("ask_")):
+            with self.subTest(fixture=name):
+                pane = _capture(name + ".pane")
+                pr = server._read_pane(pane)
+                self.assertEqual(pr.widget, {})
+                self.assertEqual(pr.unsent, server._pane_input(pane))
+
+    def test_every_widget_capture_yields_rows_a_cursor_and_a_prompt(self):
+        for name in (n for n in self.names if n.startswith("ask_")):
+            with self.subTest(fixture=name):
+                pane = _capture(name + ".pane")
+                w = server._pane_widget(pane)
+                rows = w["rows"]
+                self.assertTrue(rows, "no menu rows found")
+                # In range and READ, not defaulted. `cursor` is what every
+                # keystroke count is measured from, so an unread one is not a
+                # small gap — it is ADR 0020's wrong-answer table.
+                self.assertIsNotNone(w["cursor"], "cursor was not read off the frame")
+                self.assertIn(w["cursor"], range(len(rows)))
+                # Some row must be the tool's own option, or there is nothing to
+                # answer with; and every row must carry a label to answer by.
+                self.assertTrue(w["options"])
+                self.assertTrue(all(r["label"] for r in rows))
+                # A toggle marker left on a label fails the Ask Set's prefix
+                # cross-check and makes every multiSelect ask untappable.
+                self.assertFalse([r for r in rows if r["label"][:1] == "["])
+                # Exactly one of the two header shapes: a tab strip (multi) or a
+                # bare checkbox header (single). Both, or neither, means the
+                # anchor read something that is not a widget header.
+                self.assertEqual(bool(w["tabs"]) + bool(w["header"]), 1)
+                self.assertTrue(server._pane_question(pane), "no prompt read")
+
+    def test_every_widget_capture_reconciles_with_its_own_transcript(self):
+        # The pane and the transcript are read TOGETHER (ADR 0020), so the pair
+        # is the unit under test: a capture whose rows no longer account for the
+        # options its own tool_use sent is a renderer change, and it must fail
+        # here rather than degrade to an untappable card nobody investigates.
+        for name in (n for n in self.names if n.startswith("ask_")):
+            with self.subTest(fixture=name):
+                if not os.path.exists(os.path.join(_FIXTURES, name + ".jsonl")):
+                    self.skipTest("capture has no transcript tail")
+                pane = _capture(name + ".pane")
+                tu = server._pending_tool_use(_fixture_rows(name + ".jsonl"))
+                self.assertEqual(tu["name"], "AskUserQuestion")
+                aset = server._ask_set(tu, server._read_pane(pane))
+                self.assertEqual(aset["fallback"], "")
+                self.assertTrue(aset["tappable"])
+                rows = server._pane_widget(pane)["rows"]
+                cursor = server._pane_widget(pane)["cursor"]
+                for o in aset["options"]:
+                    landed = rows[cursor + o["steps"]]
+                    self.assertFalse(landed["affordance"],
+                                     f"{o['label']!r} steps onto {landed['label']!r}")
+                    self.assertTrue(o["label"].startswith(landed["label"]))
+
+    def test_every_capture_keeps_its_attributed_twin(self):
+        # `-p` drops the ANSI attributes, and the current question TAB is marked
+        # by nothing else — ADR 0020's escape hatch (anchor on the highlight
+        # attribute if the checkbox header ever breaks) needs the `-e` frame, and
+        # it cannot be reconstructed later: the widget will have moved on.
+        #
+        # The two are separate `capture-pane` calls, so they CAN be different
+        # frames — a spinner tick between them is enough. Checked here rather
+        # than assumed, with the capture script's own definition of "the same
+        # frame" so there is one of it: a twin from another moment is not a twin,
+        # and it would be trusted precisely when `.pane` had stopped parsing.
+        for name in self.names:
+            with self.subTest(fixture=name):
+                ansi = os.path.join(_FIXTURES, name + ".ansi")
+                self.assertTrue(os.path.exists(ansi), f"{name} has no -e capture")
+                self.assertIn("\x1b[", _capture(name + ".ansi"),
+                              f"{name}.ansi carries no attributes — was it taken with -e?")
+                self.assertTrue(
+                    _capture_tool()._same_frame(_capture(name + ".pane"),
+                                                _capture(name + ".ansi")),
+                    f"{name}: the -p and -e captures are different frames")
+
+    def test_every_capture_is_version_stamped_in_the_readme(self):
+        # "Which renderer is this?" must be answerable by reading, not by
+        # archaeology. tmux names the window after the running Claude Code
+        # version, so `tools/capture-widget.py` records it for free at capture
+        # time — this holds the record to existing.
+        with open(os.path.join(_FIXTURES, "README.md"), encoding="utf-8") as fh:
+            readme = fh.read()
+        for name in self.names:
+            with self.subTest(fixture=name):
+                head = readme.find(f"## `{name}.*`")
+                self.assertNotEqual(head, -1, f"{name} is undocumented")
+                end = readme.find("\n## ", head + 1)
+                section = readme[head:end if end != -1 else len(readme)]
+                self.assertTrue(re.search(r"Claude Code \d+\.\d+\.\d+", section),
+                                f"{name} carries no Claude Code version")
 
 
 def _retarget(pane: str, question: str, labels: list) -> str:
@@ -1461,8 +1662,7 @@ class AskSetTests(unittest.TestCase):
         self.toggled_pane, self.toggled_rows = _capture("ask_toggled.pane"), _fixture_rows("ask_toggled.jsonl")
 
     def _set(self, pane, rows):
-        return server._ask_set(server._pending_tool_use(rows),
-                               server._pane_widget(pane), server._pane_question(pane))
+        return server._ask_set(server._pending_tool_use(rows), server._read_pane(pane))
 
     def _assert_steps_land_on_their_own_row(self, pane, aset):
         """THE regression. Resolve each option's keystroke count against the rows
@@ -1561,8 +1761,17 @@ class AskSetTests(unittest.TestCase):
         # know WHICH Ask — so the options stay on screen to be read; what goes is
         # the tap, because a keystroke measured against rows that do not match is
         # exactly the wrong answer this run exists to remove.
+        server._CONTRADICTIONS.clear()
+        self.addCleanup(server._CONTRADICTIONS.clear)
         doctored = self.multi_pane.replace("  2. Merge into one", "  2. Merge into two")
-        aset = self._set(doctored, self.multi_rows)
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            aset = self._set(doctored, self.multi_rows)
+        # Said out loud, not merely fielded. The pane's rows no longer account
+        # for the options the tool itself sent — the strongest evidence there is
+        # that the renderer has moved — and a payload field nobody greps is how
+        # ADR 0020's four bugs each survived for months.
+        self.assertIn("pane-mismatch", err.getvalue())
         self.assertFalse(aset["tappable"])
         self.assertEqual(aset["fallback"], "pane-mismatch")
         self.assertEqual([o["steps"] for o in aset["options"]], [None, None])
@@ -1587,7 +1796,7 @@ class AskSetTests(unittest.TestCase):
         # The queue's one-liner reads the transcript and captures no pane. It
         # still wants the question text; it must never get a keystroke count,
         # because nothing has been read about where the widget is standing.
-        aset = server._ask_set(server._pending_tool_use(self.multi_rows), {}, "")
+        aset = server._ask_set(server._pending_tool_use(self.multi_rows))
         self.assertEqual(aset["index"], 0)
         self.assertFalse(aset["tappable"])
         self.assertEqual(aset["fallback"], "no-pane")
@@ -1606,10 +1815,85 @@ class AskSetTests(unittest.TestCase):
         self.assertEqual([o["steps"] for o in aset["options"]], [-1, 0, 1])
         self._assert_steps_land_on_their_own_row(self.toggled_pane, aset)
 
+    def test_an_unread_cursor_costs_the_tap_rather_than_guessing_at_zero(self):
+        # The rows still account for the options — the ONLY thing missing is
+        # where the cursor sits, and `steps` is measured from it. Defaulting to
+        # 0 here produced counts that were right often enough to hide being
+        # fiction the rest of the time (ADR 0020). Its own fallback name,
+        # because a refusal you cannot tell from another refusal is half a
+        # silent failure.
+        unmarked = self.multi_pane.replace("❯ 1. Keep split", "  1. Keep split")
+        aset = self._set(unmarked, self.multi_rows)
+        self.assertFalse(aset["tappable"])
+        self.assertEqual(aset["fallback"], "no-cursor")
+        self.assertEqual([o["steps"] for o in aset["options"]], [None, None])
+        self.assertTrue(all(o["description"] for o in aset["options"]))   # still readable
+
+    def test_a_pane_with_no_widget_is_a_contradiction_not_a_missing_reading(self):
+        # The transcript says an AskUserQuestion is pending; the pane we DID
+        # capture shows no widget. Two sources disagree — which is exactly how
+        # all four of ADR 0020's version-pinned assumptions presented, and each
+        # one degraded quietly instead of saying so. It is now its own fallback
+        # AND a line on stderr, because `fallback` is only seen by whoever is
+        # looking at that Run and the log is seen by whoever asks why taps
+        # stopped working everywhere at once.
+        server._CONTRADICTIONS.clear()
+        self.addCleanup(server._CONTRADICTIONS.clear)
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            aset = server._ask_set(server._pending_tool_use(self.multi_rows),
+                                   server._read_pane("just some ordinary output\n"))
+        self.assertEqual(aset["fallback"], "no-widget")
+        self.assertFalse(aset["tappable"])
+        self.assertIn("disagree", err.getvalue())
+        self.assertIn("no-widget", err.getvalue())
+        # Deduped: the Board polls every few seconds and a stuck widget would
+        # otherwise fill the log with one line per poll until nobody reads it.
+        again = io.StringIO()
+        with contextlib.redirect_stderr(again):
+            server._ask_set(server._pending_tool_use(self.multi_rows),
+                            server._read_pane("just some ordinary output\n"))
+        self.assertEqual(again.getvalue(), "")
+
+    def test_no_pane_and_no_widget_are_different_refusals(self):
+        # "Nobody looked" is honest; "we looked and it is not there" is a bug
+        # signal. Collapsing them is what let the widget go undetected for every
+        # ask on this renderer without anything looking wrong.
+        tu = server._pending_tool_use(self.multi_rows)
+        self.assertEqual(server._ask_set(tu, None)["fallback"], "no-pane")
+        self.assertEqual(server._ask_set(tu, server._read_pane(""))["fallback"], "no-pane")
+
+    def test_the_pane_argument_cannot_be_got_wrong_silently(self):
+        # The predecessor took `(widget, rendered)` where `rendered` had to be
+        # `_pane_question(pane)`. Passing the raw pane instead — the natural
+        # mistake — was a `str` either way, so it type-checked, matched nothing,
+        # and produced an optionless Ask Set with no complaint: the very failure
+        # class this slice exists to remove, in the API of the function that
+        # enforces it. Now it raises.
+        tu = server._pending_tool_use(self.multi_rows)
+        with self.assertRaises(TypeError):
+            server._ask_set(tu, self.multi_pane)
+        with self.assertRaises(TypeError):
+            server._ask_set(tu, server._pane_widget(self.multi_pane))
+
+    def test_a_widget_whose_prompt_cannot_be_read_names_no_ask(self):
+        # A widget IS up and the Set holds two questions, so "the first one" is
+        # a guess dressed as a reading — and the guess puts q1's options under
+        # q2's question, which is ADR 0020's opening incident. With no pane at
+        # all the same guess is fine, because the caller is told (`no-pane`) and
+        # never gets keystrokes for it.
+        blanked = _retarget(self.multi_pane, "",
+                            [o["label"] for o in _questions(self.multi_rows)[0]["options"]])
+        self.assertEqual(server._pane_question(blanked), "")
+        aset = self._set(blanked, self.multi_rows)
+        self.assertEqual(aset["index"], -1)
+        self.assertEqual(aset["fallback"], "unmatched")
+        self.assertEqual(aset["options"], [])
+
     def test_an_approval_is_an_ask_set_of_one_with_no_invented_structure(self):
         tu = {"type": "tool_use", "id": "t1", "name": "Bash", "input": {"command": "ls"}}
-        self.assertEqual(server._ask_set(tu, {}, ""), {})
-        self.assertEqual(server._ask_set(None, {}, ""), {})
+        self.assertEqual(server._ask_set(tu), {})
+        self.assertEqual(server._ask_set(None), {})
 
 
 class AskSetBoardTests(unittest.TestCase):
@@ -1660,6 +1944,25 @@ class AskSetBoardTests(unittest.TestCase):
         # `_ask_of` rather than read there.
         server._board()
         self.assertEqual(len(self.reads), 1)
+
+    def test_the_payload_says_null_rather_than_zero_for_an_unread_cursor(self):
+        # The wire contract changed with this slice: `cursor` is `number | null`,
+        # and null means "the frame painted no cursor". It is NOT 0 — 0 is a real
+        # position, and the two being indistinguishable is what produced ADR
+        # 0020's wrong answers. `askSet.tappable` is false alongside it, which is
+        # the field a client should be branching on.
+        #
+        # NOTE for the client slice: `web/board.js` currently does
+        # `const cur = f.cursor || 0`, which turns this null straight back into
+        # the defaulted 0 — and it paints option chips off `f.options` without
+        # consulting `askSet.tappable`/`fallback` at all. The server now refuses;
+        # the phone does not yet.
+        server._pane_contents = lambda rid: _capture("ask_multi.pane").replace(
+            "❯ 1. Keep split", "  1. Keep split")
+        focus = server._board()["focus"]
+        self.assertIsNone(focus["cursor"])
+        self.assertFalse(focus["askSet"]["tappable"])
+        self.assertEqual(focus["askSet"]["fallback"], "no-cursor")
 
     def test_an_idle_run_carries_no_ask_set(self):
         server.cached_runs = lambda: [{
@@ -2901,6 +3204,62 @@ class RespondRunTests(unittest.TestCase):
         self.assertEqual(self._sends(), [])
 
 
+class RespondUnsentGuardTests(_HttpCase):
+    """`POST /api/respond` refuses to blind-append onto a box that already holds
+    unsent text — and must read that box the same way `/api/board` does.
+
+    It did not. `_pane_input` on a widget frame hands back the QUESTION (the
+    widget's body sits between the same horizontal rules the input box does), so
+    the board said `pendingInput: ""` while this endpoint answered 409 with the
+    question as the offending draft. The phone's prompt for that 409 is "this
+    session already has unsent text … send anyway?", and OK means `force` — text
+    sent into a live selector, which ADR 0020 measured as silently discarded and
+    answered by whatever row the cursor happened to be on. Two endpoints reading
+    one screen two ways is worse than either answer.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls._saved = {n: getattr(server, n) for n in
+                      ("TOKEN", "_pane_contents", "respond_run")}
+        server.TOKEN = "a-shared-secret"
+        cls.sent = []
+        server.respond_run = lambda rid, text="", keys=None: (
+            cls.sent.append((rid, text, keys)) or True)
+        cls.httpd = ThreadingHTTPServer(("127.0.0.1", 0), server.Handler)
+        cls.port = cls.httpd.server_address[1]
+        cls.thread = threading.Thread(target=cls.httpd.serve_forever, daemon=True)
+        cls.thread.start()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.httpd.shutdown()
+        cls.thread.join(timeout=2)
+        for n, v in cls._saved.items():
+            setattr(server, n, v)
+
+    def setUp(self):
+        type(self).sent = []
+
+    def _respond(self, text="a considered reply"):
+        return self._post("/api/respond",
+                          {"runId": _RUN, "text": text, "token": "a-shared-secret"})
+
+    def test_a_widget_frame_is_not_reported_as_unsent_text(self):
+        server._pane_contents = lambda rid: _capture("ask_multi.pane")
+        status, body = self._respond()
+        self.assertEqual(status, 200, body)
+        self.assertTrue(self.sent)
+
+    def test_a_real_draft_still_stops_the_send(self):
+        # The guard itself is intact — only what counts as "the box" changed.
+        server._pane_contents = lambda rid: _INPUT_PANE
+        status, body = self._respond()
+        self.assertEqual(status, 409)
+        self.assertEqual(body["existing"], "draft a reply but do not send")
+        self.assertEqual(self.sent, [])
+
+
 class ClearInputTests(unittest.TestCase):
     """clear_input empties a live Run's box with N `send-keys BSpace`
     backspaces (ADR 0010, slice 2). N is the real box length read from the pane
@@ -2930,11 +3289,37 @@ class ClearInputTests(unittest.TestCase):
         server.invalidate_runs()
 
     def test_an_empty_box_read_still_sends_the_margin_of_backspaces(self):
-        server._pane_contents = lambda rid: ""   # nothing typed in the box
+        # An EMPTY box, read off a frame we actually captured — rules with
+        # nothing between them. (This test used to pass `""` for the whole pane,
+        # which is `_pane_contents`' "the capture failed" value: it asserted that
+        # an unread screen still gets keystrokes, and the case below is now that
+        # case, split out and refused.)
+        server._pane_contents = lambda rid: _INPUT_PANE.replace(
+            "❯ draft a reply but do not send", "❯ ")
         self.assertTrue(server.clear_input(_RUN))
         send = next(c for c in self.calls if c[0] == "send-keys")
         self.assertEqual(send[:3], ("send-keys", "-t", "%3"))
         self.assertEqual(list(send[3:]), ["BSpace"] * 16)   # 0 content + 16 margin
+
+    def test_a_pane_that_could_not_be_read_sends_nothing_at_all(self):
+        # `_pane_contents` returns '' on ANY failure, so this is "nobody looked".
+        # Sending the margin anyway is a keystroke produced by a failed read —
+        # the exact rule ADR 0020 is written around — and 16 BSpace at an
+        # unknown screen is not harmless just because it is a small number.
+        server._pane_contents = lambda rid: ""
+        self.assertFalse(server.clear_input(_RUN))
+        self.assertEqual([c for c in self.calls if c[0] == "send-keys"], [])
+
+    def test_a_numbered_list_in_ordinary_output_does_not_block_the_clear(self):
+        # `_parse_selector` fires on any two consecutive numbered lines, and
+        # Claude writes numbered lists constantly. Refusing on that would break
+        # the clear button on ordinary frames — a guess is still a guess when it
+        # errs toward refusing, so only the structural widget check refuses.
+        server._pane_contents = lambda rid: "\n".join([
+            "1. first thing", "2. second thing", "3. third thing", "",
+            "─" * 60, "❯ half a reply", "─" * 60])
+        self.assertTrue(server.clear_input(_RUN))
+        self.assertTrue([c for c in self.calls if c[0] == "send-keys"])
 
     def test_backspace_count_is_the_box_length_plus_the_margin(self):
         server._pane_contents = lambda rid: "unused"
@@ -2943,6 +3328,15 @@ class ClearInputTests(unittest.TestCase):
         send = next(c for c in self.calls if c[0] == "send-keys")
         self.assertEqual(list(send[3:]), ["BSpace"] * (5 + 16))
         self.assertTrue(all(k == "BSpace" for k in send[3:]))
+
+    def test_a_widget_on_screen_refuses_the_clear_outright(self):
+        # There is no input box to empty while a widget owns the screen, and the
+        # over-count margin would fire BSpace straight into a live selector —
+        # ADR 0020's worst near-miss, which the false ⚠ warning had already put
+        # a button next to.
+        server._pane_contents = lambda rid: _capture("ask_multi.pane")
+        self.assertFalse(server.clear_input(_RUN))
+        self.assertEqual([c for c in self.calls if c[0] == "send-keys"], [])
 
     def test_a_bogus_id_no_ops_without_touching_tmux(self):
         self.assertFalse(server.clear_input("short"))

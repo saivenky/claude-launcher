@@ -1,0 +1,37 @@
+
+  - [1mMy (a) "training-prep keeps authoring the initial range" was wrong[0m — it doesn't author anything. The question is really about the microcycle
+  note.
+  - [1mYou asked whether per-mesocycle range changes would play well with this.[0m They're already how it works. [38;5;153m15–20[39m isn't stale data — it's your
+  [3mcurrent[0m stated intent for this block. A retune to [38;5;153m8–12[39m in the store would silently contradict the note you're still maintaining, and next
+  mesocycle you'd write [38;5;153m15–20[39m again and it would never take effect. That's the mirror image of today's bug: instead of a range nothing can
+  change, a range your authoring can't change.
+
+  [1mRevised options — who owns the range:[0m
+
+  - [1m(a) Store wins; retire the microcycle's rep-range column.[0m The retune owns it outright, the agent stops sending. Clean single owner, but you
+  lose the ability to [3mdeliberately[0m set a range per mesocycle — the thing you told me you want.
+  - [1m(b) Microcycle authors, store adapts within the block.[0m [3m(Recommended.)[0m A posted range that [1mdiffers from the last one posted[0m for that exercise
+  is a deliberate re-authoring and overwrites the stored range; a posted range [1midentical[0m to the last is a no-op, so the nightly repost never
+  clobbers a retune. New exercises get their range on first sight for free. You keep per-mesocycle intent, the retune adapts inside it, and
+  neither silently beats the other.
+  - [1m(c) The retune writes back into the microcycle note.[0m Truest to "one source", but it means strength-log editing a vault file the training
+  agent owns — a new cross-repo write path, and ADR 0039 spent real effort keeping that surface small.
+
+  I'd take [1m(b)[0m. It's a change to ticket 02's scope — from "stop sending" to "adopt on change" — and it's implementable entirely inside
+  strength-log, so [38;5;153mpersonal-agents[39m needs no change at all.
+
+  Worth noting under (b): accepting a retune to [38;5;153m8–12[39m while the note still says [38;5;153m15–20[39m leaves them disagreeing until you next edit the microcycle.
+  That's tolerable — the note is intent, the store is what the app runs on — but if that bothers you, (c) is the only option that fixes it.
+
+  Slice 03 is unaffected and still running.
+
+[38;5;246m✻[39m [38;5;246mWaiting for [1m1[0m[38;5;246m background agent to finish[39m
+
+[38;5;244m─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+[39m❯ 
+[38;5;244m─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+[39m  [34m📁 strength-log[38;5;246m [2m|[0m[38;5;246m [33m🌿 main*[38;5;246m [2m|[0m[38;5;246m [36m🤖 Opus 5 (1M context)[38;5;246m [2m|[0m[38;5;246m [32m🧠 13%[38;5;246m [2m(131K / 1M)[0m[38;5;246m [2m|[0m[38;5;246m [32m💰 $16.89[39m                                                       [38;5;114m]8;id=1903a0;https://claude.ai/code/session_01RhLHzbNrNkZ4wJE6R7HGwL\/rc[39m]8;;\
+  [38;5;220m⏵⏵ auto mode on[38;5;246m (shift+tab to cycle)[39m
+
+[1m  ⏺ main[0m
+[38;5;246m  ◯ general-purpose[39m  [38;5;246mInspecting inner thigh classify output[39m                                                               [38;5;246m4m 22s · ↓ 65.1k tokens

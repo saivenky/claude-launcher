@@ -44,6 +44,7 @@ import subprocess
 import sys
 import threading
 import time
+import typing
 import uuid
 
 HOST = os.environ.get("CLAUDE_LAUNCHER_HOST", "0.0.0.0")
@@ -1323,13 +1324,38 @@ def clear_input(run_id: str) -> bool:
     Deterministic — it does not rely on any clear-line keybinding working — and
     safe: a backspace at the start of the input is a no-op, so an over-count can
     never reach the prompt or the scrollback above it.
+
+    REFUSES in two cases, both of them "a failed or absent reading may not
+    produce an action" (ADR 0020):
+
+    - The pane could not be captured at all. The margin is not a safe default
+      here: 16 BSpace sent at a screen nobody read is the archetype this rule
+      exists to kill, and `_PaneRead.captured` is precisely the bit that tells
+      "nobody looked" from "the box is empty".
+    - An AskUserQuestion widget owns the screen. There is no input box to empty,
+      and clearing anyway is ADR 0020's worst near-miss made real: the false ⚠
+      unsent-text warning put a clear button beside a live selector, and this
+      function's own over-count margin would have fired BSpace into it.
+
+    NOT on `selector`, deliberately, though it is the same hazard: `_parse_selector`
+    has no numbering-run discriminator, so any two consecutive numbered lines of
+    Claude's own prose read as a menu — and refusing on that would break the
+    clear button on a large share of perfectly ordinary frames. A guess in the
+    refusing direction is still a guess. The widget check is structural (the
+    checkbox anchor plus a descending run), so it is the one that is trusted;
+    when the permission menu gets the same discriminator this should extend to
+    it. Until then the exposure is bounded: `pendingInput` — the only thing that
+    puts the clear button on screen — is already blank whenever a menu is up.
     """
     if not _is_managed_run(run_id):
         return False
     pane = _pane_for_run(run_id)
     if not pane:
         return False
-    content = _pane_input(_pane_contents(run_id))
+    pr = _read_pane(_pane_contents(run_id))
+    if not pr.captured or pr.widget:
+        return False
+    content = pr.unsent
     n = min(len(content) + 16, MAX_RESPOND_CHARS + 32)
     try:
         _tmux("send-keys", "-t", pane, *(["BSpace"] * n))   # n backspaces
@@ -1674,26 +1700,90 @@ def _same_question(rendered: str, question: str) -> bool:
     return bool(a) and bool(b) and b.startswith(a)
 
 
-def _current_ask(questions: list, rendered: str) -> int | None:
+def _current_ask(questions: list, rendered: str, on_screen: bool) -> int | None:
     """Which **Ask** of the **Ask Set** the pane is showing, or None if the pane
     and the transcript cannot be reconciled.
 
     A Set of one is trivially answered — 326 of the 425 asks on disk hold one
     question, so this is the common path and it must not depend on text matching
-    at all. With no pane text in hand (the queue's one-liner reads the transcript
-    and never captures a pane) the first Ask is the only sane guess, and the
-    caller marks it as a guess: `_ask_set` refuses to emit keystrokes for it.
+    at all.
+
+    `on_screen` says whether a widget was actually read off a pane, and it is the
+    difference between a guess and a contradiction:
+
+    - Not on screen (the queue's one-liner reads the transcript and captures no
+      pane): the first Ask is the only sane guess, and the caller marks it as
+      one — `_ask_set` refuses to emit keystrokes for it.
+    - On screen but with no readable prompt: refuse. A widget IS painting one of
+      several questions and we cannot say which, so guessing the first would put
+      q1's options under q2's question — ADR 0020's opening incident, restored
+      by a default. This is the one case where a widget is present and we still
+      report `unmatched`.
 
     Beyond that the match must be UNIQUE. Two questions whose rendered text is
     ambiguous between them is exactly the case where picking one sends a
     keystroke to the wrong Ask, which is the failure this run exists to remove."""
-    if len(questions) == 1 or not rendered:
+    if len(questions) == 1:
         return 0
+    if not rendered:
+        return None if on_screen else 0
     hits = [i for i, q in enumerate(questions) if _same_question(rendered, q.get("question", ""))]
     return hits[0] if len(hits) == 1 else None
 
 
-def _ask_set(tu: dict | None, widget: dict, rendered: str) -> dict:
+_CONTRADICTIONS: dict[str, str] = {}
+
+
+# Why each refusal is worth saying out loud, in the words of what it would mean
+# if it were NOT the ordinary race. Keyed by `_ask_set`'s `fallback`; a reason
+# absent from this map is not logged, which is how "nobody looked" (`no-pane`)
+# stays quiet — it is not a disagreement, it is an absence.
+_CONTRADICTION_DETAIL = {
+    "no-widget": "the pane shows no widget at all",
+    "pane-mismatch": "the pane's rows do not account for the tool's options",
+    "no-cursor": "the pane paints no cursor on the widget",
+    "unmatched": "no question in the tool matches the one on screen",
+}
+
+
+def _report_contradiction(where: str, reason: str) -> None:
+    """Say out loud that the transcript and the rendered pane disagreed, once
+    per distinct disagreement.
+
+    ADR 0020's four version-pinned assumptions all failed the same way: quietly.
+    `_is_question_widget` returned False for every ask, `_parse_selector`
+    returned {}, and nothing anywhere said so — the code degraded to a default
+    that looked like a reading, and a human eventually stumbled on it months
+    later. So a disagreement is reported to stderr as well as carried in the
+    payload's `fallback`: the payload is seen only by whoever is looking at that
+    one Run, and the log is what answers "why did taps stop working everywhere
+    at once", which is the shape a renderer change actually takes.
+
+    Stated as an observation, NOT as a diagnosis. The ordinary cause is benign
+    and frequent — the Ask was answered at the desk in the gap between the
+    transcript read and the pane capture, and the next poll will agree again.
+    Writing "the renderer moved" for that would dilute the one signal this
+    exists to give. What matters is the PATTERN: every Run at once, or one Run
+    forever, is a re-fit (see the RENDERER VOCABULARY block); one line and quiet
+    after is a race.
+
+    Deduped on the message: the Board polls every few seconds and a stuck widget
+    would otherwise write the same line forever. Bounded, because an unbounded
+    cache keyed by tool_use id is a leak in a process that runs for weeks."""
+    detail = _CONTRADICTION_DETAIL.get(reason)
+    if not detail or _CONTRADICTIONS.get(where) == reason:
+        return
+    if len(_CONTRADICTIONS) > 256:
+        _CONTRADICTIONS.clear()
+    _CONTRADICTIONS[where] = reason
+    sys.stderr.write(
+        f"pane/transcript disagree [{sanitize_log(where)}] {sanitize_log(reason)}: "
+        f"the transcript has a pending AskUserQuestion but {sanitize_log(detail)} "
+        "— usually the Ask was answered at the desk mid-poll; if it persists or "
+        "hits every Run, the renderer has moved (see RENDERER VOCABULARY)\n")
+
+
+def _ask_set(tu: dict | None, pane: "_PaneRead | None" = None) -> dict:
     """The **current Ask** of the **Ask Set** raised by a pending
     `AskUserQuestion`, or {} for anything else (an approval is a Set of one and
     keeps the plain `ask`; it has no question structure to invent).
@@ -1719,7 +1809,17 @@ def _ask_set(tu: dict | None, widget: dict, rendered: str) -> dict:
                   no row could be attributed to this option).
       tappable    may the client send `steps`? False whenever anything below
                   disagreed.
-      fallback    why not: "no-pane" | "unmatched" | "pane-mismatch" | "".
+      fallback    why not — every way this can refuse has its own name, because
+                  a refusal you cannot tell apart from a different refusal is
+                  half a silent failure:
+                    ""             everything agreed; `steps` are real.
+                    "no-pane"      nobody looked (no capture was taken).
+                    "no-widget"    we looked and the screen shows no widget,
+                                   while the transcript says one is pending.
+                    "unmatched"    a widget is up but no question matched it.
+                    "pane-mismatch" the rows do not account for the options.
+                    "no-cursor"    rows agree, but the frame paints no cursor,
+                                   so no keystroke count can be measured.
 
     `steps` is signed and measured against the widget's ROWS, not its options:
     positive is that many Down, negative that many Up, then Enter. Counting in
@@ -1729,24 +1829,45 @@ def _ask_set(tu: dict | None, widget: dict, rendered: str) -> dict:
     answers a question nobody asked. `row` is carried alongside so a client
     never has to redo this arithmetic to check it.
 
-    Two fallbacks, and they differ in what stays on screen, because they differ
-    in what is untrustworthy:
+    The fallbacks differ in what stays on screen, because they differ in what is
+    untrustworthy:
 
-    - The options do not line up with the rows ("pane-mismatch"), or there is no
-      pane ("no-pane"). WHICH Ask is known, so its content is sound and is still
-      rendered — read-only, `row`/`steps` null. You lose the tap, not the read.
+    - The options do not line up with the rows ("pane-mismatch"), the cursor was
+      not painted ("no-cursor"), the screen contradicts the transcript
+      ("no-widget"), or nobody looked ("no-pane"). WHICH Ask is known, so its
+      content is sound and is still rendered — read-only, `row`/`steps` null.
+      You lose the tap, not the read.
     - No question matched ("unmatched"). We do not know which Ask is on screen,
       so its content is not sound either: options are dropped entirely rather
       than paint q1's answers over q2's question, which is the original bug.
+
+    `pane` is a `_PaneRead` or None — never a raw pane string, never a bare
+    widget dict. See `_PaneRead` for why the old `(widget, rendered)` pair was
+    itself an instance of the failure this function exists to prevent.
     """
+    if pane is not None and not isinstance(pane, _PaneRead):
+        # Loud, not lenient. The predecessor of this argument accepted any `str`
+        # and silently produced an optionless Ask Set when handed the wrong one
+        # (ADR 0020). A parse layer whose contract is "refuse rather than guess"
+        # cannot itself guess what its caller meant.
+        raise TypeError("_ask_set(pane=...) takes a _PaneRead from _read_pane(), "
+                        f"not {type(pane).__name__}")
     if not tu or tu.get("name") != "AskUserQuestion":
         return {}
     questions = [q for q in ((tu.get("input") or {}).get("questions") or [])
                  if isinstance(q, dict)]
     if not questions:
         return {}
-    idx = _current_ask(questions, rendered)
+    pane = pane or _NO_PANE
+    widget = pane.widget
+    tu_id = str(tu.get("id") or "")
+    idx = _current_ask(questions, pane.question, bool(widget))
     if idx is None:
+        # A pending AskUserQuestion in the transcript and a pane we DID capture
+        # that cannot be reconciled with it is not a missing reading — it is two
+        # sources saying opposite things, which is how every one of ADR 0020's
+        # four bugs presented, and none of them said a word.
+        _report_contradiction(tu_id, "unmatched")
         return {"index": -1, "count": len(questions), "question": "", "header": "",
                 "multiSelect": False, "options": [], "tappable": False,
                 "fallback": "unmatched"}
@@ -1754,16 +1875,34 @@ def _ask_set(tu: dict | None, widget: dict, rendered: str) -> dict:
     opts = [o for o in (q.get("options") or [])
             if isinstance(o, dict) and o.get("label")]
     rows = widget.get("rows") or []
-    cursor = widget.get("cursor") or 0
+    cursor = widget.get("cursor")
     # Where each option SITS among the rows the cursor steps through.
     seats = [i for i, r in enumerate(rows) if not r.get("affordance")]
     # The cross-check ADR 0020 requires before trusting a position: the pane's
     # own option rows must account for the tool's options, one for one and in
     # order. Prefix, not equality — the pane truncates a long label at terminal
-    # width, so the rendered label is a prefix of the structured one.
-    agree = bool(rows) and len(seats) == len(opts) and all(
+    # width, so the rendered label is a prefix of the structured one. The cursor
+    # is part of the check, not an input to it: `steps` is measured FROM it, so
+    # an unread cursor makes every count fiction (it was defaulted to 0 for
+    # months, and 0 is right often enough to hide the rest).
+    rows_fit = bool(rows) and len(seats) == len(opts) and all(
         opts[j]["label"].startswith(rows[i]["label"]) for j, i in enumerate(seats))
-    fallback = "" if agree else ("no-pane" if not rows else "pane-mismatch")
+    agree = rows_fit and cursor is not None
+    if agree:
+        fallback = ""
+    elif not widget:
+        fallback = "no-widget" if pane.captured else "no-pane"
+    elif rows_fit:
+        fallback = "no-cursor"
+    else:
+        fallback = "pane-mismatch"
+    # EVERY way of refusing gets said out loud, not merely the missing widget.
+    # `pane-mismatch` is the strongest renderer-moved signal there is — the rows
+    # on screen no longer account for the options the tool itself sent — and it
+    # would otherwise live only in a payload field nobody greps. `no-pane` is
+    # filtered out inside: an absence is not a disagreement.
+    if fallback:
+        _report_contradiction(tu_id, fallback)
     return {
         "index": idx, "count": len(questions),
         "question": str(q.get("question") or "").strip(),
@@ -1784,7 +1923,7 @@ def _ask_set(tu: dict | None, widget: dict, rendered: str) -> dict:
 
 
 def _ask_of(session_id: str, rows: list | None = None,
-            widget: dict | None = None, rendered: str = "") -> tuple:
+            pane: "_PaneRead | None" = None) -> tuple:
     """(ask, options, askSet) from the Session's last assistant turn.
 
     For an approval the `ask` describes the flushed pending tool_use (the Bash
@@ -1804,11 +1943,13 @@ def _ask_of(session_id: str, rows: list | None = None,
     `rows` lets a caller hand in a tail it has already parsed, so the **Ask** and
     the **Scrollback** cost one file read between them (ADR 0014).
 
-    `widget` (a `_pane_widget` reading) and `rendered` (`_pane_question`) come
-    from the ONE pane capture `_board` already takes — passed in for the same
-    reason `rows` is, and for the same ADR 0014 reason: no caller pays a second
-    read to learn where the widget is standing. Omitting them is honest, not
-    broken: the queue's one-liner has no pane, and gets an untappable Ask Set."""
+    `pane` is the `_PaneRead` off the ONE capture `_board` already takes —
+    passed in for the same reason `rows` is, and for the same ADR 0014 reason:
+    no caller pays a second read to learn where the widget is standing. Omitting
+    it is honest, not broken: the queue's one-liner has no pane, and gets an
+    untappable Ask Set (`fallback: "no-pane"`). It was `(widget, rendered)` until
+    a raw pane string passed for `rendered` proved to fail silently — `_PaneRead`
+    exists so that mistake raises instead."""
     rows = _tail_rows(session_id) if rows is None else rows
     la = _last_assistant(rows)
     if not la:
@@ -1818,7 +1959,7 @@ def _ask_of(session_id: str, rows: list | None = None,
     ask = qs[-1].strip()[-200:] if qs else ""
     options = []
     tu = _pending_tool_use(rows)
-    aset = _ask_set(tu, widget or {}, rendered)
+    aset = _ask_set(tu, pane)
     if aset:
         # ONE Ask's options, never the whole Set's. Concatenating every question's
         # options is ADR 0020's opening incident: the phone showed q1's text above
@@ -1828,7 +1969,7 @@ def _ask_of(session_id: str, rows: list | None = None,
         # in the tool input, not necessarily in the assistant's text. When no
         # question could be matched there is no structured text to prefer, and the
         # rendered one is the only thing that is certainly on screen.
-        ask = (aset["question"] or rendered).strip()[:200] or ask
+        ask = (aset["question"] or (pane or _NO_PANE).question).strip()[:200] or ask
     elif tu:
         # An approval (any non-AskUserQuestion pending tool_use — Bash / Edit /
         # Write / ExitPlanMode …): surface the concrete blocker as the ask. An
@@ -1981,16 +2122,99 @@ def _lane_of(run: dict) -> str:
 # pane* instead. This is Observe reading the screen (see CONTEXT.md); it costs
 # one capture-pane read, so it runs only for the focus, and only when Blocked.
 
+# ════════════════════════ RENDERER VOCABULARY ════════════════════════
+# THE ONE PLACE TO EDIT WHEN THE CLAUDE CODE TUI CHANGES.
+#
+# Every literal the TUI paints — cursor glyphs, checkbox and tab glyphs, toggle
+# markers, affordance labels, rule and box characters — is defined here and
+# nowhere else. The TUI is an UNVERSIONED external dependency, scraped off a
+# rendered pane, and it changes with no notice and no changelog. ADR 0020 caught
+# FOUR version-pinned assumptions in one sitting (`"add notes"`, the side-panel
+# description layout, the `☒` answered tab, the `[✔] ` toggle marker), every one
+# of them silent, every one scattered in a different function beside a comment
+# asserting it was stable. Scattered, a re-fit is archaeology; gathered, it is a
+# diff you can read in one screen.
+#
+# TO RE-FIT, IN THIS ORDER:
+#   1. CAPTURE FIRST — `tools/capture-widget.py <name> --pane %N` writes the
+#      `-p` frame, the `-e` frame and the transcript tail into tests/fixtures/,
+#      stamped with the Claude Code version it came from. Evidence before edits:
+#      all four bugs above survived because the renderer was reasoned about
+#      rather than read.
+#   2. Edit the constants below — only them.
+#   3. `python3 -m unittest discover -s tests`. `PaneFixtureMatrixTests` runs
+#      EVERY capture in tests/fixtures/ through every pane parser, so the old
+#      renderers must keep parsing while the new one starts to. A capture added
+#      in step 1 extends that matrix by existing.
+#
+# NOT vocabulary, and deliberately left as logic: the descending numbering run
+# that separates a menu row from a numbered line of prose (`_widget_rows`) and
+# the checkbox-header anchor (`_widget_anchor`). Those are structural claims
+# about the widget's shape, not strings it happens to paint — a renderer that
+# broke them would need new logic, not a new literal.
+
+# The glyph marking the live row of a menu — and, in the input box, the prompt.
+# One tuple because the renderer draws them with one glyph; if it ever stops,
+# split it here rather than at the two call sites.
+_CURSOR_GLYPHS = ("❯", "›", ">")
+# `☒` is an ANSWERED question tab — the state the strip is in immediately after
+# you answer Ask 1 of an **Ask Set**, i.e. the ordinary mid-Set frame this whole
+# run exists to drive. Missing from this tuple, `_HEADER_RE` did not match, the
+# widget went undetected, and the false ⚠ unsent-text warning came straight back
+# on the second Ask of every Set. Captured in `tests/fixtures/ask_toggled.pane`.
+_CHECKBOX = ("☐", "☒", "☑", "✔", "✓")
+# The widget's own rows, as opposed to the tool's options. They are numbered
+# menu rows like any other, so nothing but the label tells them apart — and a
+# caller that mixes them in steps the cursor into `Chat about this` and answers
+# a question nobody was asked (ADR 0020's measured wrong-answer table).
+#
+# This IS a version-pinned string, and that is the failure class ADR 0020 indicts
+# in `"add notes"`. It is kept only because the structural discriminator the ADR
+# names — the rows the transcript's own option labels do not account for — is the
+# cross-check that lands with the Ask Set, not here. Until then: a renamed
+# affordance silently becomes an option, and the fixture matrix is what says so.
+# Matched with the trailing full stop stripped: on a multiSelect frame the row
+# renders `4. [ ] Type something` — no period — and an affordance read as an
+# option is one seat's worth of cursor drift on every row below it.
+_AFFORDANCES = ("Type something", "Chat about this")
+# The marks a multiSelect toggle box can carry, ticked or blank.
+_TOGGLE_MARKS = " ✔✓xX"
+# The characters a horizontal rule is drawn from. Rules frame the input box, and
+# one of them ends the widget's question block.
+_RULE_CHARS = set("─—-═")
+
+# ── Derived from the vocabulary above; the shapes, not the glyphs. ──
 # A rendered selector line: an optional cursor glyph, an optional "N." / "N)"
 # index, then the label. Claude Code marks the current option with a cursor
 # glyph; permission menus and the trust prompt are numbered.
 # Groups: the cursor glyph, the index (the widget reader checks it runs
 # unbroken), the label.
-_OPT_RE = re.compile(r"^\s*([❯›>])?\s*(\d+)[.)]\s+(\S.*?)\s*$")
-# Box-drawing glyphs (U+2500–U+257F). The AskUserQuestion widget paints the
+_OPT_RE = re.compile(r"^\s*([" + re.escape("".join(_CURSOR_GLYPHS)) + r"])?\s*(\d+)[.)]\s+(\S.*?)\s*$")
+# Box-drawing glyphs (U+2500–U+257F). The iTerm-era widget painted the
 # highlighted option's description in a side panel on the SAME rows as the
-# option labels; splitting a label on the first box glyph drops that bleed.
+# option labels; splitting a label on the first box glyph drops that bleed. The
+# current renderer puts descriptions BELOW each label instead — the change that
+# voided `_parse_selector`'s contiguity premise (ADR 0020) — but the old shape
+# is still under test, so the split stays.
 _BOX_RE = re.compile("[─-╿]")
+# The checkbox header line of an AskUserQuestion widget, in both shapes it
+# renders in. Single-question (326 of the 425 asks on disk — the COMMON case):
+# a bare ` ☐ multiSelect`. Multi-question: a tab strip, `←  ☐ Granularity
+# ☐ Expand/contract  ✔ Submit  →`, whose first glyph is the arrow, not the box.
+# ADR 0020 makes this line the anchor for the whole widget, replacing both the
+# `"add notes"` signature (a version-pinned string the current renderer never
+# paints, so `_is_question_widget` returned False for EVERY ask) and
+# `_parse_selector`'s contiguity premise.
+_HEADER_RE = re.compile(r"^\s*(←\s+)?[" + re.escape("".join(_CHECKBOX)) + r"]\s*\S")
+# A multiSelect row's toggle box, which the renderer paints INSIDE the label:
+# `1. [✔] Row one` / `3. [ ] Row three`. It is the toggle STATE ADR 0020 wanted
+# and `_pane_widget` first shipped without, having no capture that showed a
+# ticked row; `tests/fixtures/ask_toggled.pane` is that capture. It must come
+# off the label before anything compares it to the transcript — the structured
+# label is `Row one`, so an unstripped `[✔] Row one` fails the Ask Set's
+# prefix cross-check on all 30 multiSelect asks and makes every one untappable.
+_TOGGLE_RE = re.compile(r"^\[([" + re.escape(_TOGGLE_MARKS) + r"])\]\s+")
+# ══════════════════════ END RENDERER VOCABULARY ══════════════════════
 
 
 def _pane_contents(run_id: str) -> str:
@@ -2025,7 +2249,17 @@ def _parse_selector(text: str) -> dict:
 
     `contents of session` returns the scrollback, so a widget that re-rendered
     can appear several times over. Only the LAST contiguous run of option lines
-    is the live frame — earlier ones are stale paints."""
+    is the live frame — earlier ones are stale paints.
+
+    `cursor` is None when the frame paints no cursor glyph, and NEVER 0. A
+    defaulted 0 is indistinguishable from "the cursor is genuinely on row 0",
+    which is precisely how ADR 0020's wrong-answer table went unnoticed for
+    months: the payload said `cursor 0`, nobody could tell it was a guess, and
+    keystrokes were counted from it. Read it or say you did not.
+
+    {} — not a one-option dict — when fewer than two options were found: a menu
+    you cannot choose between is not a menu, and returning a degenerate one puts
+    a button on the phone that answers by accident."""
     groups, cur = [], []
     for ln in text.split("\n"):
         m = _OPT_RE.match(ln)
@@ -2039,11 +2273,8 @@ def _parse_selector(text: str) -> dict:
         groups.append(cur)
     live = groups[-1] if groups else []
     options = [lbl for _, lbl in live]
-    cursor = next((i for i, (hit, _) in enumerate(live) if hit), 0)
+    cursor = next((i for i, (hit, _) in enumerate(live) if hit), None)
     return {"options": options, "cursor": cursor} if len(options) >= 2 else {}
-
-
-_RULE_CHARS = set("─—-═")
 
 
 def _pane_input(text: str) -> str:
@@ -2053,6 +2284,14 @@ def _pane_input(text: str) -> str:
     `📁 …` status line. Reading it lets Respond refuse to blind-append onto a
     reply already sitting there (a half-typed message, or a prior stuck send)
     instead of silently submitting more than the caller meant.
+
+    '' conflates "no box on screen" with "an empty box", and that conflation is
+    kept DELIBERATELY: both mean "nothing typed that we would overwrite", and the
+    two ways of being wrong are not symmetric. A false '' costs a warning nobody
+    needed; a false non-empty '' paints ⚠ over a live question and offers to
+    backspace it away (ADR 0020). Everything upstream of the decision — is a
+    widget or menu owning the screen at all? — is settled in `_read_pane`, which
+    is the only caller that matters, so this reader never has to guess.
     """
     lines = text.split("\n")
     rules = [i for i, ln in enumerate(lines) if ln.strip() and set(ln.strip()) <= _RULE_CHARS]
@@ -2062,49 +2301,10 @@ def _pane_input(text: str) -> str:
     out = []
     for ln in box:
         s = ln.strip()
-        if s[:1] in ("❯", "›", ">"):
+        if s[:1] in _CURSOR_GLYPHS:
             s = s[1:].strip()          # drop the prompt glyph on the first line
         out.append(s)
     return "\n".join(out).strip()
-
-
-# `☒` is an ANSWERED question tab — the state the strip is in immediately after
-# you answer Ask 1 of an **Ask Set**, i.e. the ordinary mid-Set frame this whole
-# run exists to drive. Missing from this tuple, `_HEADER_RE` did not match, the
-# widget went undetected, and the false ⚠ unsent-text warning came straight back
-# on the second Ask of every Set. Captured in `tests/fixtures/ask_toggled.pane`.
-_CHECKBOX = ("☐", "☒", "☑", "✔", "✓")
-# The checkbox header line of an AskUserQuestion widget, in both shapes it
-# renders in. Single-question (326 of the 425 asks on disk — the COMMON case):
-# a bare ` ☐ multiSelect`. Multi-question: a tab strip, `←  ☐ Granularity
-# ☐ Expand/contract  ✔ Submit  →`, whose first glyph is the arrow, not the box.
-# ADR 0020 makes this line the anchor for the whole widget, replacing both the
-# `"add notes"` signature (a version-pinned string the current renderer never
-# paints, so `_is_question_widget` returned False for EVERY ask) and
-# `_parse_selector`'s contiguity premise.
-_HEADER_RE = re.compile(r"^\s*(←\s+)?[" + re.escape("".join(_CHECKBOX)) + r"]\s*\S")
-# The widget's own rows, as opposed to the tool's options. They are numbered
-# menu rows like any other, so nothing but the label tells them apart — and a
-# caller that mixes them in steps the cursor into `Chat about this` and answers
-# a question nobody was asked (ADR 0020's measured wrong-answer table).
-#
-# This IS a version-pinned string, and that is the failure class ADR 0020 indicts
-# in `"add notes"`. It is kept only because the structural discriminator the ADR
-# names — the rows the transcript's own option labels do not account for — is the
-# cross-check that lands with the Ask Set, not here. Until then: a renamed
-# affordance silently becomes an option, and the tests below are what would say so.
-# Matched with the trailing full stop stripped: on a multiSelect frame the row
-# renders `4. [ ] Type something` — no period — and an affordance read as an
-# option is one seat's worth of cursor drift on every row below it.
-_AFFORDANCES = ("Type something", "Chat about this")
-# A multiSelect row's toggle box, which the renderer paints INSIDE the label:
-# `1. [✔] Row one` / `3. [ ] Row three`. It is the toggle STATE ADR 0020 wanted
-# and `_pane_widget` first shipped without, having no capture that showed a
-# ticked row; `tests/fixtures/ask_toggled.pane` is that capture. It must come
-# off the label before anything compares it to the transcript — the structured
-# label is `Row one`, so an unstripped `[✔] Row one` fails the Ask Set's
-# prefix cross-check on all 30 multiSelect asks and makes every one untappable.
-_TOGGLE_RE = re.compile(r"^\[([ ✔✓xX])\]\s+")
 
 
 def _widget_rows(lines: list[str]) -> list[dict]:
@@ -2144,7 +2344,17 @@ def _widget_rows(lines: list[str]) -> list[dict]:
             break
     # A run that never reaches 1 is a fragment, not a menu, and its indices would
     # not be the keystroke counts the caller means. Refuse rather than mislead.
-    return list(reversed(rows)) if expect == 0 else []
+    if expect != 0:
+        return []
+    # An empty label is worse than a missing row. The Ask Set cross-checks the
+    # pane against the transcript with `structured.startswith(rendered)`, and
+    # `"x".startswith("")` is True — one blank label makes that check pass for
+    # ANY option and hands back a tappable Ask whose rows were never really
+    # matched. A label that stripped down to nothing (all box art, or a toggle
+    # box with no text after it) is a reading we do not have.
+    if any(not r["label"] for r in rows):
+        return []
+    return list(reversed(rows))
 
 
 def _widget_anchor(lines: list[str]) -> int | None:
@@ -2189,7 +2399,11 @@ def _pane_widget(text: str) -> dict:
                   box at all — a single-select row, where "unticked" would be a
                   claim the renderer never makes.
       options     the tool's own options, i.e. the non-affordance rows.
-      cursor      index INTO `rows` of the `❯` glyph (0 when unmarked).
+      cursor      index INTO `rows` of the cursor glyph, or None when the frame
+                  paints none. NEVER 0 as a default: 0 is a legitimate reading,
+                  so a defaulted 0 is a claim about the screen that nobody made,
+                  and ADR 0020's wrong answers were counted from exactly that.
+                  A caller that cannot handle None must refuse, not substitute.
       tabs        for a multi-question frame, `{"label", "checked"}` per question
                   tab; `[]` for the single-question shape.
       header      the single-question header text (`""` when a tab strip).
@@ -2211,7 +2425,9 @@ def _pane_widget(text: str) -> dict:
     if hdr is None:
         return {}
     scanned = _widget_rows(lines[hdr + 1:])
-    cursor = next((i for i, r in enumerate(scanned) if r["_cursor"]), 0)
+    # None, never 0. See `cursor` in the docstring above: an unread cursor that
+    # looks like a read one is the ADR 0020 archetype.
+    cursor = next((i for i, r in enumerate(scanned) if r["_cursor"]), None)
     rows = [{"label": r["label"], "affordance": r["affordance"], "checked": r["checked"]}
             for r in scanned]
     strip = lines[hdr].strip()
@@ -2254,7 +2470,14 @@ def _pane_question(text: str) -> str:
     checkbox header and the first following numbered option (blank lines and
     the box-art notes panel skipped). Used only when the tool_use hasn't flushed
     to the transcript yet, so the structured question in `_ask_of` is
-    unavailable. Anchored on the LAST header — earlier frames are stale."""
+    unavailable. Anchored on the LAST header — earlier frames are stale.
+
+    '' means "no prompt read", whether the anchor was missing or the body under
+    it was blank; the two are not told apart HERE because the distinction only
+    matters to the caller that acts on it. `_ask_set` treats an unreadable prompt
+    under a widget that IS on screen as `unmatched` rather than "Ask 1", since
+    with two questions up "the first one" is a guess, and that guess is precisely
+    ADR 0020's opening incident (q1's options drawn under q2's question)."""
     lines = text.split("\n")
     hdr = _widget_anchor(lines)
     if hdr is None:
@@ -2269,6 +2492,71 @@ def _pane_question(text: str) -> str:
         if s:
             q.append(s)
     return " ".join(q)[:200]
+
+
+class _PaneRead(typing.NamedTuple):
+    """ONE rendered pane, parsed every way the Board needs it — the only value
+    type that may cross into the Ask layer as "what the screen shows".
+
+    Every field is a derivation of the SAME `capture-pane` string, so this costs
+    no second read (ADR 0014): `_board` captures once, calls `_read_pane` once,
+    and hands the result on.
+
+    It exists because the previous shape — `_ask_of(session_id, rows, widget,
+    rendered)` — invited the failure class ADR 0020 is about. `rendered` had to
+    be `_pane_question(pane)`, the EXTRACTED question text; passing the raw pane
+    (the obvious mistake, and the one an agent makes first) is a `str` either
+    way, so it type-checked, ran, matched nothing, and quietly produced an
+    untappable Ask Set with no options and no complaint. An API where a wrong
+    argument is silently absorbed is the same defect as a parser that defaults
+    its cursor to 0. Now the argument is a `_PaneRead` or it is nothing, and
+    `_ask_set` rejects anything else loudly.
+
+      captured  did a capture-pane actually return a frame? This is the
+                distinction between "nobody looked" and "we looked and saw no
+                widget" — the second is a CONTRADICTION with a transcript that
+                says an AskUserQuestion is pending, and contradictions must be
+                reported, not defaulted away.
+      widget    `_pane_widget` — the AskUserQuestion widget, or {}.
+      question  `_pane_question` — the widget's rendered prompt, or ''. Only
+                meaningful when `widget`; that gating lives here rather than at
+                every call site.
+      selector  `_parse_selector` — a numbered menu (permission prompt or the
+                iTerm-era widget), or {}.
+      unsent    `_pane_input` — text sitting in the free-text input box. Empty
+                whenever a menu or widget owns the screen: their bodies are
+                framed by the same rules the input box is, and reading one as
+                unsent text is the false ⚠ of ADR 0020. Computed here so no
+                caller can forget the guard.
+    """
+
+    captured: bool
+    widget: dict
+    question: str
+    selector: dict
+    unsent: str
+
+
+_NO_PANE = _PaneRead(captured=False, widget={}, question="", selector={}, unsent="")
+
+
+def _read_pane(text: str) -> _PaneRead:
+    """Parse one captured frame every way the Board reads it (see `_PaneRead`).
+
+    `text` is `_pane_contents`' output, and '' means the capture failed — which
+    is `_NO_PANE`, not an empty screen: nothing was observed, so nothing may be
+    concluded."""
+    if not text:
+        return _NO_PANE
+    widget = _pane_widget(text)
+    selector = _parse_selector(text)
+    return _PaneRead(
+        captured=True,
+        widget=widget,
+        question=_pane_question(text) if widget else "",
+        selector=selector,
+        unsent="" if (widget or selector) else _pane_input(text),
+    )
 
 
 def _tmux_server_down() -> bool:
@@ -2340,21 +2628,19 @@ def _board(focus_sid: str = "") -> dict:
         # **Scrollback** (ADR 0014 — the scrollback costs no second file read).
         rows = _tail_rows(focus["sessionId"])
         scrollback = _scrollback(rows)
-        cursor = 0
-        pane = _pane_contents(focus["runId"])   # one read: box + any selector/widget
-        sel = _parse_selector(pane)             # a numbered menu (permission or question)
-        widget = _pane_widget(pane)             # the AskUserQuestion widget specifically
-        # The rendered question, which is what says WHICH Ask of the Set is on
-        # screen (ADR 0020). Off the same capture — the widget reading and this
-        # are two derivations of one `capture-pane`, as the Ask and the Scrollback
-        # are two derivations of one file read.
-        rendered = _pane_question(pane) if widget else ""
-        ask, options, askset = _ask_of(focus["sessionId"], rows, widget, rendered)
+        # None, not 0 — the payload never claims a cursor position nobody read
+        # (ADR 0020: `cursor 0` was a default that drove keystrokes for months).
+        cursor = None
+        # ONE capture, parsed once, every derivation off the same string: the
+        # menu, the widget, the rendered question and the input box (ADR 0014).
+        pr = _read_pane(_pane_contents(focus["runId"]))
+        sel, widget = pr.selector, pr.widget
+        ask, options, askset = _ask_of(focus["sessionId"], rows, pr)
         lane = focus["lane"]
         if widget:
             lane = "question"                   # the rendered pane outranks _lane_of's guess
             if not ask:
-                ask = rendered                  # tool_use hasn't flushed — read the prompt off-screen
+                ask = pr.question               # tool_use hasn't flushed — read the prompt off-screen
         if sel:
             # Hybrid (ADR 0009): structured tool_use labels win when flushed; the
             # pane supplies them only when they're absent. The live cursor always
@@ -2368,11 +2654,15 @@ def _board(focus_sid: str = "") -> dict:
             # the widget paints, its own affordances included — because that is
             # the sequence a Down key steps through. `_parse_selector`'s cursor
             # indexes options and is the wrong space here; `askSet[*].steps` is
-            # already measured against this one.
+            # already measured against this one. null when the frame painted no
+            # cursor at all — a consumer must branch on that, never read it as 0
+            # (ADR 0020: a defaulted 0 is what drove the wrong keystrokes), and
+            # `askSet.tappable` is already False in that case.
             cursor = widget["cursor"]
         # A menu or widget owns the screen — there is no free-text input box to
         # mistake its body for unsent text (that false ⚠ was the original bug).
-        pending = "" if (sel or widget) else _pane_input(pane)
+        # The guard lives in `_read_pane` so it cannot be forgotten here.
+        pending = pr.unsent
         # An **Ask** is the blocker of a **Blocked** Run and nothing else
         # (CONTEXT.md). On an idle Run the prose-`?` regex only restates the last
         # turn, which the **Scrollback** now shows — a second copy, not new
@@ -2392,7 +2682,7 @@ def _board(focus_sid: str = "") -> dict:
         blocked = lane in ("question", "approval") or (
             lane == "snoozed" and focus.get("status") == "waiting")
         if not blocked:
-            ask, options, cursor, askset = "", [], 0, {}
+            ask, options, cursor, askset = "", [], None, {}
         # `options` (bare labels) is kept beside `askSet` on purpose: it is the
         # key the client reads today, and it still serves the permission menu,
         # which has no Ask Set. It now carries the CURRENT Ask's options only —
@@ -2694,7 +2984,16 @@ class Handler(BaseHTTPRequestHandler):
         # message, or a prior stuck send), refuse and hand it back so the caller
         # sees exactly what would be sent. `force` sends anyway (appends).
         if text and not bool(body.get("force")):
-            existing = _pane_input(_pane_contents(run_id))
+            # Through `_read_pane`, never `_pane_input` raw: a widget's body sits
+            # between the same horizontal rules the input box does, so the raw
+            # reader hands back the QUESTION as "unsent text". The phone then
+            # asks "this session already has unsent text … send anyway?" over a
+            # live Ask, and OK means `force` — text sent into a selector, which
+            # ADR 0020 measured as silently discarded and answered by whatever
+            # row the cursor was on. `/api/board` already gates `pendingInput`
+            # this way; this path was the one that did not, and disagreeing with
+            # itself is worse than either answer.
+            existing = _read_pane(_pane_contents(run_id)).unsent
             if existing:
                 self._json(409, {"ok": False, "message": "input box already has unsent text",
                                  "existing": existing[:500]})

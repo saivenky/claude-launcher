@@ -1,0 +1,37 @@
+
+  - My (a) "training-prep keeps authoring the initial range" was wrong — it doesn't author anything. The question is really about the microcycle
+  note.
+  - You asked whether per-mesocycle range changes would play well with this. They're already how it works. 15–20 isn't stale data — it's your
+  current stated intent for this block. A retune to 8–12 in the store would silently contradict the note you're still maintaining, and next
+  mesocycle you'd write 15–20 again and it would never take effect. That's the mirror image of today's bug: instead of a range nothing can
+  change, a range your authoring can't change.
+
+  Revised options — who owns the range:
+
+  - (a) Store wins; retire the microcycle's rep-range column. The retune owns it outright, the agent stops sending. Clean single owner, but you
+  lose the ability to deliberately set a range per mesocycle — the thing you told me you want.
+  - (b) Microcycle authors, store adapts within the block. (Recommended.) A posted range that differs from the last one posted for that exercise
+  is a deliberate re-authoring and overwrites the stored range; a posted range identical to the last is a no-op, so the nightly repost never
+  clobbers a retune. New exercises get their range on first sight for free. You keep per-mesocycle intent, the retune adapts inside it, and
+  neither silently beats the other.
+  - (c) The retune writes back into the microcycle note. Truest to "one source", but it means strength-log editing a vault file the training
+  agent owns — a new cross-repo write path, and ADR 0039 spent real effort keeping that surface small.
+
+  I'd take (b). It's a change to ticket 02's scope — from "stop sending" to "adopt on change" — and it's implementable entirely inside
+  strength-log, so personal-agents needs no change at all.
+
+  Worth noting under (b): accepting a retune to 8–12 while the note still says 15–20 leaves them disagreeing until you next edit the microcycle.
+  That's tolerable — the note is intent, the store is what the app runs on — but if that bothers you, (c) is the only option that fixes it.
+
+  Slice 03 is unaffected and still running.
+
+✻ Waiting for 1 background agent to finish
+
+─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ 
+─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  📁 strength-log | 🌿 main* | 🤖 Opus 5 (1M context) | 🧠 13% (131K / 1M) | 💰 $16.89                                                       /rc
+  ⏵⏵ auto mode on (shift+tab to cycle)
+
+  ⏺ main
+  ◯ general-purpose  Inspecting inner thigh classify output                                                               4m 22s · ↓ 65.1k tokens
