@@ -2,8 +2,42 @@
 <meta name=viewport content="width=device-width,initial-scale=1">
 <title>claude board</title>
 <style>
-:root{--bg:#0c0e11;--panel:#14181d;--panel2:#0a0c0f;--fg:#dde3e9;--dim:#6b7681;
+:root{
+/* --- the two faces (ADR 0018) ---
+PROSE IS A SERIF NOW; the machine face is unchanged. ADR 0017 moved the read off
+monospace and onto the system UI sans, on the reasoning that the eye should tell
+a path from a sentence without reading either. This goes one step further in the
+same direction and for the same reason: a serif says "this is prose" louder than
+a UI sans does, and the UI sans is also the face of every button and label on the
+page, so the read was wearing the chrome's clothes.
+Four deep because the target is a phone and the phone is not always the same one:
+Charter on macOS/iOS, Georgia on Windows and older iOS, Noto Serif on Android,
+the generic last. NOT a slab, which is what was actually wanted — no mobile OS
+ships one, so it would mean a webfont, and this UI is deliberately two
+hot-served text files with no build step and no binary assets (ADR 0005). */
+--face:Charter,Georgia,"Noto Serif",serif;
+--mono:ui-monospace,SFMono-Regular,Menlo,monospace;
+/* --- the type scale (ADR 0018) ---
+EVERY font size on this page is a rem, and this is the only number that sets
+what a rem is worth. 1 = the 16px-based sizes board.html carried before; 1.25 is
+what reading real Runs on a real phone settled on. Changing the whole page's
+type is this one value, which is the entire point of the conversion.
+It scales TYPE and not the page: borders, radii, padding and the reading column
+stay px on purpose. A scale that moved those too would just be the browser's own
+zoom, which the reader already has. */
+--fs:1.25;
+--bg:#0c0e11;--panel:#14181d;--panel2:#0a0c0f;--fg:#dde3e9;--dim:#6b7681;
 --line:#232a31;--accent:#e6b450;--q:#7fd1c4;--p:#e6b450;--m:#8ab4f8;--w:#5b646d;--red:#e06c75;
+/* The literals that used to sit inline in the rules below. They are named here
+for one reason: a theme has to be one block to swap, and a hardcoded #b9c4ce in
+the middle of `.md` cannot be swapped at all. --fg1/2/3 are the prose ramp
+between --fg and --dim; --lbl is the Record's label gutter; --line2/3 are the
+hairlines quieter than --line. */
+--line2:#171c22;--line3:#151a1f;
+--fg-max:#fff;--fg1:#ccd6e0;--fg2:#b9c4ce;--fg3:#98a4b0;
+--lbl:#4c5660;--lbl-you:#5d6a7a;--q-soft:#9fd8ce;--on-accent:#000;
+--scrim:rgba(0,0,0,.62);--shadow-strong:rgba(0,0,0,.75);--shadow-sheet:rgba(0,0,0,.6);
+--shadow-mid:rgba(0,0,0,.5);--shadow-soft:rgba(0,0,0,.45);--red-wash:rgba(224,108,117,.08);
 /* --- the reading column ---
 ONE bounded column for every surface on this page: the Board's header, the Focus
 card, the queue, the Foreign Runs, and the **Intake** sheet alike. Nothing here
@@ -30,9 +64,11 @@ by a row of options, and the reply box is a textarea that grows per keystroke
 (board.js: growComposer), so it has to be measured rather than assumed, and
 re-measured as you type. */
 --barh:52px;}
+/* A rem is --fs x 16px, and every font size below is one. See --fs. */
+html{font-size:calc(16px * var(--fs))}
 *{box-sizing:border-box}
 body{margin:0;background:var(--bg);color:var(--fg);
-font:14px/1.6 ui-monospace,SFMono-Regular,Menlo,monospace}
+font:0.875rem/1.6 var(--mono)}
 /* The bottom padding no longer clears a fixed dock (ADR 0015) — nothing is fixed
 at this edge but the composer, which is sticky and inside the card. It does still
 own the page's own safe-area inset, which the dock used to absorb for it. */
@@ -40,8 +76,8 @@ own the page's own safe-area inset, which the dock used to absorb for it. */
 /* The summary is four counts and a separator each; on a 390px phone it does not
 fit beside the title, and an unwrapped flex row pushed it off the right edge. */
 header{display:flex;align-items:baseline;gap:4px 10px;padding-bottom:12px;flex-wrap:wrap}
-h1{font-size:14px;margin:0;letter-spacing:.5px}
-.sub{color:var(--dim);font-size:12px;margin-left:auto}
+h1{font-size:0.875rem;margin:0;letter-spacing:.5px}
+.sub{color:var(--dim);font-size:0.75rem;margin-left:auto}
 .sub b{color:var(--accent)}
 
 .empty{border:1px dashed var(--line);border-radius:10px;padding:26px 16px;text-align:center;color:var(--dim)}
@@ -64,19 +100,19 @@ lands. Who wears `.hid` and when is board.js::syncChrome. */
 position:sticky;top:0;z-index:2;background:var(--panel);border-radius:9px 9px 0 0;
 transition:transform .2s ease,opacity .2s ease}
 .fhead.hid{transform:translateY(-110%);opacity:0}
-.fdir{font-weight:600;font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
-.fbadge{font-size:10px;text-transform:uppercase;letter-spacing:.7px;color:var(--m);
+.fdir{font-weight:600;font-size:0.875rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
+.fbadge{font-size:0.625rem;text-transform:uppercase;letter-spacing:.7px;color:var(--m);
 border:1px solid var(--line);border-radius:4px;padding:1px 6px}
 .bq .fbadge{color:var(--q)} .bp .fbadge{color:var(--p)}
-.fmeta{color:var(--dim);font-size:11px;white-space:nowrap;flex:0 0 auto}
-.fsid{color:var(--dim);font-size:11px;white-space:nowrap;flex:0 0 auto}
+.fmeta{color:var(--dim);font-size:0.6875rem;white-space:nowrap;flex:0 0 auto}
+.fsid{color:var(--dim);font-size:0.6875rem;white-space:nowrap;flex:0 0 auto}
 .fhead .fbadge{flex:0 0 auto}
 /* Four things do not fit across a 390px header once the queue count joins them.
 The sessionId is the one you never read on a phone — it is for pasting into a
 resume, which is not something you do from this strip. */
 @media(max-width:560px){.fsid{display:none}}
-.about{padding:8px 14px;border-bottom:1px solid var(--line);background:var(--panel2);font-size:12.5px}
-.albl{color:var(--dim);text-transform:uppercase;font-size:9px;letter-spacing:1px;margin-right:9px}
+.about{padding:8px 14px;border-bottom:1px solid var(--line);background:var(--panel2);font-size:0.78125rem}
+.albl{color:var(--dim);text-transform:uppercase;font-size:0.5625rem;letter-spacing:1px;margin-right:9px}
 
 /* --- the Scrollback: the Focus's recent turns, oldest first (ADR 0014) ---
 NO max-height and NO overflow, deliberately. The `max-height:46vh;overflow-y:auto`
@@ -93,8 +129,8 @@ like a log file and skim like one. Prose moves to the system UI face; monospace
 survives exactly where it MEANS machine — the label gutter, tool names, paths,
 counts, code — so the eye tells a path from a sentence without reading either.
 The height comes from the **Fold**; the read is not squeezed. */
-.sb{padding:7px 15px 14px;font-size:13px;border-bottom:1px solid var(--line);touch-action:pan-y;
-font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text",Inter,system-ui,sans-serif}
+.sb{padding:7px 15px 14px;font-size:0.8125rem;border-bottom:1px solid var(--line);touch-action:pan-y;
+font-family:var(--face)}
 .turn{margin-bottom:15px} .turn:last-child{margin-bottom:2px}
 /* Only an OPENED **Record** draws this now: above the seam your prompt is a
 gutter row like everything else, and below it there is no prompt to draw. */
@@ -120,27 +156,27 @@ so it keeps the monospace face the prose around it gave up (ADR 0017). That
 contrast IS the point: the eye tells a path from a sentence without reading
 either. */
 .work{margin-bottom:10px;border-left:1px solid var(--line);padding-left:10px;
-font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
-.roll{font-size:11.5px;color:var(--dim);cursor:pointer;display:flex;gap:8px;align-items:baseline}
+font-family:var(--mono)}
+.roll{font-size:0.71875rem;color:var(--dim);cursor:pointer;display:flex;gap:8px;align-items:baseline}
 .roll:hover{color:var(--fg)}
 .rollct{color:var(--accent);opacity:.8;flex:0 0 auto}
 /* The summary is a skim, so it stays ONE line however many steps it names —
 `nowrap` + ellipsis rather than wrap. Opening the run is what the detail is for. */
 .rollsum{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
-.rollcar{flex:0 0 auto;opacity:.5;font-size:9px;margin-left:auto}
+.rollcar{flex:0 0 auto;opacity:.5;font-size:0.5625rem;margin-left:auto}
 /* One line per call, opened. `grid` rather than flex so every detail starts on
 the same x: the tool names form a gutter you can skim without reading the
 arguments beside them. Each detail is ONE line — a Bash heredoc is 200 chars of
 one-lined transcript and would otherwise wrap into a wall. */
 .wline{display:grid;grid-template-columns:auto 1fr;gap:9px;align-items:baseline;
-font-size:11.5px;line-height:1.75;margin-top:2px}
+font-size:0.71875rem;line-height:1.75;margin-top:2px}
 .wname{color:var(--accent);opacity:.8}
 .wdetail{color:var(--dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
-.wmore{font-size:10.5px;color:var(--w);margin-top:3px}
+.wmore{font-size:0.65625rem;color:var(--w);margin-top:3px}
 
 /* The slash command you invoked, standing in for the skill body the server
 drops (ADR 0016). */
-.cmd{margin-bottom:15px;font-size:12px;color:var(--m)}
+.cmd{margin-bottom:15px;font-size:0.75rem;color:var(--m)}
 .cmd b{color:var(--accent);font-weight:600}
 
 /* --- the Fold: an older Exchange is one Record (ADR 0017) ---
@@ -152,40 +188,50 @@ The gutter says WHO, and it is the same column on every Record, which is the
 whole value — the eye runs down it without reading a value. It costs ~52px a
 Record against a 26px prose gist, paid knowingly for a column the gist could not
 give at all. */
-.rec{border-bottom:1px solid #171c22}
-.rec:first-of-type{border-top:1px solid #171c22}
+.rec{border-bottom:1px solid var(--line2)}
+.rec:first-of-type{border-top:1px solid var(--line2)}
 .rhd{display:flex;align-items:flex-start;gap:7px;width:100%;text-align:left;
 background:transparent;border:0;color:var(--fg);font:inherit;padding:6px 0 7px;cursor:pointer}
+/* --- the label gutter is a rem, not 40px, and that is load-bearing (ADR 0018) ---
+At the 1.25 scale `CLAUDE` wants 43.8px of a 40px track, and .rl never declared
+`white-space:nowrap` — so it does not overflow, it WRAPS, and the Record stops
+being three lines. That is the one thing a Record may not do: the fixed shape is
+its whole value (ADR 0017), the reason it beat a prose gist, and a label that
+wraps at one type size and not another destroys it silently.
+So the two tracks of the gutter and the number column beside them are rem: they
+are sized by the type they hold, not by the layout around them. 2.5rem and
+0.85rem are 40px and 13px exactly at --fs:1, so this changed nothing until the
+scale moved. Everything else on the page stays px. */
 /* `auto` for the ⚙ count so it sits at the column edge and never pushes the
 artifacts, which are what the line is actually read for. */
-.rf{flex:1;min-width:0;display:grid;grid-template-columns:40px minmax(0,1fr) auto;
+.rf{flex:1;min-width:0;display:grid;grid-template-columns:2.5rem minmax(0,1fr) auto;
 column-gap:8px;align-items:baseline}
-.rl{grid-column:1;font:600 8.5px/1.85 ui-monospace,Menlo,monospace;letter-spacing:.9px;
-text-transform:uppercase;color:#4c5660}
-.rl.ru{color:#5d6a7a}
+.rl{grid-column:1;font:600 0.53125rem/1.85 var(--mono);letter-spacing:.9px;
+text-transform:uppercase;color:var(--lbl)}
+.rl.ru{color:var(--lbl-you)}
 /* Every line is ONE line: nowrap + ellipsis, because a Record that changed
 height with its contents would stop being a shape you can skim. */
 .rv{grid-column:2;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
-font:12.6px/1.4 -apple-system,BlinkMacSystemFont,"SF Pro Text",Inter,system-ui,sans-serif;
-color:#b3bec9}
+font:0.7875rem/1.4 var(--face);
+color:var(--fg2)}
 /* your prompt is the Record's title, so it carries the weight; the reply under
 it is the answer and sits back a shade */
-.rv.ru{color:#ccd6e0}
-.rv.rs{color:#98a4b0}
+.rv.ru{color:var(--fg1)}
+.rv.rs{color:var(--fg3)}
 /* only the artifacts stay machine-faced — that is how a path stops looking like
 a sentence without anyone reading either */
-.rv.rw{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:10.6px;
+.rv.rw{font-family:var(--mono);font-size:0.6625rem;
 line-height:1.6;color:var(--accent);opacity:.62}
 .rv.rdim{color:var(--w);font-style:italic}
-.rgear{grid-column:3;font:10px/1.6 ui-monospace,Menlo,monospace;color:var(--accent);opacity:.55}
+.rgear{grid-column:3;font:0.625rem/1.6 var(--mono);color:var(--accent);opacity:.55}
 /* It closed by putting a question to YOU — and in chronological order the answer
 to it is the very next row DOWN, which is the relation an inverted order
 destroys. This one line is allowed two, because it is the one you came back for. */
 .rl.rq{color:var(--q)}
-.rv.rq{color:#9fd8ce;white-space:normal;
+.rv.rq{color:var(--q-soft);white-space:normal;
 display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical}
 .recq .rl.ru{color:var(--q);opacity:.7}
-.rcar{flex:0 0 auto;font-size:8.5px;color:var(--w);padding-top:5px}
+.rcar{flex:0 0 auto;font-size:0.53125rem;color:var(--w);padding-top:5px}
 .rhd:hover .rv{color:var(--fg)}
 /* Opened, the `you` line stays as the Record's title and the read appears under
 it — you already said which Exchange you wanted by tapping it, so it unfolds to
@@ -195,7 +241,7 @@ border-bottom-color:transparent;box-shadow:0 0 0 1px var(--line)}
 .recopen .rv{white-space:normal;
 display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical}
 .rbody{padding:2px 0 11px}
-.rwait{font-size:11.5px;color:var(--dim);padding:3px 0}
+.rwait{font-size:0.71875rem;color:var(--dim);padding:3px 0}
 /* Never rendered into a document — foldText builds it detached, reads its text
 and drops it. Declared anyway: a stray one is then invisible rather than a
 duplicate of a turn nobody can explain. */
@@ -208,14 +254,14 @@ and above the seam; `↓ newest` names the direction of now. That is why the ord
 is not negotiable: a Record that went teal was answered by the very next row
 DOWN, and an inverted document makes that relation unreadable. */
 .ftop{display:flex;align-items:baseline;gap:8px;padding:1px 0 5px}
-.ftopl{font:700 9px/1 ui-monospace,Menlo,monospace;letter-spacing:1.5px;
+.ftopl{font:700 0.5625rem/1 var(--mono);letter-spacing:1.5px;
 text-transform:uppercase;color:var(--w)}
-.ftopn{font:9px/1 ui-monospace,Menlo,monospace;letter-spacing:.6px;color:var(--dim)}
+.ftopn{font:0.5625rem/1 var(--mono);letter-spacing:.6px;color:var(--dim)}
 .fbtn{background:none;border:1px solid var(--line);border-radius:999px;color:var(--dim);
-font:10.5px/1 ui-monospace,Menlo,monospace;padding:4px 8px;cursor:pointer}
+font:0.65625rem/1 var(--mono);padding:4px 8px;cursor:pointer}
 .fbtn:hover{color:var(--fg);border-color:var(--w)}
 .fbtngo{color:var(--lane);border-color:color-mix(in srgb,var(--lane) 40%,var(--line))}
-.rn{flex:0 0 13px;text-align:right;font:600 9.5px/1.85 ui-monospace,Menlo,monospace;color:var(--w)}
+.rn{flex:0 0 0.85rem;text-align:right;font:600 0.59375rem/1.85 var(--mono);color:var(--w)}
 .recq .rn{color:var(--q)}
 .rnow{color:var(--lane)}
 
@@ -226,40 +272,40 @@ Records above, then one row per thing Claude said on the way here */
 /* it WRAPS rather than ellipsising: this is the one prompt on the page that has
 to be read in full, and it still costs less than the bubble it replaces */
 .nask{grid-column:2/4;min-width:0}
-.nask .md{font-size:13px;line-height:1.42;color:#cfd8e1}
+.nask .md{font-size:0.8125rem;line-height:1.42;color:var(--fg1)}
 .nask .md p{margin:0 0 5px}
 .nask .md>:last-child{margin-bottom:0}
 /* a run-up row is indented by the number column it does not use — these are
 steps within ONE Exchange, not Exchanges */
-.inrow{border-bottom:1px solid #151a1f;margin-left:20px}
+.inrow{border-bottom:1px solid var(--line3);margin-left:20px}
 .inrow .rhd{padding:4px 0}
 .inopen{background:var(--panel2);border-radius:7px;margin:3px 0 3px 20px;padding:0 9px;
 border-bottom-color:transparent}
 .inbody{padding:0 0 9px}
 .wkrow{display:flex;align-items:baseline;gap:8px;margin-left:20px;padding:3px 0;
-border-bottom:1px solid #151a1f}
-.wkrow>.rl.rw{flex:0 0 40px}
+border-bottom:1px solid var(--line3)}
+.wkrow>.rl.rw{flex:0 0 2.5rem}
 .wkrow .work{flex:1;min-width:0;margin:0;border-left:0;padding-left:0}
 
 /* The seam is where the page lands — parked 250px down, not against the header,
 so the tail of the run-up peeks above it. That peek is load-bearing: it is how a
 reader learns there IS a Fold and that it is skimmable (board.js: SEAM_PEEK). */
 .seam{display:flex;align-items:center;gap:8px;margin:12px 0 10px}
-.seaml{font:700 9.5px/1 ui-monospace,Menlo,monospace;letter-spacing:1.6px;
+.seaml{font:700 0.59375rem/1 var(--mono);letter-spacing:1.6px;
 text-transform:uppercase;color:var(--lane)}
 .seamrule{flex:1;height:1px;background:linear-gradient(90deg,var(--lane),transparent);opacity:.45}
-.seamn{font:9.5px/1 ui-monospace,Menlo,monospace;color:var(--w)}
+.seamn{font:0.59375rem/1 var(--mono);color:var(--w)}
 
 /* Below the seam the gutter stops and the read takes the full column — the whole
 design in one line. This is where ADR 0016's live rail lives now: it marks the
 reply you are answering, and below the seam that is everything there is. */
 .live{border-left:2px solid var(--lane);padding-left:11px;margin-left:-13px}
-.live .md{color:var(--fg);font-size:14.5px;line-height:1.5}
+.live .md{color:var(--fg);font-size:0.90625rem;line-height:1.5}
 .live .cm{margin-bottom:10px}
 .live>:last-child{margin-bottom:0}
 /* a prompt with nothing back yet, below the read, taking the NEXT number */
 .pend{margin-top:14px}
-.rfpend{display:grid;grid-template-columns:13px 40px minmax(0,1fr);column-gap:7px;
+.rfpend{display:grid;grid-template-columns:0.85rem 2.5rem minmax(0,1fr);column-gap:7px;
 align-items:baseline}
 .rfpend .rn{flex:0 0 auto;grid-column:1}
 .rfpend .rl{grid-column:2}
@@ -279,16 +325,16 @@ scrollback wraps hard; only a table is allowed to scroll, on its own axis. */
 face (ADR 0017) — looser per line and tighter per block than the log-file
 monospace it replaces. Code and paths keep the machine face, which is the whole
 distinction the change exists to make. */
-.md{font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text",Inter,system-ui,sans-serif;
-font-size:13.5px;line-height:1.54;color:#b9c4ce}
-.md h3,.md h4,.md h5,.md h6{font-size:11.5px;letter-spacing:.5px;color:var(--accent);margin:12px 0 5px}
-.md p{margin:0 0 8px} .md strong{color:#fff;font-weight:600}
-.md code,.md pre{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px}
+.md{font-family:var(--face);
+font-size:0.84375rem;line-height:1.54;color:var(--fg2)}
+.md h3,.md h4,.md h5,.md h6{font-size:0.71875rem;letter-spacing:.5px;color:var(--accent);margin:12px 0 5px}
+.md p{margin:0 0 8px} .md strong{color:var(--fg-max);font-weight:600}
+.md code,.md pre{font-family:var(--mono);font-size:0.75rem}
 .md code{background:var(--panel2);border:1px solid var(--line);border-radius:4px;padding:0 4px;color:var(--q)}
 .md ul{margin:6px 0;padding-left:18px} .md li{margin:3px 0}
 /* A table cannot wrap its way narrow, so it is the one thing that keeps a
 scrollbar — its own, on its own axis, instead of the whole page's. */
-.md table{border-collapse:collapse;margin:8px 0;font-size:12px;width:100%;
+.md table{border-collapse:collapse;margin:8px 0;font-size:0.75rem;width:100%;
 display:block;overflow-x:auto;max-width:100%}
 .md td,.md th{overflow-wrap:normal}
 .md th,.md td{border:1px solid var(--line);padding:3px 7px;text-align:left}
@@ -296,17 +342,17 @@ display:block;overflow-x:auto;max-width:100%}
 .md>:first-child{margin-top:0} .md>:last-child{margin-bottom:0}
 
 .pending{margin:10px 16px 0;padding:8px 10px;border:1px solid var(--red);border-radius:7px;
-background:rgba(224,108,117,.08)}
-.plbl{font-size:10.5px;color:var(--red);margin-bottom:4px}
-.ptext{font-size:12px;color:var(--fg);white-space:pre-wrap;word-break:break-word;opacity:.85}
+background:var(--red-wash)}
+.plbl{font-size:0.65625rem;color:var(--red);margin-bottom:4px}
+.ptext{font-size:0.75rem;color:var(--fg);white-space:pre-wrap;word-break:break-word;opacity:.85}
 .pending .ghost{margin-top:7px;border-color:var(--red);color:var(--red)}
 /* The **Ask** is BELOW the read, so it is below the seam the page lands on — and
 on a 390px phone that put it under the composer. The landing takes a floor for it
 rather than this box moving (board.js: clearFloor): the peek above the seam is
 what pays, so nothing here is sticky and the read keeps the whole column. */
 .ask{padding:12px 16px;background:var(--panel2)}
-.ask .lbl{font-size:10px;letter-spacing:1px;text-transform:uppercase;color:var(--accent)}
-.ask .qtext{font-size:13.5px;margin-top:4px;color:#fff}
+.ask .lbl{font-size:0.625rem;letter-spacing:1px;text-transform:uppercase;color:var(--accent)}
+.ask .qtext{font-size:0.84375rem;margin-top:4px;color:var(--fg-max)}
 /* THE COMPOSER *IS* THE BOTTOM EDGE (ADR 0015). It used to stand on the intake
 dock at `bottom:var(--dockh)`; the dock is deleted, so it stands on the viewport
 and owns the `env(safe-area-inset-bottom)` the dock absorbed on its behalf.
@@ -316,7 +362,7 @@ edge would spend the pixels ADR 0014 and ADR 0015 exist to recover. */
 .respond{padding:10px 16px calc(10px + env(safe-area-inset-bottom,0px));
 position:sticky;bottom:0;z-index:2;
 background:var(--panel);border-top:1px solid var(--line);border-radius:0 0 9px 9px;
-box-shadow:0 -10px 20px -12px rgba(0,0,0,.75);
+box-shadow:0 -10px 20px -12px var(--shadow-strong);
 transition:transform .2s ease,opacity .2s ease}
 /* `100%` is the bar's OWN height, so a composer grown to five rows still slides
 entirely off the bottom edge — one of the two things a growing box could have
@@ -325,10 +371,10 @@ UPWARD into the read, so the pixels it takes are only ever taken while you are
 actually typing into it. */
 .respond.hid{transform:translateY(100%);opacity:0}
 /* A working Focus keeps its reply box; this says where the text goes. */
-.queued{display:flex;align-items:center;gap:6px;color:var(--m);font-size:11px;margin:0 2px 7px}
+.queued{display:flex;align-items:center;gap:6px;color:var(--m);font-size:0.6875rem;margin:0 2px 7px}
 .opts{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px}
 .opt{background:transparent;border:1px solid var(--line);color:var(--fg);border-radius:6px;
-padding:5px 12px;font:inherit;font-size:13px;cursor:pointer}
+padding:5px 12px;font:inherit;font-size:0.8125rem;cursor:pointer}
 .opt:hover{border-color:var(--accent);color:var(--accent)}
 /* BOTTOM-ALIGNED, not centred: the box grows upward (see textarea.ti) and
 `respond →` must stay exactly where your thumb left it, so the row aligns on the
@@ -339,7 +385,7 @@ own height here instead of matching the box's. */
 /* `flex:1` alone keeps `min-width:auto`, so the box refused to shrink below
 its placeholder and shoved `respond →` off the right edge of a 390px phone. */
 .ti{flex:1;min-width:0;background:var(--panel2);border:1px solid var(--line);color:var(--fg);
-border-radius:7px;padding:8px 10px;font:inherit;font-size:13px}
+border-radius:7px;padding:8px 10px;font:inherit;font-size:0.8125rem}
 /* THE REPLY BOX IS A TEXTAREA, ONE ROW AT REST (ADR 0015). **Respond** carries
 prose, and a single-line input showed the last few words of it through a keyhole.
 It deliberately declares NO font, padding, line-height or height of its own: it
@@ -357,28 +403,28 @@ box scrolls inside itself.
 the measured height anyway. */
 textarea.ti{display:block;resize:none;overflow-y:auto}
 .send{flex:0 0 auto}
-.send{background:var(--accent);color:#000;border:0;border-radius:7px;padding:8px 16px;
-font:inherit;font-size:13px;font-weight:700;cursor:pointer}
+.send{background:var(--accent);color:var(--on-accent);border:0;border-radius:7px;padding:8px 16px;
+font:inherit;font-size:0.8125rem;font-weight:700;cursor:pointer}
 /* In the card's flow, above the sticky composer — not inside it. It wraps now,
 which it has to: the card lost `overflow:hidden` (see .focus), and this row of
 six controls was only ever fitting a phone by being clipped by it. */
 .actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:2px 16px 11px}
 .grow{flex:1}
-.prisel{font-size:11.5px;color:var(--dim);cursor:pointer}.prisel b{color:var(--accent)}
+.prisel{font-size:0.71875rem;color:var(--dim);cursor:pointer}.prisel b{color:var(--accent)}
 .ghost{background:transparent;border:1px solid var(--line);color:var(--dim);border-radius:6px;
-padding:4px 10px;font:inherit;font-size:11.5px;cursor:pointer}
+padding:4px 10px;font:inherit;font-size:0.71875rem;cursor:pointer}
 .ghost:hover{border-color:var(--dim);color:var(--fg)}
 
 .qhead{display:flex;align-items:center;gap:8px;margin:22px 4px 8px;
-font-size:11px;letter-spacing:1px;text-transform:uppercase;color:var(--dim)}
+font-size:0.6875rem;letter-spacing:1px;text-transform:uppercase;color:var(--dim)}
 .qhead .ct{background:var(--line);border-radius:9px;padding:0 7px}
 /* `answered · still running` — the zone the Run you just replied to lands in.
 It is yours, so it is accented and it leads, and it is NOT dimmed: if you are
 reading this list, the Run did not resurface on its own and the old label
 ("resurfaces when it needs you") was a promise nothing kept. */
 .qhead.mine{color:var(--accent)}
-.qhead.mine .ct{background:var(--accent);color:#000;font-weight:700}
-.qsub{color:var(--dim);font-size:11px;line-height:1.5;margin:-4px 4px 9px}
+.qhead.mine .ct{background:var(--accent);color:var(--on-accent);font-weight:700}
+.qsub{color:var(--dim);font-size:0.6875rem;line-height:1.5;margin:-4px 4px 9px}
 .qrow{display:flex;align-items:center;gap:9px;width:100%;text-align:left;background:var(--panel);
 border:1px solid var(--line);border-left:3px solid var(--w);border-radius:8px;
 padding:9px 11px;margin-bottom:6px;color:var(--fg);font:inherit}
@@ -389,19 +435,19 @@ too: in the rail this is the swipe's readout — move the Focus with a gesture a
 the accent moves with it, which is the only way a monitor shows where a gesture
 put you. */
 .qrow.now{border-color:var(--accent)}
-.qbadge{font-size:9.5px;text-transform:uppercase;letter-spacing:.5px;color:var(--dim);min-width:58px}
+.qbadge{font-size:0.59375rem;text-transform:uppercase;letter-spacing:.5px;color:var(--dim);min-width:58px}
 .lane-q .qbadge{color:var(--q)} .lane-p .qbadge{color:var(--p)} .lane-m .qbadge{color:var(--m)}
-.qdir{font-weight:600;font-size:12.5px;white-space:nowrap}
-.qone{color:var(--dim);font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex:1}
+.qdir{font-weight:600;font-size:0.78125rem;white-space:nowrap}
+.qone{color:var(--dim);font-size:0.75rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex:1}
 .flag{color:var(--accent)}
 .dim{opacity:.5}
-.note{color:var(--dim);font-size:11px;margin-top:22px;border-top:1px solid var(--line);padding-top:10px}
+.note{color:var(--dim);font-size:0.6875rem;margin-top:22px;border-top:1px solid var(--line);padding-top:10px}
 /* Clears the composer, so feedback never lands on the box you are about to type
 in next. It used to clear the dock plus a GUESSED one-line composer (`--dockh` +
 62px); with the dock gone (ADR 0015) it stands on the same measured `--barh` the
 swipe hint does, which is honest about a **Blocked** Focus's extra row too. */
 #toast{position:fixed;left:calc(50% + var(--rail)/2);bottom:calc(var(--barh) + 12px);transform:translateX(-50%);background:var(--panel);
-border:1px solid var(--line);color:var(--fg);padding:8px 14px;border-radius:8px;font-size:12px;z-index:40}
+border:1px solid var(--line);color:var(--fg);padding:8px 14px;border-radius:8px;font-size:0.75rem;z-index:40}
 
 /* --- Intake: a sheet behind a ＋, never the bottom edge (ADR 0015) ---
 Every shape of **Intake** — the generic-dir launch row, **Recover**, **resume**
@@ -422,13 +468,13 @@ empty Board wants it — above the card slot. */
 background:var(--panel);border-top:1px solid var(--line);border-radius:16px 16px 0 0;
 max-height:86vh;overflow-y:auto;
 padding:8px var(--gut) calc(18px + env(safe-area-inset-bottom,0px));
-box-shadow:0 -8px 34px rgba(0,0,0,.6);
+box-shadow:0 -8px 34px var(--shadow-sheet);
 transform:translateY(101%);visibility:hidden;transition:transform .22s ease,visibility .22s}
 .isheet.open{transform:none;visibility:visible}
-.iscrim{position:fixed;inset:0;z-index:42;background:rgba(0,0,0,.62)}
+.iscrim{position:fixed;inset:0;z-index:42;background:var(--scrim)}
 .iscrim[hidden]{display:none}
 .igrab{width:38px;height:4px;border-radius:2px;background:var(--line);margin:2px auto 12px}
-.ihead{color:var(--dim);font-size:10px;letter-spacing:1.1px;text-transform:uppercase;
+.ihead{color:var(--dim);font-size:0.625rem;letter-spacing:1.1px;text-transform:uppercase;
 margin:0 0 10px 2px}
 /* The generic-dir launch row: ADR 0008 measured it as the hot path, so it is the
 sheet's first row. Was `.dockbar`, named for the bar that held the bottom edge —
@@ -446,7 +492,7 @@ behind the queue count when there is one and takes the header's `auto` when ther
 is not. NO RECOVER BADGE ON IT — board.js::renderRecoverRow says why. */
 .iplus{flex:0 0 auto;margin-left:8px;width:28px;height:28px;border-radius:999px;
 background:var(--panel2);border:1px solid var(--line);color:var(--dim);
-font:inherit;font-size:15px;line-height:1;cursor:pointer;padding:0}
+font:inherit;font-size:0.9375rem;line-height:1;cursor:pointer;padding:0}
 .iplus:hover{border-color:var(--dim);color:var(--fg)}
 /* Marked while the sheet is open, in the same accent vocabulary as .zbtn.hot. */
 .iplus.hot{border-color:var(--accent);color:var(--accent)}
@@ -459,11 +505,11 @@ nothing is resumable, which is the condition the pill also had and which was
 nearly always true (board.js: renderRecoverRow). */
 .irecov{display:flex;align-items:center;gap:10px;width:100%;margin-bottom:12px;
 background:var(--panel2);border:1px solid var(--accent);color:var(--accent);
-border-radius:10px;padding:11px 13px;font:inherit;font-size:13px;font-weight:700;
+border-radius:10px;padding:11px 13px;font:inherit;font-size:0.8125rem;font-weight:700;
 letter-spacing:.3px;cursor:pointer;text-align:left}
 .irecov[hidden]{display:none}
-.irecov:active{background:var(--accent);color:#000}
-.irecov .n{margin-left:auto;font-weight:400;font-size:11.5px;opacity:.85}
+.irecov:active{background:var(--accent);color:var(--on-accent)}
+.irecov .n{margin-left:auto;font-weight:400;font-size:0.71875rem;opacity:.85}
 /* THE EMPTY BOARD's second layout (ADR 0015). With no **Focus** there is no
 `.fhead`, so there is no ＋ and no way to open a sheet — so Intake stops being one
 and renders inline, open, in the page flow above the card slot, with no scrim and
@@ -476,26 +522,26 @@ the column, hence padding:0. */
 overflow:visible;background:none;border:0;border-radius:0;box-shadow:none;
 padding:0;margin-bottom:16px}
 .isheet.inline .igrab{display:none}
-.dprompt{color:var(--dim);font-size:12.5px;white-space:nowrap}
+.dprompt{color:var(--dim);font-size:0.78125rem;white-space:nowrap}
 .dinp{flex:1;min-width:6ch;background:var(--panel2);color:var(--accent);border:0;
-border-bottom:1px dashed var(--dim);font:inherit;font-size:13px;padding:5px 6px;outline:0}
+border-bottom:1px dashed var(--dim);font:inherit;font-size:0.8125rem;padding:5px 6px;outline:0}
 .dinp:focus{border-bottom-color:var(--accent)}
 .dgo{flex:0 0 auto;background:transparent;border:1px solid var(--fg);color:var(--fg);border-radius:7px;
-padding:6px 13px;font:inherit;font-size:12.5px;cursor:pointer}
+padding:6px 13px;font:inherit;font-size:0.78125rem;cursor:pointer}
 .dgo:active{background:var(--fg);color:var(--bg)}
 .dirpop{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:6px;
-margin-bottom:8px;box-shadow:0 6px 22px rgba(0,0,0,.45);max-height:44vh;overflow-y:auto}
+margin-bottom:8px;box-shadow:0 6px 22px var(--shadow-soft);max-height:44vh;overflow-y:auto}
 .dirpop[hidden]{display:none}
 .diritem{display:block;width:100%;text-align:left;background:transparent;border:0;color:var(--fg);
-font:inherit;font-size:13px;padding:9px 10px;border-radius:7px;cursor:pointer}
+font:inherit;font-size:0.8125rem;padding:9px 10px;border-radius:7px;cursor:pointer}
 .diritem:hover{background:var(--panel2)}
 .diritem:active{background:var(--panel2);color:var(--accent)}
-.dlbl{display:block;color:var(--dim);font-size:9.5px;letter-spacing:1px;text-transform:uppercase;margin:0 0 6px}
+.dlbl{display:block;color:var(--dim);font-size:0.59375rem;letter-spacing:1px;text-transform:uppercase;margin:0 0 6px}
 .dlbl[hidden]{display:none}
 .drow{display:flex;align-items:center;gap:8px;margin-bottom:12px}
 .taskgroup{margin-bottom:8px}.taskgroup:last-child{margin-bottom:0}
 .tseed{width:100%;background:var(--panel2);color:var(--fg);border:1px solid var(--line);border-radius:7px;
-padding:7px 9px;font:inherit;font-size:13px;margin-bottom:6px;resize:vertical}
+padding:7px 9px;font:inherit;font-size:0.8125rem;margin-bottom:6px;resize:vertical}
 .tbtns{display:flex;gap:6px;flex-wrap:wrap}
 .startcard{display:flex;align-items:center;gap:10px;background:var(--panel);border:1px solid var(--line);
 border-top:2px solid var(--dim);border-radius:10px;padding:12px 14px;margin-bottom:8px;color:var(--dim)}
@@ -509,7 +555,7 @@ border-radius:50%;animation:spin 1s linear infinite}
 color:inherit;font:inherit;text-align:left;padding:0;cursor:pointer}
 .rowact{flex:0 0 auto;display:flex;gap:6px;margin-left:4px}
 .iconbtn{background:transparent;border:1px solid var(--line);color:var(--dim);border-radius:6px;
-min-width:30px;height:28px;font:inherit;font-size:12px;cursor:pointer;padding:0 7px}
+min-width:30px;height:28px;font:inherit;font-size:0.75rem;cursor:pointer;padding:0 7px}
 a.iconbtn{display:inline-flex;align-items:center;justify-content:center;text-decoration:none}
 .iconbtn:hover{border-color:var(--dim);color:var(--fg)}
 .iconbtn.x:hover{border-color:var(--red);color:var(--red)}
@@ -519,25 +565,25 @@ a.ghost{text-decoration:none;display:inline-block}
 Deliberately unlike a .qrow: no lane colour, no left rule, a recessed panel and
 a lighter weight. It must read as "this exists elsewhere", never as a row
 waiting its turn in the queue. */
-.fgnote{color:var(--dim);font-size:11px;line-height:1.5;margin:-2px 4px 8px}
+.fgnote{color:var(--dim);font-size:0.6875rem;line-height:1.5;margin:-2px 4px 8px}
 .fgbox{opacity:.72}
 .frow{background:var(--panel2);border:1px solid var(--line);border-radius:8px;
 padding:8px 11px;margin-bottom:6px}
 .fghead{display:flex;align-items:center;gap:9px}
-.fgbadge{font-size:9.5px;text-transform:uppercase;letter-spacing:.5px;color:var(--dim);
+.fgbadge{font-size:0.59375rem;text-transform:uppercase;letter-spacing:.5px;color:var(--dim);
 min-width:58px;flex:0 0 auto}
-.fgdir{font-weight:600;font-size:12.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.fgage{margin-left:auto;color:var(--dim);font-size:11px;flex:0 0 auto}
+.fgdir{font-weight:600;font-size:0.78125rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.fgage{margin-left:auto;color:var(--dim);font-size:0.6875rem;flex:0 0 auto}
 .fgpath,.fgone{color:var(--dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.fgpath{font-size:11px;margin-top:3px}
-.fgone{font-size:12px;margin-top:2px}
+.fgpath{font-size:0.6875rem;margin-top:3px}
+.fgone{font-size:0.75rem;margin-top:2px}
 /* The one thing a Foreign Run can be told to do. A labelled button, not a third
 .iconbtn glyph beside ↗ — the glyph row belongs to the queue, and borrowing it
 here would make these rows read as work waiting on you. Full row width so it is
 a comfortable phone target, dim until touched so the section stays quiet. */
 .fgxfer{display:block;width:100%;margin-top:7px;background:transparent;
 border:1px solid var(--line);border-radius:6px;color:var(--dim);font:inherit;
-font-size:11.5px;letter-spacing:.3px;padding:6px 8px;cursor:pointer}
+font-size:0.71875rem;letter-spacing:.3px;padding:6px 8px;cursor:pointer}
 .fgxfer:hover{border-color:var(--dim);color:var(--fg)}
 .fgxfer:disabled{cursor:default;opacity:.55}
 
@@ -551,28 +597,28 @@ like dirpop), because a batch multi-select with a live count and a confirm needs
 more room than a tap-to-fill list — a sheet gives it a header, a scroll, and a
 sticky action. */
 .recovpanel{position:fixed;inset:0;z-index:50;display:flex;align-items:flex-end;justify-content:center;
-background:rgba(0,0,0,.6)}
+background:var(--shadow-sheet)}
 .recovpanel[hidden]{display:none}
 .recovsheet{width:100%;max-width:var(--col);background:var(--panel);border:1px solid var(--line);
-border-radius:14px 14px 0 0;max-height:86vh;display:flex;flex-direction:column;box-shadow:0 -6px 30px rgba(0,0,0,.5)}
+border-radius:14px 14px 0 0;max-height:86vh;display:flex;flex-direction:column;box-shadow:0 -6px 30px var(--shadow-mid)}
 .recovhead{display:flex;align-items:center;gap:8px;padding:14px 16px 6px}
-.recovheadt{font-weight:700;font-size:14px;letter-spacing:.3px}
+.recovheadt{font-weight:700;font-size:0.875rem;letter-spacing:.3px}
 .recovx{margin-left:auto;background:transparent;border:1px solid var(--line);color:var(--dim);
-border-radius:6px;min-width:30px;height:30px;font:inherit;font-size:16px;line-height:1;cursor:pointer;padding:0}
+border-radius:6px;min-width:30px;height:30px;font:inherit;font-size:1rem;line-height:1;cursor:pointer;padding:0}
 .recovx:hover{border-color:var(--dim);color:var(--fg)}
-.recovsub{color:var(--dim);font-size:11.5px;line-height:1.5;padding:0 16px 8px}
+.recovsub{color:var(--dim);font-size:0.71875rem;line-height:1.5;padding:0 16px 8px}
 .recovlist{flex:1;overflow-y:auto;padding:0 8px}
-.recovempty{color:var(--dim);font-size:12px;text-align:center;padding:26px 16px}
+.recovempty{color:var(--dim);font-size:0.75rem;text-align:center;padding:26px 16px}
 .recovrow{display:flex;align-items:center;gap:11px;padding:11px 8px;border-bottom:1px solid var(--line);cursor:pointer}
 .recovrow:last-child{border-bottom:0}
 .recovrow input{flex:0 0 auto;width:18px;height:18px;accent-color:var(--accent)}
 .recovmid{flex:1;min-width:0}
-.recovtitle2{font-size:13px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.recovdir{color:var(--dim);font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:2px}
-.recovtime{flex:0 0 auto;color:var(--dim);font-size:11px;white-space:nowrap}
+.recovtitle2{font-size:0.8125rem;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.recovdir{color:var(--dim);font-size:0.6875rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:2px}
+.recovtime{flex:0 0 auto;color:var(--dim);font-size:0.6875rem;white-space:nowrap}
 .recovfoot{padding:10px 16px calc(12px + env(safe-area-inset-bottom,0px));border-top:1px solid var(--line)}
-.recovgo{width:100%;background:var(--accent);color:#000;border:0;border-radius:9px;padding:11px;
-font:inherit;font-size:14px;font-weight:700;cursor:pointer}
+.recovgo{width:100%;background:var(--accent);color:var(--on-accent);border:0;border-radius:9px;padding:11px;
+font:inherit;font-size:0.875rem;font-weight:700;cursor:pointer}
 .recovgo:disabled{opacity:.45;cursor:default}
 
 /* --- the return path, narrow: the swipe's cue and its one-off hint ---
@@ -596,7 +642,7 @@ underneath it exactly when either happens. It used to add `--dockh` to that; the
 dock is gone (ADR 0015), so the composer it stands on is the bottom edge and the
 term went with the dock. */
 .swipehint{position:fixed;left:var(--rail);right:0;
-bottom:var(--barh);z-index:29;color:var(--dim);font-size:11px;
+bottom:var(--barh);z-index:29;color:var(--dim);font-size:0.6875rem;
 background:var(--bg);padding:6px var(--gut) 8px;text-align:center;pointer-events:none;
 transition:transform .2s ease,opacity .2s ease}
 .swipehint[hidden]{display:none}
@@ -621,11 +667,11 @@ takes the **Focus** and puts it away again. Reverted to ordinary flow at >=900px
 by the media query below, where the rail has already drawn it. */
 .zones{position:fixed;left:0;right:0;bottom:0;z-index:41;background:var(--panel);
 border-top:1px solid var(--line);border-radius:16px 16px 0 0;max-height:82vh;overflow-y:auto;
-padding:8px 14px calc(16px + env(safe-area-inset-bottom,0px));box-shadow:0 -8px 34px rgba(0,0,0,.6);
+padding:8px 14px calc(16px + env(safe-area-inset-bottom,0px));box-shadow:0 -8px 34px var(--shadow-sheet);
 transform:translateY(101%);visibility:hidden;transition:transform .22s ease,visibility .22s}
 .zones.open{transform:none;visibility:visible}
 .zgrab{width:38px;height:4px;border-radius:2px;background:var(--line);margin:2px auto 10px}
-.zscrim{position:fixed;inset:0;z-index:40;background:rgba(0,0,0,.62)}
+.zscrim{position:fixed;inset:0;z-index:40;background:var(--scrim)}
 .zscrim[hidden]{display:none}
 /* The count, in the Focus's own sticky header — the one strip that is always on
 screen while you read. Hidden at >=900px: the rail is the queue there. It set the
@@ -635,8 +681,8 @@ but .iplus is NOT in the display:none below, because nothing draws Intake in the
 rail. The `margin-left:auto` here is what .iplus inherits the job of when there
 is no queue at all. */
 .zbtn{margin-left:auto;flex:0 0 auto;background:var(--line);color:var(--fg);border:0;
-border-radius:999px;font:inherit;font-size:10.5px;letter-spacing:.4px;padding:4px 10px;cursor:pointer}
-.zbtn.hot{background:var(--accent);color:#000;font-weight:700}
+border-radius:999px;font:inherit;font-size:0.65625rem;letter-spacing:.4px;padding:4px 10px;cursor:pointer}
+.zbtn.hot{background:var(--accent);color:var(--on-accent);font-weight:700}
 .fhead .fmeta+.zbtn{margin-left:8px}
 
 .rail{display:none}
@@ -646,21 +692,57 @@ border-radius:0;max-height:none;overflow:visible;padding:0;box-shadow:none}
 .zgrab,.zscrim,.zbtn{display:none}
 :root{--rail:290px;--gut:max(14px,calc(50% - var(--rail)/2 - var(--col)/2))}
 .rail{display:block;position:fixed;left:0;top:0;bottom:0;width:var(--rail);z-index:31;background:var(--panel2);border-right:1px solid var(--line);overflow-y:auto;padding:12px 10px calc(14px + env(safe-area-inset-bottom,0px))}
-.railhead{display:flex;align-items:baseline;gap:8px;padding:2px 4px 8px;color:var(--dim);font-size:10px;letter-spacing:1.1px;text-transform:uppercase}
-.railhead b{color:var(--accent);font-size:12px;letter-spacing:.3px}
+.railhead{display:flex;align-items:baseline;gap:8px;padding:2px 4px 8px;color:var(--dim);font-size:0.625rem;letter-spacing:1.1px;text-transform:uppercase}
+.railhead b{color:var(--accent);font-size:0.75rem;letter-spacing:.3px}
 .rail .qhead{margin:15px 3px 7px}
-.rail .qrow{font-size:11.5px;padding:8px 9px}
+.rail .qrow{font-size:0.71875rem;padding:8px 9px}
 /* Two lines at 290px: badge + project, then the one-liner under them. The row's
 flex container is .qbody, so THAT is what has to wrap — wrapping .qrow instead
 left the one-liner laid over the badge. */
 .rail .qbody{flex-wrap:wrap;gap:6px}
 .rail .qbadge{min-width:0;white-space:nowrap}
 .rail .qdir{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis}
-.rail .qone{flex:0 0 100%;margin-top:1px;font-size:11px}
+.rail .qone{flex:0 0 100%;margin-top:1px;font-size:0.6875rem}
 /* The queue lives IN the rail here; drawn again under the card it would be the
 same list twice, three headings apart. The Foreign section is NOT part of it and
 stays in the flow — it is outside the triage surface and never in the ring. */
 .queues{display:none}
+}
+
+/* --- light, and nothing chooses it but the phone (ADR 0018) ---
+NO TOGGLE, DELIBERATELY. The Board is one screen with no settings surface, and
+the only drawer it has is **Intake** — which is the *create* side of the Board
+(launch / resume / recover / Task), not a place preferences live. Putting a
+theme switch there would quietly turn Intake into "the settings sheet" and cost
+the glossary a term to save the reader one swipe. Both themes stay reachable
+because every phone has a dark-mode toggle two swipes away in its own
+quick-settings, which is the switch you reach for in sunlight anyway.
+This costs no JS, which is just as well: the server sends
+`script-src 'self'`, so the usual pre-paint inline <script> that stops a themed
+page flashing is not available here. Nothing to flash — the media query is
+resolved before first paint.
+NOT AN INVERSION. The dark theme spends its contrast on a few bright accents
+against near-black; inverted, that reads muddy and grey. So the page is a warm
+off-white rather than #fff (a full-screen white read is glare), the surfaces
+step UP toward white instead of down toward black, and every accent is darkened
+until it holds on a light field. Amber is the one that could not survive
+unchanged: #e6b450 on white is about 1.7:1. It becomes a dark amber, and every
+fill that was dark-ink-on-amber inverts to white-ink-on-dark-amber via
+--on-accent. */
+@media(prefers-color-scheme:light){
+:root{
+--bg:#f4f2ee;--panel:#fffefb;--panel2:#eceae4;--fg:#1c2126;--dim:#6a7078;
+--line:#dcd8d0;--accent:#96690a;--q:#0d7565;--p:#96690a;--m:#2f5fbf;--w:#9aa0a8;--red:#b83a30;
+--line2:#e6e3dc;--line3:#eceae4;
+--fg-max:#000;--fg1:#2a3038;--fg2:#3c434b;--fg3:#5a626b;
+--lbl:#9aa0a8;--lbl-you:#7c848d;--q-soft:#0f6a5c;--on-accent:#fff;
+--scrim:rgba(28,33,38,.34);--shadow-strong:rgba(28,33,38,.18);--shadow-sheet:rgba(28,33,38,.16);
+--shadow-mid:rgba(28,33,38,.14);--shadow-soft:rgba(28,33,38,.10);--red-wash:rgba(184,58,48,.07);
+}
+/* Three opacities that were tuned against black and wash out against white. */
+.seamrule{opacity:.6}
+.dim{opacity:.62}
+.fgbox{opacity:.85}
 }
 </style></head>
 <body><div class=zscrim id=zscrim hidden></div><div class=iscrim id=iscrim hidden></div><div class=wrap>

@@ -210,7 +210,7 @@ break went), thread, block (that is ADR 0016's chained assistant run), pair (an
 Exchange holds one prompt and any number of replies and **Works**), conversation
 
 **Record**:
-A past **Exchange** folded to a fixed three-line shape in one 40px label gutter:
+A past **Exchange** folded to a fixed three-line shape in one label gutter:
 `you` (your prompt), `work` (what it touched — the **Works**' calls
 run-length-encoded, with a `⚙n` count), `claude` (the reply's first sentence, or
 that reply's closing question to you, in teal). The label says *who*, and the
@@ -482,8 +482,8 @@ _Avoid_: access, availability
   thing here (a **Blocked** Run's concrete blocker) and `asked` is it in the past
   tense, so a label reading `ASKED` on every folded row would have made the
   glossary's tightest term the page's loosest word. It failed on pixels too
-  (`REPLIED` will not fit a 40px gutter; `ASKED` and `ASKS` are two letters apart
-  at 8.5px uppercase). The labels say *who* — `you` / `work` / `claude` — and the
+  (`REPLIED` will not fit the gutter at any type size the page uses; `ASKED` and
+  `ASKS` are two letters apart). The labels say *who* — `you` / `work` / `claude` — and the
   verb question is closed (ADR 0017)
 - "chapter" named an **Exchange** through three rounds of prototyping — retired.
   It reads as something an author chose to break, where an Exchange's boundary is

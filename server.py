@@ -2120,16 +2120,7 @@ def _recoverable_payload() -> tuple[bytes, str]:
 
 WEB_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web")
 _WEB_FILES = {"board.html": "text/html; charset=utf-8",
-              "board.js": "text/javascript; charset=utf-8",
-              # THROWAWAY (.scratch/theme-proto/gen.py). The theme/type
-              # prototype, served at /proto so it can be looked at on a phone
-              # against real Runs. It reuses board.js and /api/board untouched
-              # — only its style layer differs. Delete both lines, the route
-              # below, and web/proto.html once the knobs have settled.
-              # proto.js is separate rather than inline because CSP above says
-              # `script-src 'self'`, which drops an inline <script> silently.
-              "proto.html": "text/html; charset=utf-8",
-              "proto.js": "text/javascript; charset=utf-8"}
+              "board.js": "text/javascript; charset=utf-8"}
 
 
 MAX_BODY_BYTES = 4096
@@ -2199,12 +2190,6 @@ class Handler(BaseHTTPRequestHandler):
             return
         if path == "/board.js":
             self._serve_web("board.js")
-            return
-        if path == "/proto":
-            self._serve_web("proto.html")   # THROWAWAY — see _WEB_FILES
-            return
-        if path == "/proto.js":
-            self._serve_web("proto.js")
             return
         if path == "/api/board":
             focus_sid = (parse_qs(urlparse(self.path).query).get("focus") or [""])[0]
