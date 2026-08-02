@@ -78,9 +78,11 @@ person, is what catches the next `☒`.
 ## Consequences
 
 - **The Board loses taps it used to offer wrongly.** An Ask Set whose cursor was
-  not painted is readable and untappable; `clear_input` refuses while a widget
-  owns the screen rather than firing its over-count margin of `BSpace` into a
-  live selector; `/api/respond` stops asking whether to force a reply past a
+  not painted is readable and untappable, and one whose position the pane never
+  named reports no position at all rather than "Ask 1 of 3"; `clear_input`
+  refuses while a widget owns the screen, and on any frame that paints no input
+  box, rather than firing its over-count margin of `BSpace` into a live
+  selector; `/api/respond` stops asking whether to force a reply past a
   question it had mistaken for a draft. Fewer taps is the *point* — each one
   removed was a wrong answer waiting for a renderer change.
 - **Fixtures are captures, and captures are cheap.** The iTerm-era `_ASK_PANE`

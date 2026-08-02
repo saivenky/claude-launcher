@@ -167,6 +167,26 @@ def _tail(session_id: str, n: int) -> list[str]:
     return keep[-n:]
 
 
+def _write_capture(base: str, plain: str, ansi: str, tail: list[str]) -> None:
+    """Put one capture on disk: both frames always, the transcript tail only if
+    there IS one.
+
+    An EMPTY `.jsonl` is worse than a missing one. The fixture matrix decides
+    whether a capture has a tail by whether the file EXISTS, so an empty file
+    routes the capture into the reconcile test, where it dies on a `TypeError`
+    inside somebody else's assertion instead of the named skip it deserves. ADR
+    0021 wants a failure that says what it is; a file that is present and says
+    nothing is the opposite."""
+    os.makedirs(os.path.dirname(base), exist_ok=True)
+    with open(base + ".pane", "w", encoding="utf-8") as fh:
+        fh.write(plain)
+    with open(base + ".ansi", "w", encoding="utf-8") as fh:
+        fh.write(ansi)
+    if tail:
+        with open(base + ".jsonl", "w", encoding="utf-8") as fh:
+            fh.write("\n".join(tail) + "\n")
+
+
 def _stanza(name: str, row: dict, when: str, tail: int) -> str:
     return "\n".join([
         f"## `{name}.*` — TODO: one line on what this capture reproduces",
@@ -175,8 +195,13 @@ def _stanza(name: str, row: dict, when: str, tail: int) -> str:
         f"- Captured {when} from pane `{row['pane']}`, Session "
         f"`{(row['sessionId'] or '')[:8]}…`, in `{row['cwd'] or '?'}`.",
         f"- `{name}.pane` / `.ansi` — the frame, `-p` and `-e`.",
-        f"- `{name}.jsonl` — the last {tail} conversational rows, ending on the "
-        "pending `tool_use`.",
+        # No tail, no bullet: the record says what is on disk, and claiming a
+        # `.jsonl` that was deliberately not written is the same wrong-and-
+        # confusing note the empty file used to leave.
+        (f"- `{name}.jsonl` — the last {tail} conversational rows, ending on the "
+         "pending `tool_use`." if tail else
+         "- No `.jsonl` — no conversational rows were found for this Session, so "
+         "this capture is held to the pane invariants only."),
         "",
         "TODO: say what this frame shows that the others do not — the reason it "
         "is worth keeping.",
@@ -231,13 +256,7 @@ def main() -> None:
     plain, ansi = _capture_pair(row["pane"])
     tail = _tail(row["sessionId"], args.rows)
 
-    os.makedirs(_FIXTURES, exist_ok=True)
-    with open(base + ".pane", "w", encoding="utf-8") as fh:
-        fh.write(plain)
-    with open(base + ".ansi", "w", encoding="utf-8") as fh:
-        fh.write(ansi)
-    with open(base + ".jsonl", "w", encoding="utf-8") as fh:
-        fh.write("\n".join(tail) + ("\n" if tail else ""))
+    _write_capture(base, plain, ansi, tail)
 
     when = datetime.date.today().isoformat()
     stanza = _stanza(args.name, row, when, len(tail))
@@ -267,9 +286,12 @@ def main() -> None:
           f"unsent={pr.unsent[:40]!r}", file=sys.stderr)
     if not tail:
         print(f"WARNING: no transcript rows for session {row['sessionId'] or '?'} — "
-              "the .jsonl is empty and the fixture matrix will hold it to the "
-              "pane invariants only.", file=sys.stderr)
-    print(f"wrote {args.name}.pane/.ansi/.jsonl and appended a README stanza — "
+              "no .jsonl was written, so the fixture matrix will hold this "
+              "capture to the pane invariants only and skip the transcript "
+              "reconcile by name. (Half the evidence: the pane says WHERE the "
+              "widget stands, the transcript says WHAT is asked.)", file=sys.stderr)
+    wrote = ".pane/.ansi" + ("/.jsonl" if tail else "")
+    print(f"wrote {args.name}{wrote} and appended a README stanza — "
           "fill in its two TODOs.", file=sys.stderr)
 
 

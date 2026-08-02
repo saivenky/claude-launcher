@@ -8,6 +8,7 @@ import signal
 import socket
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import types
@@ -1467,6 +1468,104 @@ def _capture_tool():
     return mod
 
 
+class CaptureWriteTests(unittest.TestCase):
+    """What `tools/capture-widget.py` puts on disk. ADR 0021 makes a capture the
+    unit of evidence and the fixture matrix the thing that reads it, so the two
+    have to agree about what "this capture has no transcript tail" looks like."""
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.dir)
+        self.base = os.path.join(self.dir, "probe")
+
+    def test_a_capture_with_no_transcript_tail_writes_no_jsonl_at_all(self):
+        # An EMPTY `.jsonl` is worse than a missing one and the tool said so
+        # wrongly: it warned that "the fixture matrix will hold it to the pane
+        # invariants only", but the matrix skips on the file's EXISTENCE, and an
+        # empty file exists. The capture went into the reconcile test instead and
+        # died there on a `TypeError` inside someone else's assertion. Loud is
+        # right; wrong-and-confusing is not.
+        _capture_tool()._write_capture(self.base, "frame\n", "\x1b[1mframe\n", [])
+        self.assertTrue(os.path.exists(self.base + ".pane"))
+        self.assertTrue(os.path.exists(self.base + ".ansi"))
+        self.assertFalse(os.path.exists(self.base + ".jsonl"))
+
+    def test_a_capture_with_a_tail_writes_it_verbatim(self):
+        rows = ['{"type":"user"}', '{"type":"assistant"}']
+        _capture_tool()._write_capture(self.base, "frame\n", "\x1b[1mframe\n", rows)
+        with open(self.base + ".jsonl", encoding="utf-8") as fh:
+            self.assertEqual(fh.read(), "\n".join(rows) + "\n")
+
+    def test_no_fixture_on_disk_carries_an_empty_transcript_tail(self):
+        # The other half of the same agreement, held against the real directory:
+        # a `.jsonl` that exists but is empty is exactly the state the matrix
+        # cannot tell from a real tail.
+        for name in os.listdir(_FIXTURES):
+            if name.endswith(".jsonl"):
+                self.assertTrue(os.path.getsize(os.path.join(_FIXTURES, name)),
+                                f"{name} is empty — it should not have been written")
+
+
+class RendererVocabularyTests(unittest.TestCase):
+    """ADR 0021's central promise: when the TUI moves, the RENDERER VOCABULARY
+    block is the ONE place to edit. That promise is only real if every literal
+    the renderer paints is read from it at call time — a hardcoded copy in a
+    branch means the documented re-fit procedure ("capture, edit the constants,
+    run the matrix") silently does not work, which is the failure class the
+    block exists to end.
+
+    Driven by re-fitting the constants and re-reading the SAME capture, because
+    that is the procedure itself. A frame renamed only in the fixture would test
+    nothing about where the literal lives.
+    """
+
+    def setUp(self):
+        self.pane = _capture("ask_multi.pane")
+        self.strip = next(ln for ln in self.pane.split("\n") if "Submit" in ln)
+        self.assertIn("←", self.strip)   # the shape these constants describe
+
+    def _refit(self, pane, **names):
+        for name, new in names.items():
+            self.addCleanup(setattr, server, name, getattr(server, name))
+            setattr(server, name, new)
+        return server._pane_widget(pane)
+
+    def test_the_submit_control_is_told_apart_by_a_named_constant(self):
+        # `Submit` is the same species as `"add notes"` — an affordance LABEL the
+        # renderer paints, which ADR 0020 caught version-pinned in a branch. It
+        # sits in the tab strip beside the question tabs and is not a question:
+        # unnamed, a renamed control becomes a third Ask in a two-Ask Set.
+        refitted = self.pane.replace("✔ Submit", "✔ Send")
+        w = self._refit(refitted, _SUBMIT_LABEL="Send")
+        self.assertEqual([t["label"] for t in w["tabs"]],
+                         ["Granularity", "Expand/contract"])
+
+    def test_the_pending_tab_glyph_is_read_from_the_vocabulary(self):
+        # `☐` was the SOLE definition of `checked` for a TAB, hardcoded twice in
+        # this branch while `_CHECKBOX` sat in the block a screen away. A
+        # renderer that swapped the empty box would report every pending
+        # question as already answered — and `☒` (ADR 0020's third bug) is the
+        # proof this glyph set moves.
+        refitted = (self.pane.replace("☐ Granularity", "✓ Granularity")
+                             .replace("☐ Expand/contract", "✓ Expand/contract"))
+        w = self._refit(refitted, _TAB_PENDING="✓")
+        self.assertEqual([t["checked"] for t in w["tabs"]], [False, False])
+
+    def test_the_tab_strip_arrow_is_read_from_the_vocabulary(self):
+        # The right arrow is half of "tab strip or bare header?" — the half that
+        # carries a strip the leading `←` is absent from (the first tab, or a
+        # narrow pane). Read such a strip as a bare header and a two-Ask Set
+        # becomes no Ask Set at all, which is the failure the `←`-only rule was
+        # already written against.
+        one_tab = self.pane.replace(self.strip, "☐ Granularity  →")
+        self.assertTrue(server._pane_widget(one_tab)["tabs"], "the probe is not a strip")
+        refitted = self.pane.replace(self.strip, "☐ Granularity  »")
+        self.assertFalse(server._pane_widget(refitted)["tabs"])   # unfitted: read as a header
+        w = self._refit(refitted, _TAB_RIGHT="»")
+        self.assertEqual([t["label"] for t in w["tabs"]], ["Granularity"])
+        self.assertEqual(w["header"], "")
+
+
 class PaneFixtureMatrixTests(unittest.TestCase):
     """EVERY capture in tests/fixtures/ through EVERY pane parser, held to the
     invariants that must hold for ANY frame of the AskUserQuestion widget.
@@ -1570,7 +1669,14 @@ class PaneFixtureMatrixTests(unittest.TestCase):
         # here rather than degrade to an untappable card nobody investigates.
         for name in (n for n in self.names if n.startswith("ask_")):
             with self.subTest(fixture=name):
-                if not os.path.exists(os.path.join(_FIXTURES, name + ".jsonl")):
+                # Non-empty CONTENT, not mere existence: an empty `.jsonl`
+                # exists, so an existence test walked such a capture into the
+                # reconcile below and it died on a `TypeError` in an assertion
+                # about something else. `tools/capture-widget.py` no longer
+                # writes the empty file; this is the other half of that
+                # agreement, so neither side can drift alone.
+                tail = os.path.join(_FIXTURES, name + ".jsonl")
+                if not (os.path.exists(tail) and os.path.getsize(tail)):
                     self.skipTest("capture has no transcript tail")
                 pane = _capture(name + ".pane")
                 tu = server._pending_tool_use(_fixture_rows(name + ".jsonl"))
@@ -1868,11 +1974,40 @@ class AskSetTests(unittest.TestCase):
         # The queue's one-liner reads the transcript and captures no pane. It
         # still wants the question text; it must never get a keystroke count,
         # because nothing has been read about where the widget is standing.
+        #
+        # …nor a POSITION. The content shown is the first Ask's, which is the
+        # only sane guess, but with two questions in the Set nobody has read
+        # which one the widget is standing on — and `index: 0` would put "ask 1
+        # of 2" on the phone as a statement about a screen no one looked at. -1
+        # is the same "we cannot say" the `unmatched` branch emits, and the
+        # client already hides the counter on it.
         aset = server._ask_set(server._pending_tool_use(self.multi_rows))
-        self.assertEqual(aset["index"], 0)
+        self.assertEqual(aset["index"], -1)
+        self.assertEqual(aset["count"], 2)
         self.assertFalse(aset["tappable"])
         self.assertEqual(aset["fallback"], "no-pane")
         self.assertEqual([o["steps"] for o in aset["options"]], [None, None])
+        self.assertTrue(all(o["description"] for o in aset["options"]))   # still readable
+
+    def test_a_multi_question_set_the_pane_did_not_place_asserts_no_position(self):
+        # The same claim on the branch that matters more, because here a pane WAS
+        # captured and it contradicts the transcript: `no-widget` says "WHICH Ask
+        # is known", which is true for a Set of one and a guess for a Set of
+        # three. ADR 0021: no parse failure may return a usable-looking default.
+        server._CONTRADICTIONS.clear()
+        self.addCleanup(server._CONTRADICTIONS.clear)
+        with contextlib.redirect_stderr(io.StringIO()):
+            aset = server._ask_set(server._pending_tool_use(self.multi_rows),
+                                   server._read_pane("just some ordinary output\n"))
+        self.assertEqual(aset["fallback"], "no-widget")
+        self.assertEqual(aset["index"], -1)
+        # A Set of one is the case where it IS known — one question, one answer
+        # to "which Ask is this?" — so that position keeps being asserted.
+        with contextlib.redirect_stderr(io.StringIO()):
+            one = server._ask_set(server._pending_tool_use(self.single_rows),
+                                  server._read_pane("just some ordinary output\n"))
+        self.assertEqual(one["fallback"], "no-widget")
+        self.assertEqual(one["index"], 0)
 
     def test_a_multiselect_ask_carries_its_flag_and_the_ticks_it_can_read(self):
         # `multiSelect` reaches the client because a tap there is a toggle, not
@@ -1962,10 +2097,95 @@ class AskSetTests(unittest.TestCase):
         self.assertEqual(aset["fallback"], "unmatched")
         self.assertEqual(aset["options"], [])
 
+    def test_a_set_of_one_still_has_to_match_the_prompt_on_screen(self):
+        # A Set of one used to be answered BEFORE `_same_question` was consulted,
+        # leaving the option labels as the only cross-check — and labels are the
+        # likeliest thing two Asks share. 326 of the 425 asks on disk hold one
+        # question, so this is the COMMON case, not a corner.
+        #
+        # The realistic trigger: Ask A is answered at the desk, Claude raises Ask
+        # B, and the transcript tail still carries A's unflushed tool_use. The
+        # phone then paints A's options under B's question and a tap answers B
+        # with them — ADR 0020's opening incident, in a Set of one.
+        server._CONTRADICTIONS.clear()
+        self.addCleanup(server._CONTRADICTIONS.clear)
+        q = _questions(self.single_rows)[0]
+        stale = _retarget(self.single_pane, "Should I delete the production database?",
+                          [o["label"] for o in q["options"]])
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            aset = self._set(stale, self.single_rows)
+        self.assertFalse(aset["tappable"])
+        self.assertEqual(aset["fallback"], "unmatched")
+        self.assertEqual(aset["index"], -1)
+        self.assertEqual(aset["options"], [])      # not ours to draw
+        self.assertIn("unmatched", err.getvalue())
+
+    def test_a_set_of_one_with_no_prompt_read_is_still_ask_one(self):
+        # The other half, and the reason the check is on the PROMPT rather than
+        # on the Set's size: with nothing read off a screen there is nothing to
+        # disagree with, and a Set of one has exactly one answer to the question
+        # "which Ask is this?". The caller is told (`no-pane`/`no-widget`) and
+        # gets no keystrokes for it.
+        tu = server._pending_tool_use(self.single_rows)
+        self.assertEqual(server._ask_set(tu)["index"], 0)
+        self.assertEqual(server._ask_set(tu)["fallback"], "no-pane")
+        blanked = _retarget(self.single_pane, "",
+                            [o["label"] for o in _questions(self.single_rows)[0]["options"]])
+        self.assertEqual(server._pane_question(blanked), "")
+        self.assertEqual(self._set(blanked, self.single_rows)["index"], 0)
+
     def test_an_approval_is_an_ask_set_of_one_with_no_invented_structure(self):
         tu = {"type": "tool_use", "id": "t1", "name": "Bash", "input": {"command": "ls"}}
         self.assertEqual(server._ask_set(tu), {})
         self.assertEqual(server._ask_set(None), {})
+
+
+class ContradictionLogTests(unittest.TestCase):
+    """The dedupe on the stderr contradiction report — the one mechanism whose
+    entire purpose is NOT swallowing things, and therefore the one place a
+    swallow is worst (ADR 0021's escape hatch: silence is the condition all four
+    of ADR 0020's bugs needed)."""
+
+    def setUp(self):
+        server._CONTRADICTIONS.clear()
+        self.addCleanup(server._CONTRADICTIONS.clear)
+
+    def _say(self, where, reason="no-widget"):
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            server._report_contradiction(where, reason)
+        return err.getvalue()
+
+    def test_reports_with_no_key_are_not_all_the_same_report(self):
+        # The key is the tool_use id, and `str(tu.get("id") or "")` makes every
+        # idless tool_use share ONE dedupe slot: three distinct Runs contradicting
+        # at once, two reports silently dropped. An absent key is not evidence
+        # that two disagreements are the same disagreement, so it does not dedupe
+        # them — the cost is a repeated line on a path that should not occur, and
+        # a repeated line is the failure this function is willing to have.
+        self.assertTrue(self._say(""))
+        self.assertTrue(self._say(""))
+
+    def test_a_known_key_still_says_each_disagreement_once(self):
+        # The Board polls every few seconds; a stuck widget must not fill the log.
+        self.assertTrue(self._say("toolu_a"))
+        self.assertEqual(self._say("toolu_a"), "")
+        self.assertTrue(self._say("toolu_a", "pane-mismatch"))   # a NEW disagreement
+
+    def test_crossing_the_bound_evicts_the_oldest_not_everyone(self):
+        # The bound was a wholesale `clear()`, so the 257th Run made every live
+        # Run re-log once the next time it polled: a BURST in the log, which is
+        # precisely the pattern that is supposed to mean "the renderer moved".
+        # A signal that fires on its own bookkeeping is worse than no signal.
+        for i in range(300):
+            self._say(f"toolu_{i}")
+        self.assertLessEqual(len(server._CONTRADICTIONS), 256)
+        # The recent ones are still known, so they stay quiet…
+        for i in range(250, 300):
+            self.assertEqual(self._say(f"toolu_{i}"), "", f"toolu_{i} re-logged")
+        # …and only the oldest, evicted in order, speak up again.
+        self.assertTrue(self._say("toolu_0"))
 
 
 class AskSetBoardTests(unittest.TestCase):
@@ -3630,7 +3850,9 @@ class ClearInputTests(unittest.TestCase):
         self.assertTrue([c for c in self.calls if c[0] == "send-keys"])
 
     def test_backspace_count_is_the_box_length_plus_the_margin(self):
-        server._pane_contents = lambda rid: "unused"
+        # A frame that really does carry a box (the read of its CONTENT is what
+        # is stubbed here); a box-less frame is refused outright, above.
+        server._pane_contents = lambda rid: _INPUT_PANE
         server._pane_input = lambda text: "draft"   # 5 chars
         server.clear_input(_RUN)
         send = next(c for c in self.calls if c[0] == "send-keys")
@@ -3643,6 +3865,31 @@ class ClearInputTests(unittest.TestCase):
         # ADR 0020's worst near-miss, which the false ⚠ warning had already put
         # a button next to.
         server._pane_contents = lambda rid: _capture("ask_multi.pane")
+        self.assertFalse(server.clear_input(_RUN))
+        self.assertEqual([c for c in self.calls if c[0] == "send-keys"], [])
+
+    def test_a_frame_with_no_input_box_at_all_refuses_the_clear(self):
+        # `_pane_input` returns '' for TWO different things and says so
+        # deliberately: "no box on screen" and "an empty box". Only the second is
+        # safe to backspace into. A captured frame with no rules on it carries no
+        # box, so the margin would fire 16 BSpace at whatever IS there — the same
+        # act the unread-pane case above refuses, and 16 BSpace at an unknown
+        # screen is not harmless just because it is a small number (ADR 0021: a
+        # failed or absent reading may never produce an action).
+        server._pane_contents = lambda rid: "ordinary output\nno rules on this frame\n"
+        self.assertFalse(server.clear_input(_RUN))
+        self.assertEqual([c for c in self.calls if c[0] == "send-keys"], [])
+
+    def test_a_boxless_permission_menu_does_not_get_the_margin(self):
+        # The same absence, on the frame where it costs most: a live menu with no
+        # input box under it. This is NOT the deliberate non-refusal on
+        # `selector` — that one is justified by false positives, since any two
+        # consecutive numbered lines of Claude's own prose read as a menu. "No
+        # rules were found" has no false positive to trade against: it is a
+        # positive finding that there is no box.
+        server._pane_contents = lambda rid: "\n".join([
+            "Bash(rm -rf build)", "", "❯ 1. Yes", "  2. Yes, and don't ask again",
+            "  3. No, and tell Claude what to do differently"])
         self.assertFalse(server.clear_input(_RUN))
         self.assertEqual([c for c in self.calls if c[0] == "send-keys"], [])
 
