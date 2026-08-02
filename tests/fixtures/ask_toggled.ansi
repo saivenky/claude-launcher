@@ -1,0 +1,40 @@
+
+
+[38;5;231m⏺[39m Diff reads well. Independent check — my own probes, not their tests:
+
+  [38;5;246mRan [1m3[0m[38;5;246m shell commands [39m
+
+[38;5;231m⏺[39m Slice 1 validated independently — options exclude affordances, prose above the header is out of scope, tabs parse with
+  [38;5;153mSubmit[39m correctly excluded, the false ⚠ is gone, the cursor genuinely reads (moving the glyph moves it), and both the
+  iTerm regression fixture and the permission menu still work through their own path. Slice 2 now.
+
+[38;5;114m⏺[39m [1mAgent[0m(Slice 2: Ask Set on the server) [38;5;246mOpus 5 (1M context)[39m
+[38;5;246m  ⎿  [39mBackgrounded agent[38;5;246m (↓ to manage · ctrl+o to expand)[39m
+[38;5;246m  ⎿  Allowed by auto mode classifier[39m
+
+[38;5;231m⏺[39m Slice 2 is running. Meanwhile, filling the gap slice 1 flagged — no capture on hand shows how a [3mticked[0m multiSelect row
+  renders, which slice 3 needs. That's an experiment, not a file conflict:
+
+  [38;5;246mRan [1m1[0m[38;5;246m shell command [39m
+[38;5;246m────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+← [38;5;16m[48;5;153m ☒ Fixture [39m[49m ✔ Submit  →
+
+[1m[38;5;231mDisregard — this is a fixture probe, not a real question. A driver will tick rows 1 and 2 and capture the frame, so [0m
+[1m[38;5;231mslice 3 knows how a toggled multiSelect row renders. Any answer is fine.[0m
+
+  [38;5;246m1.[39m [38;5;114m[✔][39m Row one
+  [38;5;246mFirst row. The driver sends Space here, then Down, then Space again, so rows one and two should both come back ticked
+[39m  [38;5;246min the captured frame while row three stays clear. That contrast is the whole point of the capture: it shows the [39m
+  [38;5;246mticked glyph, the unticked glyph, and the cursor glyph in one frame.[39m
+[38;5;153m❯[39m [38;5;246m2.[39m [38;5;114m[✔][39m [38;5;153mRow two[39m
+  [38;5;246mSecond row. Ticked by the driver as above. Having two adjacent ticked rows also shows whether the renderer marks a run
+[39m  [38;5;246mof them any differently from a single one.[39m
+  [38;5;246m3.[39m [ ] Row three
+  [38;5;246mThird row, deliberately left unticked so the frame carries both states. If every row were ticked the capture could not
+[39m  [38;5;246mshow which glyph means what.[39m
+  [38;5;246m4. [39m[ ] [38;5;246mType something[39m
+     [1mSubmit[0m
+[38;5;246m────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+[39m  5. Chat about this
+
+[38;5;246mEnter to select · ↑/↓ to navigate · Esc to cancel[39m

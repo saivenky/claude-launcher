@@ -1657,13 +1657,141 @@ def _approval_detail(tu: dict) -> str:
     return name        # any other tool put up for approval — name it, never blank
 
 
-def _ask_of(session_id: str, rows: list | None = None) -> tuple:
-    """(ask, options) from the Session's last assistant turn.
+_WS_RE = re.compile(r"\s+")
+
+
+def _same_question(rendered: str, question: str) -> bool:
+    """Does the pane's rendered question text name this structured question?
+
+    Deliberately not equality. The pane hard-wraps mid-sentence at terminal width
+    (those newlines are the renderer's, not the author's) and `_pane_question`
+    clips at 200 chars, so a long question reaches us as a PREFIX of the real
+    one. Whitespace collapses on both sides and the test is prefix-wise in that
+    direction ONLY: a rendered fragment of a longer structured question is the
+    clipped case, but structured text the pane never painted is not a match, it
+    is a disagreement, and ADR 0020 says disagreement falls back."""
+    a, b = _WS_RE.sub(" ", rendered or "").strip(), _WS_RE.sub(" ", question or "").strip()
+    return bool(a) and bool(b) and b.startswith(a)
+
+
+def _current_ask(questions: list, rendered: str) -> int | None:
+    """Which **Ask** of the **Ask Set** the pane is showing, or None if the pane
+    and the transcript cannot be reconciled.
+
+    A Set of one is trivially answered — 326 of the 425 asks on disk hold one
+    question, so this is the common path and it must not depend on text matching
+    at all. With no pane text in hand (the queue's one-liner reads the transcript
+    and never captures a pane) the first Ask is the only sane guess, and the
+    caller marks it as a guess: `_ask_set` refuses to emit keystrokes for it.
+
+    Beyond that the match must be UNIQUE. Two questions whose rendered text is
+    ambiguous between them is exactly the case where picking one sends a
+    keystroke to the wrong Ask, which is the failure this run exists to remove."""
+    if len(questions) == 1 or not rendered:
+        return 0
+    hits = [i for i, q in enumerate(questions) if _same_question(rendered, q.get("question", ""))]
+    return hits[0] if len(hits) == 1 else None
+
+
+def _ask_set(tu: dict | None, widget: dict, rendered: str) -> dict:
+    """The **current Ask** of the **Ask Set** raised by a pending
+    `AskUserQuestion`, or {} for anything else (an approval is a Set of one and
+    keeps the plain `ask`; it has no question structure to invent).
+
+    ADR 0020: the transcript says WHAT is asked — every question, its `header`,
+    every option's label AND `description`, `multiSelect` — and the pane says
+    WHERE the widget stands. So nothing here reads a label off the screen; the
+    pane supplies only the index of the live question and the cursor.
+
+    Keys:
+      index       0-based position of the current Ask in the Set (-1 when the
+                  pane and the transcript name different questions).
+      count       size of the Set — `index`/`count` is the "Ask 1 of 2" line.
+      question    the current Ask's full, unclipped text.
+      header      its `header` (the widget's tab label).
+      multiSelect its `multiSelect`, so the client knows a tap is a toggle and
+                  not an answer.
+      options     `{"label", "description", "row", "steps", "checked"}` per
+                  option, in the tool's order. `checked` is READ from the pane's
+                  toggle box, never remembered locally — ADR 0020 answers every
+                  step against a freshly read frame — and is None when the row
+                  carries no box (a single-select question, or a fallback where
+                  no row could be attributed to this option).
+      tappable    may the client send `steps`? False whenever anything below
+                  disagreed.
+      fallback    why not: "no-pane" | "unmatched" | "pane-mismatch" | "".
+
+    `steps` is signed and measured against the widget's ROWS, not its options:
+    positive is that many Down, negative that many Up, then Enter. Counting in
+    options is precisely ADR 0020's wrong-answer table — the widget paints
+    `Type something.` and `Chat about this` as ordinary numbered rows, so an
+    option's index among the OPTIONS lands the cursor on an affordance and
+    answers a question nobody asked. `row` is carried alongside so a client
+    never has to redo this arithmetic to check it.
+
+    Two fallbacks, and they differ in what stays on screen, because they differ
+    in what is untrustworthy:
+
+    - The options do not line up with the rows ("pane-mismatch"), or there is no
+      pane ("no-pane"). WHICH Ask is known, so its content is sound and is still
+      rendered — read-only, `row`/`steps` null. You lose the tap, not the read.
+    - No question matched ("unmatched"). We do not know which Ask is on screen,
+      so its content is not sound either: options are dropped entirely rather
+      than paint q1's answers over q2's question, which is the original bug.
+    """
+    if not tu or tu.get("name") != "AskUserQuestion":
+        return {}
+    questions = [q for q in ((tu.get("input") or {}).get("questions") or [])
+                 if isinstance(q, dict)]
+    if not questions:
+        return {}
+    idx = _current_ask(questions, rendered)
+    if idx is None:
+        return {"index": -1, "count": len(questions), "question": "", "header": "",
+                "multiSelect": False, "options": [], "tappable": False,
+                "fallback": "unmatched"}
+    q = questions[idx]
+    opts = [o for o in (q.get("options") or [])
+            if isinstance(o, dict) and o.get("label")]
+    rows = widget.get("rows") or []
+    cursor = widget.get("cursor") or 0
+    # Where each option SITS among the rows the cursor steps through.
+    seats = [i for i, r in enumerate(rows) if not r.get("affordance")]
+    # The cross-check ADR 0020 requires before trusting a position: the pane's
+    # own option rows must account for the tool's options, one for one and in
+    # order. Prefix, not equality — the pane truncates a long label at terminal
+    # width, so the rendered label is a prefix of the structured one.
+    agree = bool(rows) and len(seats) == len(opts) and all(
+        opts[j]["label"].startswith(rows[i]["label"]) for j, i in enumerate(seats))
+    fallback = "" if agree else ("no-pane" if not rows else "pane-mismatch")
+    return {
+        "index": idx, "count": len(questions),
+        "question": str(q.get("question") or "").strip(),
+        "header": str(q.get("header") or ""),
+        "multiSelect": bool(q.get("multiSelect")),
+        "options": [{"label": o["label"],
+                     # NOT clipped: median 175 chars, p90 285 (ADR 0020's census),
+                     # and the description is where the reasoning that makes the
+                     # question decidable lives. Plain text — textContent, never
+                     # innerHTML (ADR 0003/0006), as with every other ask field.
+                     "description": str(o.get("description") or ""),
+                     "row": seats[j] if agree else None,
+                     "steps": seats[j] - cursor if agree else None,
+                     "checked": rows[seats[j]].get("checked") if agree else None}
+                    for j, o in enumerate(opts)],
+        "tappable": agree, "fallback": fallback,
+    }
+
+
+def _ask_of(session_id: str, rows: list | None = None,
+            widget: dict | None = None, rendered: str = "") -> tuple:
+    """(ask, options, askSet) from the Session's last assistant turn.
 
     For an approval the `ask` describes the flushed pending tool_use (the Bash
     command, the Edit/Write target, or the ExitPlanMode plan) — what you're being
-    asked to approve. See ADR 0009 and `_approval_detail` for why this is
-    structured data, not a pane scrape.
+    asked to approve, and `askSet` is {}: an approval is an **Ask Set** of one
+    and needs no question structure. See ADR 0009 and `_approval_detail` for why
+    this is structured data, not a pane scrape.
 
     It used to return the run-up prose as well, for ADR 0006's single
     `contextHtml` field; that field is gone (ADR 0014) and the prose is now the
@@ -1674,31 +1802,40 @@ def _ask_of(session_id: str, rows: list | None = None) -> tuple:
     **Ask** is the exact drift that list exists to catch.
 
     `rows` lets a caller hand in a tail it has already parsed, so the **Ask** and
-    the **Scrollback** cost one file read between them (ADR 0014)."""
+    the **Scrollback** cost one file read between them (ADR 0014).
+
+    `widget` (a `_pane_widget` reading) and `rendered` (`_pane_question`) come
+    from the ONE pane capture `_board` already takes — passed in for the same
+    reason `rows` is, and for the same ADR 0014 reason: no caller pays a second
+    read to learn where the widget is standing. Omitting them is honest, not
+    broken: the queue's one-liner has no pane, and gets an untappable Ask Set."""
     rows = _tail_rows(session_id) if rows is None else rows
     la = _last_assistant(rows)
     if not la:
-        return "", []
+        return "", [], {}
     text = "\n".join(b.get("text", "") for b in _blocks(la) if b.get("type") == "text").strip()
     qs = re.findall(r"[^\n?]*\?", text)
     ask = qs[-1].strip()[-200:] if qs else ""
     options = []
     tu = _pending_tool_use(rows)
-    if tu and tu.get("name") == "AskUserQuestion":
-        questions = (tu.get("input") or {}).get("questions", [])
-        for q in questions:
-            for o in q.get("options", []):
-                if o.get("label"):
-                    options.append(o["label"])
-        # The structured prompt beats the prose `?` regex: the real question
-        # lives in the tool input, not necessarily in the assistant's text.
-        if questions and questions[0].get("question"):
-            ask = questions[0]["question"].strip()[:200]
+    aset = _ask_set(tu, widget or {}, rendered)
+    if aset:
+        # ONE Ask's options, never the whole Set's. Concatenating every question's
+        # options is ADR 0020's opening incident: the phone showed q1's text above
+        # four buttons, two of which answered a question that was never on screen.
+        options = [o["label"] for o in aset["options"]]
+        # The structured prompt beats the prose `?` regex: the real question lives
+        # in the tool input, not necessarily in the assistant's text. When no
+        # question could be matched there is no structured text to prefer, and the
+        # rendered one is the only thing that is certainly on screen.
+        ask = (aset["question"] or rendered).strip()[:200] or ask
     elif tu:
         # An approval (any non-AskUserQuestion pending tool_use — Bash / Edit /
-        # Write / ExitPlanMode …): surface the concrete blocker as the ask.
+        # Write / ExitPlanMode …): surface the concrete blocker as the ask. An
+        # approval is an **Ask Set** of one and takes this same path with no
+        # question structure invented for it — hence `askSet` stays {}.
         ask = _approval_detail(tu) or ask
-    return ask, options
+    return ask, options, aset
 
 
 # A **tool call**'s detail: what it was DOING, not merely which tool it was.
@@ -1931,7 +2068,12 @@ def _pane_input(text: str) -> str:
     return "\n".join(out).strip()
 
 
-_CHECKBOX = ("☐", "☑", "✔", "✓")
+# `☒` is an ANSWERED question tab — the state the strip is in immediately after
+# you answer Ask 1 of an **Ask Set**, i.e. the ordinary mid-Set frame this whole
+# run exists to drive. Missing from this tuple, `_HEADER_RE` did not match, the
+# widget went undetected, and the false ⚠ unsent-text warning came straight back
+# on the second Ask of every Set. Captured in `tests/fixtures/ask_toggled.pane`.
+_CHECKBOX = ("☐", "☒", "☑", "✔", "✓")
 # The checkbox header line of an AskUserQuestion widget, in both shapes it
 # renders in. Single-question (326 of the 425 asks on disk — the COMMON case):
 # a bare ` ☐ multiSelect`. Multi-question: a tab strip, `←  ☐ Granularity
@@ -1951,7 +2093,18 @@ _HEADER_RE = re.compile(r"^\s*(←\s+)?[" + re.escape("".join(_CHECKBOX)) + r"]\
 # names — the rows the transcript's own option labels do not account for — is the
 # cross-check that lands with the Ask Set, not here. Until then: a renamed
 # affordance silently becomes an option, and the tests below are what would say so.
-_AFFORDANCES = ("Type something.", "Chat about this")
+# Matched with the trailing full stop stripped: on a multiSelect frame the row
+# renders `4. [ ] Type something` — no period — and an affordance read as an
+# option is one seat's worth of cursor drift on every row below it.
+_AFFORDANCES = ("Type something", "Chat about this")
+# A multiSelect row's toggle box, which the renderer paints INSIDE the label:
+# `1. [✔] Row one` / `3. [ ] Row three`. It is the toggle STATE ADR 0020 wanted
+# and `_pane_widget` first shipped without, having no capture that showed a
+# ticked row; `tests/fixtures/ask_toggled.pane` is that capture. It must come
+# off the label before anything compares it to the transcript — the structured
+# label is `Row one`, so an unstripped `[✔] Row one` fails the Ask Set's
+# prefix cross-check on all 30 multiSelect asks and makes every one untappable.
+_TOGGLE_RE = re.compile(r"^\[([ ✔✓xX])\]\s+")
 
 
 def _widget_rows(lines: list[str]) -> list[dict]:
@@ -1977,7 +2130,14 @@ def _widget_rows(lines: list[str]) -> list[dict]:
         elif n != expect:
             break                       # the run broke: everything above is prose
         label = _BOX_RE.split(m.group(3), 1)[0].strip()[:80]   # drop side-panel bleed
-        rows.append({"label": label, "affordance": label in _AFFORDANCES,
+        # The toggle box belongs to the row, not to the label it precedes.
+        tog = _TOGGLE_RE.match(label)
+        if tog:
+            label = label[tog.end():].strip()
+        rows.append({"label": label, "affordance": label.rstrip(".") in _AFFORDANCES,
+                     # None, not False: a single-select row has no toggle at all,
+                     # and "unticked" is a different claim from "cannot be ticked".
+                     "checked": (tog.group(1) != " ") if tog else None,
                      "_cursor": bool(m.group(1))})
         expect -= 1
         if not expect:                  # reached row 1 — the whole menu is in hand
@@ -2022,26 +2182,29 @@ def _pane_widget(text: str) -> dict:
     Returned keys:
 
       rows        every menu row below the anchor, in visual order, each
-                  `{"label", "affordance"}` — the sequence the cursor steps
-                  through, so `rows` and not `options` is what a keystroke count
-                  is measured against.
+                  `{"label", "affordance", "checked"}` — the sequence the cursor
+                  steps through, so `rows` and not `options` is what a keystroke
+                  count is measured against. `checked` is the multiSelect toggle
+                  state (True/False), or None on a row that carries no toggle
+                  box at all — a single-select row, where "unticked" would be a
+                  claim the renderer never makes.
       options     the tool's own options, i.e. the non-affordance rows.
       cursor      index INTO `rows` of the `❯` glyph (0 when unmarked).
       tabs        for a multi-question frame, `{"label", "checked"}` per question
                   tab; `[]` for the single-question shape.
       header      the single-question header text (`""` when a tab strip).
 
-    Two things ADR 0020 asks of the pane are deliberately NOT here yet, so that
-    their absence is a stated gap rather than a silently missing key:
+    One thing ADR 0020 asks of the pane is deliberately NOT here, so that its
+    absence is a stated gap rather than a silently missing key: which tab is
+    CURRENT. The renderer marks it with ANSI attributes that `capture-pane -p`
+    drops, and ADR 0020 declined to parse ANSI. The caller identifies the current
+    Ask by matching the rendered question text against the structured questions
+    instead (`_current_ask`).
 
-    - Which tab is CURRENT. The renderer marks it with ANSI attributes that
-      `capture-pane -p` drops, and ADR 0020 declined to parse ANSI. The caller
-      identifies the current Ask by matching the rendered question text against
-      the structured questions instead.
-    - Which options are TOGGLED on a `multiSelect` question (30 of 425 asks).
-      `tests/fixtures/ask_single.pane` is a multiSelect with nothing ticked yet,
-      so no capture on hand shows how a ticked row renders — and guessing that
-      shape is how `"add notes"` happened. Capture a toggled frame first.
+    Toggle state WAS the second gap — no capture on hand showed a ticked row, and
+    guessing its shape is how `"add notes"` happened. `ask_toggled.pane` is now
+    that capture: the box renders inside the label (`1. [✔] Row one`), so it is
+    stripped off into `checked` rather than guessed.
     """
     lines = text.split("\n")
     hdr = _widget_anchor(lines)
@@ -2049,7 +2212,8 @@ def _pane_widget(text: str) -> dict:
         return {}
     scanned = _widget_rows(lines[hdr + 1:])
     cursor = next((i for i, r in enumerate(scanned) if r["_cursor"]), 0)
-    rows = [{"label": r["label"], "affordance": r["affordance"]} for r in scanned]
+    rows = [{"label": r["label"], "affordance": r["affordance"], "checked": r["checked"]}
+            for r in scanned]
     strip = lines[hdr].strip()
     tabs, header = [], ""
     # A tab strip, not a bare header: more than one checkbox, or the right-hand
@@ -2137,7 +2301,7 @@ def _board(focus_sid: str = "") -> dict:
         lane = "snoozed" if snoozed else _lane_of(r)
         one = r.get("snippet", "")
         if lane in ("question", "approval"):
-            ask, _ = _ask_of(sid)
+            ask, _, _ = _ask_of(sid)
             one = ask or one
         proj = (r.get("dir") or "").rstrip("/").split("/")[-1]
         items.append({"runId": r.get("id"), "sessionId": sid, "title": proj or r.get("title", ""),
@@ -2175,17 +2339,22 @@ def _board(focus_sid: str = "") -> dict:
         # One parse of the tail, two derivations: the **Ask** and the
         # **Scrollback** (ADR 0014 — the scrollback costs no second file read).
         rows = _tail_rows(focus["sessionId"])
-        ask, options = _ask_of(focus["sessionId"], rows)
         scrollback = _scrollback(rows)
         cursor = 0
         pane = _pane_contents(focus["runId"])   # one read: box + any selector/widget
         sel = _parse_selector(pane)             # a numbered menu (permission or question)
-        widget = _is_question_widget(pane)      # the AskUserQuestion widget specifically
+        widget = _pane_widget(pane)             # the AskUserQuestion widget specifically
+        # The rendered question, which is what says WHICH Ask of the Set is on
+        # screen (ADR 0020). Off the same capture — the widget reading and this
+        # are two derivations of one `capture-pane`, as the Ask and the Scrollback
+        # are two derivations of one file read.
+        rendered = _pane_question(pane) if widget else ""
+        ask, options, askset = _ask_of(focus["sessionId"], rows, widget, rendered)
         lane = focus["lane"]
         if widget:
             lane = "question"                   # the rendered pane outranks _lane_of's guess
             if not ask:
-                ask = _pane_question(pane)      # tool_use hasn't flushed — read the prompt off-screen
+                ask = rendered                  # tool_use hasn't flushed — read the prompt off-screen
         if sel:
             # Hybrid (ADR 0009): structured tool_use labels win when flushed; the
             # pane supplies them only when they're absent. The live cursor always
@@ -2194,6 +2363,13 @@ def _board(focus_sid: str = "") -> dict:
                 options = sel["options"]
             if len(sel["options"]) == len(options):
                 cursor = sel["cursor"]
+        if widget:
+            # For the AskUserQuestion widget the cursor indexes `rows` — every row
+            # the widget paints, its own affordances included — because that is
+            # the sequence a Down key steps through. `_parse_selector`'s cursor
+            # indexes options and is the wrong space here; `askSet[*].steps` is
+            # already measured against this one.
+            cursor = widget["cursor"]
         # A menu or widget owns the screen — there is no free-text input box to
         # mistake its body for unsent text (that false ⚠ was the original bug).
         pending = "" if (sel or widget) else _pane_input(pane)
@@ -2216,10 +2392,14 @@ def _board(focus_sid: str = "") -> dict:
         blocked = lane in ("question", "approval") or (
             lane == "snoozed" and focus.get("status") == "waiting")
         if not blocked:
-            ask, options, cursor = "", [], 0
+            ask, options, cursor, askset = "", [], 0, {}
+        # `options` (bare labels) is kept beside `askSet` on purpose: it is the
+        # key the client reads today, and it still serves the permission menu,
+        # which has no Ask Set. It now carries the CURRENT Ask's options only —
+        # never the whole Set's concatenated, which is the bug (ADR 0020).
         focus = dict(focus, lane=lane, aiTitle=_ai_title(focus["sessionId"]),
                      scrollback=scrollback, ask=ask, options=options,
-                     cursor=cursor, pendingInput=pending, pinned=pinned)
+                     cursor=cursor, askSet=askset, pendingInput=pending, pinned=pinned)
     # serverDown distinguishes a dead tmux server (all Runs gone silently) from
     # an ordinary empty board. The web client does not render this yet — plumbing
     # only; the empty-state UI is a documented follow-up (ADR 0010).

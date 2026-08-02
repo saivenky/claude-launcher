@@ -1251,6 +1251,7 @@ class AskWidgetPaneTests(unittest.TestCase):
     def setUp(self):
         self.multi = _capture("ask_multi.pane")
         self.single = _capture("ask_single.pane")
+        self.toggled = _capture("ask_toggled.pane")
 
     def test_both_captures_are_recognised_as_the_widget(self):
         # The old `"add notes"` signature returned False for BOTH — i.e. for
@@ -1365,12 +1366,311 @@ class AskWidgetPaneTests(unittest.TestCase):
         self.assertEqual(server._pane_widget(
             "✓ ran the tests\n✓ committed\n\nAnything else?\n"), {})
 
+    def test_an_answered_tab_is_still_a_widget(self):
+        # `☒` is how the strip renders a question you have ALREADY answered, so it
+        # is the state of every frame from Ask 2 of a Set onward. Absent from the
+        # glyph vocabulary, `_HEADER_RE` misses, the widget goes undetected, and
+        # the false ⚠ unsent-text warning is painted over the second Ask of every
+        # Set — the exact bug the checkbox anchor was introduced to kill.
+        self.assertTrue(server._is_question_widget(self.toggled))
+        self.assertEqual(server._pane_widget(self.toggled)["tabs"],
+                         [{"label": "Fixture", "checked": True}])
+
+    def test_a_multiselect_rows_toggle_box_is_state_not_label(self):
+        # The renderer paints the box INSIDE the label — `1. [✔] Row one`. Left
+        # there it is not merely cosmetic: the structured label is `Row one`, so
+        # the Ask Set's prefix cross-check fails and all 30 multiSelect asks on
+        # disk go untappable.
+        rows = server._pane_widget(self.toggled)["rows"]
+        self.assertEqual([r["label"] for r in rows][:3],
+                         ["Row one", "Row two", "Row three"])
+        self.assertEqual([r["checked"] for r in rows][:3], [True, True, False])
+
+    def test_a_single_select_row_has_no_toggle_state_rather_than_a_false_one(self):
+        # None, not False. "Unticked" is a claim about a box the renderer never
+        # painted, and a client that renders it draws checkboxes on a radio group.
+        self.assertEqual([r["checked"] for r in server._pane_widget(self.multi)["rows"]],
+                         [None, None, None, None])
+
+    def test_the_free_text_row_is_an_affordance_without_its_full_stop(self):
+        # A multiSelect frame renders it `4. [ ] Type something` — no period.
+        # Read as an option it takes a seat, and every row below it answers the
+        # question one line off.
+        rows = server._pane_widget(self.toggled)["rows"]
+        self.assertEqual([r["affordance"] for r in rows], [False, False, False, True, True])
+        self.assertEqual(server._pane_widget(self.toggled)["options"],
+                         ["Row one", "Row two", "Row three"])
+
     def test_the_prompt_is_read_off_a_tab_strip_frame(self):
         # `_pane_question` shares the anchor, so the multi shape reaches it too.
         self.assertTrue(server._pane_question(self.multi).startswith(
             "Ticket 3 (detector) is verifiable"))
         self.assertTrue(server._pane_question(self.single).startswith(
             "30 of the 425 asks on disk"))
+
+
+def _fixture_rows(name: str) -> list:
+    """The transcript tail of a fixture, parsed — the pair of its `.pane`.
+
+    Verbatim rows off a real Session, like the captures beside them: the whole
+    point of ADR 0020 is that the transcript and the pane are read TOGETHER, and
+    a hand-written tool_use would agree with a hand-written pane by construction.
+    """
+    with open(os.path.join(_FIXTURES, name), encoding="utf-8") as fh:
+        return [json.loads(ln) for ln in fh if ln.strip()]
+
+
+def _questions(rows: list) -> list:
+    return server._pending_tool_use(rows)["input"]["questions"]
+
+
+def _retarget(pane: str, question: str, labels: list) -> str:
+    """The captured frame as it would render a DIFFERENT question of the same
+    Set: the question body below the anchor swapped, the option rows relabelled.
+
+    Derived from the capture rather than typed out, so the framing, the rules and
+    the affordance rows stay exactly as tmux painted them — only the two things
+    that change when the widget advances a tab do change."""
+    lines = pane.split("\n")
+    hdr = server._widget_anchor(lines)
+    first = next(i for i in range(hdr + 1, len(lines)) if server._OPT_RE.match(lines[i]))
+    out = lines[:hdr + 1] + ["", question, ""] + lines[first:]
+    n, seen = hdr + 3, 0
+    for i in range(n, len(out)):
+        m = server._OPT_RE.match(out[i])
+        if m and seen < len(labels):
+            out[i] = out[i][:m.start(3)] + labels[seen]
+            seen += 1
+    return "\n".join(out)
+
+
+class AskSetTests(unittest.TestCase):
+    """The **Ask Set** — `_ask_set`, driven off each fixture's transcript tail
+    and its pane TOGETHER, because that pairing is ADR 0020's whole claim: the
+    transcript says what is asked, the pane says where the widget stands.
+
+    The bug on trial: `_ask_of` returned every question's options concatenated,
+    so the phone drew q1's text above four buttons, two of them q2's — and
+    stepping the cursor by a button's index landed on the widget's own
+    affordances and answered a question nobody had been shown.
+    """
+
+    def setUp(self):
+        self.multi_pane, self.multi_rows = _capture("ask_multi.pane"), _fixture_rows("ask_multi.jsonl")
+        self.single_pane, self.single_rows = _capture("ask_single.pane"), _fixture_rows("ask_single.jsonl")
+        self.toggled_pane, self.toggled_rows = _capture("ask_toggled.pane"), _fixture_rows("ask_toggled.jsonl")
+
+    def _set(self, pane, rows):
+        return server._ask_set(server._pending_tool_use(rows),
+                               server._pane_widget(pane), server._pane_question(pane))
+
+    def _assert_steps_land_on_their_own_row(self, pane, aset):
+        """THE regression. Resolve each option's keystroke count against the rows
+        the cursor actually steps through and check where it lands — measured, not
+        asserted from the same arithmetic that produced it."""
+        w = server._pane_widget(pane)
+        rows = w["rows"]
+        for o in aset["options"]:
+            landed = rows[w["cursor"] + o["steps"]]
+            self.assertEqual(landed["label"], rows[o["row"]]["label"])   # row agrees with steps
+            self.assertFalse(landed["affordance"],
+                             f"{o['label']!r} steps onto the widget's own {landed['label']!r}")
+            # Prefix, not equality: the pane truncates at terminal width.
+            self.assertTrue(o["label"].startswith(landed["label"]),
+                            f"{o['label']!r} lands on {landed['label']!r}")
+
+    def test_only_the_current_asks_options_reach_the_payload(self):
+        aset = self._set(self.multi_pane, self.multi_rows)
+        q1 = _questions(self.multi_rows)[0]
+        self.assertEqual((aset["index"], aset["count"]), (0, 2))     # Ask 1 of 2
+        self.assertEqual(aset["header"], "Granularity")
+        self.assertFalse(aset["multiSelect"])
+        self.assertEqual([o["label"] for o in aset["options"]],
+                         [o["label"] for o in q1["options"]])
+        # q2's options are the ones that used to ride along and mis-answer.
+        for o in _questions(self.multi_rows)[1]["options"]:
+            self.assertNotIn(o["label"], [x["label"] for x in aset["options"]])
+
+    def test_each_option_carries_the_description_that_decides_it(self):
+        # Median 175 chars, p90 285 (ADR 0020's census), all of it discarded
+        # before this. The label alone frequently cannot decide the question.
+        aset = self._set(self.multi_pane, self.multi_rows)
+        self.assertEqual([o["description"] for o in aset["options"]],
+                         [o["description"] for o in _questions(self.multi_rows)[0]["options"]])
+        self.assertTrue(all(len(o["description"]) > 100 for o in aset["options"]))
+
+    def test_every_option_steps_to_its_own_row(self):
+        aset = self._set(self.multi_pane, self.multi_rows)
+        self.assertTrue(aset["tappable"])
+        self._assert_steps_land_on_their_own_row(self.multi_pane, aset)
+
+    def test_a_moved_cursor_moves_the_counts(self):
+        # On both captures the cursor sits on row 1, where a hardcoded 0 would
+        # pass. Move it and the counts must follow — including going NEGATIVE,
+        # which is an Up key and not an Up-shaped Down.
+        moved = (self.multi_pane.replace("❯ 1. Keep split", "  1. Keep split")
+                                .replace("  2. Merge into one", "❯ 2. Merge into one"))
+        aset = self._set(moved, self.multi_rows)
+        self.assertEqual([o["steps"] for o in aset["options"]], [-1, 0])
+        self.assertEqual([o["row"] for o in aset["options"]], [0, 1])   # rows do not move
+        self._assert_steps_land_on_their_own_row(moved, aset)
+
+    def test_the_single_question_fixture_is_one_ask_with_its_options(self):
+        # 326 of 425 asks hold one question — this path must be trivially right.
+        aset = self._set(self.single_pane, self.single_rows)
+        q = _questions(self.single_rows)[0]
+        self.assertEqual((aset["index"], aset["count"]), (0, 1))
+        self.assertEqual(aset["header"], "multiSelect")
+        self.assertTrue(aset["tappable"])
+        self.assertEqual([o["label"] for o in aset["options"]],
+                         [o["label"] for o in q["options"]])
+        self.assertEqual(len(aset["options"]), 3)
+        self.assertEqual([o["description"] for o in aset["options"]],
+                         [o["description"] for o in q["options"]])
+        self._assert_steps_land_on_their_own_row(self.single_pane, aset)
+
+    def test_the_pane_says_which_ask_of_the_set_is_current(self):
+        # The tab strip cannot say which tab is live (the marker is ANSI that
+        # `capture-pane -p` drops), so the current Ask is identified by matching
+        # the rendered question text. Advance the frame to q2 and the payload
+        # must follow — otherwise it paints q1's answers over q2's question.
+        q2 = _questions(self.multi_rows)[1]
+        pane = _retarget(self.multi_pane, q2["question"],
+                         [o["label"] for o in q2["options"]])
+        aset = self._set(pane, self.multi_rows)
+        self.assertEqual((aset["index"], aset["count"]), (1, 2))
+        self.assertEqual(aset["header"], "Expand/contract")
+        self.assertEqual([o["label"] for o in aset["options"]],
+                         [o["label"] for o in q2["options"]])
+        self._assert_steps_land_on_their_own_row(pane, aset)
+
+    def test_a_hard_wrapped_and_clipped_question_still_matches(self):
+        # The pane wraps mid-sentence at terminal width and `_pane_question`
+        # clips at 200 chars, so equality would never match a long question and
+        # every multi-question Set would fall back.
+        rendered = server._pane_question(self.multi_pane)
+        q1 = _questions(self.multi_rows)[0]["question"]
+        self.assertNotIn(q1, self.multi_pane)          # the frame holds it hard-wrapped
+        self.assertTrue(server._same_question(rendered, q1))
+        self.assertTrue(server._same_question(rendered[:60], q1))       # …and clipped
+        # …but text the tool never sent is a disagreement, not a clipped match.
+        self.assertFalse(server._same_question(q1 + " and one more thing?", q1))
+
+    def test_a_pane_that_disagrees_is_read_only_rather_than_wrong(self):
+        # The documented fallback. The transcript's content is still sound — we
+        # know WHICH Ask — so the options stay on screen to be read; what goes is
+        # the tap, because a keystroke measured against rows that do not match is
+        # exactly the wrong answer this run exists to remove.
+        doctored = self.multi_pane.replace("  2. Merge into one", "  2. Merge into two")
+        aset = self._set(doctored, self.multi_rows)
+        self.assertFalse(aset["tappable"])
+        self.assertEqual(aset["fallback"], "pane-mismatch")
+        self.assertEqual([o["steps"] for o in aset["options"]], [None, None])
+        self.assertEqual([o["row"] for o in aset["options"]], [None, None])
+        self.assertTrue(all(o["description"] for o in aset["options"]))   # still readable
+
+    def test_a_pane_showing_a_question_the_tool_never_sent_drops_the_options(self):
+        # A stronger fallback, because more is untrustworthy: with no question
+        # matched we do not know which Ask is on screen, so its options are not
+        # ours to draw. Painting q1's answers under q2's question is the bug.
+        q1 = _questions(self.multi_rows)[0]
+        pane = _retarget(self.multi_pane, "Something the tool never asked?",
+                         [o["label"] for o in q1["options"]])
+        aset = self._set(pane, self.multi_rows)
+        self.assertEqual(aset["index"], -1)
+        self.assertEqual(aset["count"], 2)
+        self.assertEqual(aset["options"], [])
+        self.assertFalse(aset["tappable"])
+        self.assertEqual(aset["fallback"], "unmatched")
+
+    def test_with_no_pane_the_ask_set_is_readable_but_never_tappable(self):
+        # The queue's one-liner reads the transcript and captures no pane. It
+        # still wants the question text; it must never get a keystroke count,
+        # because nothing has been read about where the widget is standing.
+        aset = server._ask_set(server._pending_tool_use(self.multi_rows), {}, "")
+        self.assertEqual(aset["index"], 0)
+        self.assertFalse(aset["tappable"])
+        self.assertEqual(aset["fallback"], "no-pane")
+        self.assertEqual([o["steps"] for o in aset["options"]], [None, None])
+
+    def test_a_multiselect_ask_carries_its_flag_and_the_ticks_it_can_read(self):
+        # `multiSelect` reaches the client because a tap there is a toggle, not
+        # an answer. The tick state is READ off the frame — never remembered
+        # locally (ADR 0020 answers every step against a fresh pane).
+        aset = self._set(self.toggled_pane, self.toggled_rows)
+        self.assertTrue(aset["multiSelect"])
+        self.assertTrue(aset["tappable"])
+        self.assertEqual([o["checked"] for o in aset["options"]], [True, True, False])
+        # This capture's cursor sits on row 2 as taken — a real moved cursor.
+        self.assertEqual(server._pane_widget(self.toggled_pane)["cursor"], 1)
+        self.assertEqual([o["steps"] for o in aset["options"]], [-1, 0, 1])
+        self._assert_steps_land_on_their_own_row(self.toggled_pane, aset)
+
+    def test_an_approval_is_an_ask_set_of_one_with_no_invented_structure(self):
+        tu = {"type": "tool_use", "id": "t1", "name": "Bash", "input": {"command": "ls"}}
+        self.assertEqual(server._ask_set(tu, {}, ""), {})
+        self.assertEqual(server._ask_set(None, {}, ""), {})
+
+
+class AskSetBoardTests(unittest.TestCase):
+    """The Ask Set as `/api/board` ships it: one transcript read and one pane
+    capture between them (ADR 0014), for the fixture pair that used to produce
+    ADR 0020's wrong-answer table."""
+
+    def setUp(self):
+        self._saved = {n: getattr(server, n) for n in
+                       ("cached_runs", "cached_foreign_runs", "_tail_rows",
+                        "_pane_contents", "_ai_title", "_tmux_server_down")}
+        self.reads = []
+        rows = _fixture_rows("ask_multi.jsonl")
+        server._tmux_server_down = lambda: False
+        server.cached_foreign_runs = lambda: []
+        server._ai_title = lambda sid: "to-tickets"
+        server._tail_rows = lambda sid: rows
+        server._pane_contents = lambda rid: (self.reads.append(rid)
+                                             or _capture("ask_multi.pane"))
+        server.cached_runs = lambda: [{
+            "id": _RUN, "sessionId": _GOOD, "title": "x", "dir": "~/projects/strength-log",
+            "status": "waiting", "bridge": "", "updatedAt": 5000, "snippet": "",
+        }]
+
+    def tearDown(self):
+        for n, v in self._saved.items():
+            setattr(server, n, v)
+
+    def test_the_focus_carries_the_current_ask_and_only_its_options(self):
+        focus = server._board()["focus"]
+        self.assertEqual(focus["lane"], "question")
+        self.assertTrue(focus["ask"].startswith("Ticket 3 (detector)"))
+        self.assertEqual(focus["options"], ["Keep split (Recommended)", "Merge into one"])
+        self.assertEqual((focus["askSet"]["index"], focus["askSet"]["count"]), (0, 2))
+        self.assertTrue(focus["askSet"]["tappable"])
+
+    def test_the_payload_steps_land_on_their_own_rows(self):
+        focus = server._board()["focus"]
+        rows = server._pane_widget(_capture("ask_multi.pane"))["rows"]
+        for o in focus["askSet"]["options"]:
+            landed = rows[focus["cursor"] + o["steps"]]
+            self.assertFalse(landed["affordance"])
+            self.assertTrue(o["label"].startswith(landed["label"]))
+
+    def test_the_pane_is_captured_once_per_poll(self):
+        # The Ask Set added no second capture and no second file read: ADR 0014's
+        # discipline, which is why `widget` and `rendered` are passed into
+        # `_ask_of` rather than read there.
+        server._board()
+        self.assertEqual(len(self.reads), 1)
+
+    def test_an_idle_run_carries_no_ask_set(self):
+        server.cached_runs = lambda: [{
+            "id": _RUN, "sessionId": _GOOD, "title": "x", "dir": "~/x",
+            "status": "idle", "bridge": "", "updatedAt": time.time() * 1000,
+            "snippet": "",
+        }]
+        server._pane_contents = lambda rid: "just some output\n"
+        focus = server._board()["focus"]
+        self.assertEqual(focus["askSet"], {})
+        self.assertEqual(focus["ask"], "")
 
 
 class PaneContentsTests(unittest.TestCase):
@@ -1577,7 +1877,7 @@ class ApprovalDetailTests(unittest.TestCase):
 
     def _ask_for(self, tool):
         server._tail_rows = lambda sid: self._rows_for(tool)
-        ask, _ = server._ask_of(_GOOD)
+        ask, _, _ = server._ask_of(_GOOD)
         return ask
 
     def test_edit_shows_the_target_file_and_a_change_summary(self):
@@ -1616,7 +1916,9 @@ class ApprovalDetailTests(unittest.TestCase):
             {"type": "tool_use", "id": "toolu_x", "name": "Bash",
              "input": {"command": "ls"}}]}}]
         server._tail_rows = lambda sid: rows
-        self.assertEqual(server._ask_of(_GOOD), ("ls", []))
+        # An approval is an **Ask Set** of one and carries no question
+        # structure — hence the empty `askSet` (ADR 0020).
+        self.assertEqual(server._ask_of(_GOOD), ("ls", [], {}))
 
 
 class ScrollbackTests(unittest.TestCase):
