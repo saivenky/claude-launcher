@@ -1,6 +1,13 @@
 <!doctype html><html lang=en><head><meta charset=utf-8>
 <meta name=viewport content="width=device-width,initial-scale=1">
 <title>claude board</title>
+<!-- IN THE HEAD, AND SYNCHRONOUS, which is the whole reason it is its own file.
+It writes `data-theme` on <html> before the body is parsed, so the page is never
+painted in the wrong theme and then corrected. It cannot be an inline <script> —
+the server sends `script-src 'self'` — and it cannot live in board.js, which
+loads at the END of the body and would therefore flash. It is four lines of work
+and deliberately depends on nothing. -->
+<script src="theme.js"></script>
 <style>
 :root{
 /* --- the two faces (ADR 0018) ---
@@ -729,8 +736,14 @@ until it holds on a light field. Amber is the one that could not survive
 unchanged: #e6b450 on white is about 1.7:1. It becomes a dark amber, and every
 fill that was dark-ink-on-amber inverts to white-ink-on-dark-amber via
 --on-accent. */
-@media(prefers-color-scheme:light){
-:root{
+/* SELECTED BY ATTRIBUTE, NOT BY MEDIA QUERY (ADR 0019). This was a bare
+`@media(prefers-color-scheme:light)` and could not stay one once the theme
+became selectable: `auto` has to mean "whatever the phone says" while `light`
+and `dark` override it, and a media query cannot be overridden by an attribute
+without stating the whole palette twice — two places to edit, one of which will
+be forgotten. So theme.js resolves auto against matchMedia and always writes the
+answer to `data-theme`, and the palette is stated once, here. */
+:root[data-theme=light]{
 --bg:#f4f2ee;--panel:#fffefb;--panel2:#eceae4;--fg:#1c2126;--dim:#6a7078;
 --line:#dcd8d0;--accent:#96690a;--q:#0d7565;--p:#96690a;--m:#2f5fbf;--w:#9aa0a8;--red:#b83a30;
 --line2:#e6e3dc;--line3:#eceae4;
@@ -740,13 +753,32 @@ fill that was dark-ink-on-amber inverts to white-ink-on-dark-amber via
 --shadow-mid:rgba(28,33,38,.14);--shadow-soft:rgba(28,33,38,.10);--red-wash:rgba(184,58,48,.07);
 }
 /* Three opacities that were tuned against black and wash out against white. */
-.seamrule{opacity:.6}
-.dim{opacity:.62}
-.fgbox{opacity:.85}
-}
+:root[data-theme=light] .seamrule{opacity:.6}
+:root[data-theme=light] .dim{opacity:.62}
+:root[data-theme=light] .fgbox{opacity:.85}
+
+/* --- the theme control, in the PAGE header (ADR 0019) ---
+Not in the **Focus**'s sticky header, which is per-Run chrome and already
+carries six things at 390px; not in **Intake**, which is the *create* side of
+the Board and would quietly become "the settings sheet" if preferences started
+living there. This is page-level chrome — the one strip on the Board that
+belongs to the Board rather than to a Run — which is exactly what a global
+preference is. The cost is that it scrolls away with the rest of the header, so
+you scroll to the top to reach it. That is the right trade for a control you
+touch when the light changes and not otherwise: it is deliberately NOT on the
+edge you read over, because the surfaces that live there are the ones ADR 0014
+and ADR 0015 spent real pixels clearing. */
+.theme{display:flex;border:1px solid var(--line);border-radius:999px;overflow:hidden;
+flex:0 0 auto}
+.theme button{background:transparent;border:0;border-right:1px solid var(--line);
+color:var(--dim);font:inherit;font-size:0.5625rem;letter-spacing:.6px;
+text-transform:uppercase;padding:3px 9px;cursor:pointer}
+.theme button:last-child{border-right:0}
+.theme button:hover{color:var(--fg)}
+.theme button.on{background:var(--accent);color:var(--on-accent);font-weight:700}
 </style></head>
 <body><div class=zscrim id=zscrim hidden></div><div class=iscrim id=iscrim hidden></div><div class=wrap>
-<header><h1>◆ claude board</h1><span class=sub id=summary>loading…</span></header>
+<header><h1>◆ claude board</h1><div class=theme id=theme role=group aria-label="colour theme"><button data-t=auto type=button>auto</button><button data-t=light type=button>light</button><button data-t=dark type=button>dark</button></div><span class=sub id=summary>loading…</span></header>
 <div id=pending></div>
 <!-- **Intake**, every shape of it, in one sheet opened by the ＋ in the Focus's
 sticky header (ADR 0015). It is authored HERE, in the flow just above the card

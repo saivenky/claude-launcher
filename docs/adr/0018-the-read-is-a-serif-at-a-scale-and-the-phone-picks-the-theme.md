@@ -1,5 +1,12 @@
 # The read is a serif at a scale, and the phone picks the theme
 
+> **Superseded in part by
+> [ADR 0019](0019-the-theme-is-selectable-and-the-page-header-holds-the-switch.md):**
+> the theme is selectable now (`auto` / `light` / `dark`, in the page header),
+> and `auto` is resolved by `theme.js` rather than by a media query. Everything
+> below about the *face*, the *type scale*, the *tokens* and the *palettes*
+> still holds.
+
 The **Board**'s prose moves from the system UI sans to a **serif**, every type
 size on the page moves from a hardcoded px to a `rem` behind one multiplier
 (`--fs`, set to `1.25`), and the Board gains a **light** theme selected by

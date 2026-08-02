@@ -2120,7 +2120,11 @@ def _recoverable_payload() -> tuple[bytes, str]:
 
 WEB_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web")
 _WEB_FILES = {"board.html": "text/html; charset=utf-8",
-              "board.js": "text/javascript; charset=utf-8"}
+              "board.js": "text/javascript; charset=utf-8",
+              # Its own file, and served like any other: it runs from the <head>
+              # before the body paints, which neither board.js (loaded last) nor
+              # an inline <script> (dropped by the CSP above) can do. ADR 0019.
+              "theme.js": "text/javascript; charset=utf-8"}
 
 
 MAX_BODY_BYTES = 4096
@@ -2190,6 +2194,9 @@ class Handler(BaseHTTPRequestHandler):
             return
         if path == "/board.js":
             self._serve_web("board.js")
+            return
+        if path == "/theme.js":
+            self._serve_web("theme.js")
             return
         if path == "/api/board":
             focus_sid = (parse_qs(urlparse(self.path).query).get("focus") or [""])[0]
