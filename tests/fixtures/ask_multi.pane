@@ -1,0 +1,37 @@
+  1. Range moves to the exercise, keyed by side
+  Blocked by: none
+  Delivers: the prescribed rep range lives on the exercise (side-keyed, NULL = both), seeded from plan_item. GET /api/plan returns byte-identical
+  JSON, and a range written to an exercise survives a training-prep re-plan of that date — the thing that's impossible today. Includes ADR 0011.
+
+  2. Drop the plan-item range and stop training-prep sending it
+  Blocked by: 1
+  Delivers: the contract half of expand→contract. plan_item.rep_lo/rep_hi gone, _regen_target rebuilds 3 × 8–12 from the exercise, training-prep
+  no longer sends a range.
+
+  3. Detect an unreachable range
+  Blocked by: 1
+  Delivers: the gate + ladder-snapped estimator, verifiable on its own against the real-data oracle — lateral raise fires at session #3 and #31,
+  inner thigh is load-vetoed, the other six stay silent, exactly 2 false positives across 256 sessions.
+
+  4. Propose and accept the retune on the exercise card
+  Blocked by: 3
+  Delivers: the tracer bullet. Open the app on a lateral-raise day, see "landed 8–12 for 3 sessions — retune from 15–20?", tap, the range changes
+  and the index prior band redraws under it.
+
+  Two calls worth your input:
+─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+←  ☐ Granularity  ☐ Expand/contract  ✔ Submit  →
+
+Ticket 3 (detector) is verifiable via the real-data oracle but not demoable — you can't see anything until ticket 4. Keep them split or merge
+into one tracer bullet?
+
+❯ 1. Keep split (Recommended)
+     3 = detector + oracle tests, 4 = card UI + accept. The detector carries the backtest against 256 sessions and is the substantive half;
+     merging risks one oversized context window where the UI work crowds out oracle rigour.
+  2. Merge into one
+     A single end-to-end slice: detect, propose, accept, redraw. Truly demoable, matches tracer-bullet purity, but it's a big ticket.
+  3. Type something.
+─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  4. Chat about this
+
+Enter to select · Tab/Arrow keys to navigate · Esc to cancel

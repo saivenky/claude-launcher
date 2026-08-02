@@ -244,12 +244,24 @@ every unfold uses), marker
 
 **Ask**:
 The specific input a **Blocked** **Run** needs from you — the concrete
-blocker, sourced from the **rendered pane** when the transcript does not carry
-it (ADR 0009). A property of being Blocked and of nothing else: an **idle** Run
-has no Ask, and prose ending in a question mark is not one, because it is
-already the last **turn** of the **scrollback**.
+blocker, and exactly one decision. A property of being Blocked and of nothing
+else: an **idle** Run has no Ask, and prose ending in a question mark is not
+one, because it is already the last **turn** of the **scrollback**. What is
+being asked comes from the transcript, which carries it in full; *where the
+widget is standing* comes from the **rendered pane**, which is the only source
+for it (ADR 0020, narrowing ADR 0009).
 _Avoid_: question (only one of its two shapes — the other is an approval),
 prompt (overloaded by Claude Code's own permission prompt)
+
+**Ask Set**:
+The **Asks** raised by one `AskUserQuestion`, answered in order and submitted
+together. Cardinality-neutral: a Set of one is still a Set, which is what keeps
+a single-question ask (326 of 425 on disk) and a four-question one the same code
+path. Only ever *one* Ask of a Set is on screen — the **current Ask** — so the
+Set is a thing the server models and the phone never draws whole. An approval is
+always a Set of one; only a question can raise several.
+_Avoid_: MultiAsk (names the rare case — most Sets hold one), batch, group,
+tab strip (the widget's rendering of a Set, not the Set)
 
 **Rotation**:
 How the **Focus** advances through the queue — consent-based. It moves only
@@ -277,7 +289,9 @@ A **Run** paused awaiting a *specific required input from you*: an
 nothing is required) and from Claude Code's `status: waiting` flag, which is
 only a lossy proxy for it. The **Board**'s top priority. Read from the
 transcript tail plus the **rendered pane**, never from the status flag
-alone.
+alone. A question may raise several **Asks** at once — an **Ask Set** — in
+which case the Run stays Blocked until the last one is submitted, and each is
+answered against a freshly read pane rather than a script (ADR 0020).
 _Avoid_: waiting (Claude Code's status flag, not this), stuck, needs-input
 
 **Task**:
@@ -485,6 +499,13 @@ _Avoid_: access, availability
   (`REPLIED` will not fit the gutter at any type size the page uses; `ASKED` and
   `ASKS` are two letters apart). The labels say *who* — `you` / `work` / `claude` — and the
   verb question is closed (ADR 0017)
+- "MultiAsk" was proposed for the container an `AskUserQuestion` raises, and
+  rejected for cardinality: 326 of 425 asks on disk hold exactly one question,
+  so the name argues with the common case and forces every call site to ask
+  "is this a MultiAsk or an Ask" — the branch the term exists to remove. An
+  **Ask Set** of one is still a Set. Every other term here is cardinality-neutral
+  (a **Work** is a stretch of calls; a stretch of one is still a Work), and
+  "Multi-" is the one prefix that cannot be.
 - "chapter" named an **Exchange** through three rounds of prototyping — retired.
   It reads as something an author chose to break, where an Exchange's boundary is
   mechanical: it opens on something *you* did, the same cut ADR 0016 already makes

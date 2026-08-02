@@ -1,0 +1,37 @@
+  [1m1. Range moves to the exercise, keyed by side[0m
+  [3mBlocked by:[0m none
+  [3mDelivers:[0m the prescribed rep range lives on the exercise (side-keyed, NULL = both), seeded from [38;5;153mplan_item[39m. [38;5;153mGET /api/plan[39m returns byte-identical
+  JSON, and a range written to an exercise [1msurvives a training-prep re-plan[0m of that date — the thing that's impossible today. Includes ADR 0011.
+
+  [1m2. Drop the plan-item range and stop training-prep sending it[0m
+  [3mBlocked by:[0m 1
+  [3mDelivers:[0m the contract half of expand→contract. [38;5;153mplan_item.rep_lo/rep_hi[39m gone, [38;5;153m_regen_target[39m rebuilds [38;5;153m3 × 8–12[39m from the exercise, training-prep
+  no longer sends a range.
+
+  [1m3. Detect an unreachable range[0m
+  [3mBlocked by:[0m 1
+  [3mDelivers:[0m the gate + ladder-snapped estimator, verifiable on its own against the real-data oracle — lateral raise fires at session #3 and #31,
+  inner thigh is load-vetoed, the other six stay silent, exactly 2 false positives across 256 sessions.
+
+  [1m4. Propose and accept the retune on the exercise card[0m
+  [3mBlocked by:[0m 3
+  [3mDelivers:[0m the tracer bullet. Open the app on a lateral-raise day, see [3m"landed 8–12 for 3 sessions — retune from 15–20?"[0m, tap, the range changes
+  and the index prior band redraws under it.
+
+  Two calls worth your input:
+[38;5;246m─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+← [38;5;16m[48;5;153m ☐ Granularity [39m[49m ☐ Expand/contract  ✔ Submit  →
+
+[1m[38;5;231mTicket 3 (detector) is verifiable via the real-data oracle but not demoable — you can't see anything until ticket 4. Keep them split or merge [0m
+[1m[38;5;231minto one tracer bullet?[0m
+
+[38;5;153m❯[39m [38;5;246m1.[39m [38;5;153mKeep split (Recommended)[39m
+     [38;5;246m3 = detector + oracle tests, 4 = card UI + accept. The detector carries the backtest against 256 sessions and is the substantive half; [39m
+     [38;5;246mmerging risks one oversized context window where the UI work crowds out oracle rigour.[39m
+  [38;5;246m2.[39m Merge into one
+     [38;5;246mA single end-to-end slice: detect, propose, accept, redraw. Truly demoable, matches tracer-bullet purity, but it's a big ticket.[39m
+  [38;5;246m3. Type something.[39m
+[38;5;246m─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+[39m  4. Chat about this
+
+[38;5;246mEnter to select · Tab/Arrow keys to navigate · Esc to cancel[39m

@@ -1,0 +1,40 @@
+  ⎿  · With the Ask showing one question at a time, how does the phone get from q1 through q2 to the widget's ✔ Submit?
+     → Poll and re-render (Recommended)
+
+  Listed 1 directory
+
+⏺ The capture misfired — and instructively. My guard matched Esc to cancel appearing in my own echoed output in this
+  pane's scrollback: precisely the failure mode _OPT_RE has, a parser matching prose that merely looks like chrome.
+  Re-arming with the real discriminator (the footer must be the last non-empty line of the frame):
+
+  Running 1 shell command…
+  ⎿  $ rm -f tests/fixtures/ask_single.pane tests/fixtures/ask_single.ansi
+     nohup bash -c 'for i in $(seq 1 180); do t=$(tmux -L claude-launcher capture-pane -p -t %64); last=$(echo "$t" |
+     grep -v "^[[:space:]]*$" | tail -1); case "$last" in *"Esc to cancel") tmux -L claude-launcher capture-pane -p -t
+     %6…
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ ☐ multiSelect
+
+30 of the 425 asks on disk carry a multiSelect question, where the widget wants space-to-toggle then enter. How should
+the phone drive that?
+
+❯ 1. One tap = one toggle, then a separate done (Recommended)
+     Tapping an option sends 'step to it + space' and nothing else. The next poll re-reads the pane, which paints the
+     toggle state per row, so the phone renders checked options as checked from the screen rather than from local
+     memory. A separate 'done' button sends enter. Consistent with the completion model you just chose: every step is
+     verified against a fresh pane read and nothing compounds. Costs a 4s poll per toggle.
+  2. Collect locally, send one sequence
+     The phone tracks which options you ticked and, on 'done', sends the whole script: step, space, step, space, enter.
+     One round trip and no poll latency between taps, which matters when you are ticking three of four options. But it
+     is the scripted model you rejected for completion, with the same property: an intermediate state that is never
+     re-read, so one dropped keystroke silently mis-toggles everything after it.
+  3. Send multiSelect to free text
+     Render the options read-only and answer through the widget's 'Type something.' row in prose. No toggle arithmetic
+     at all, and multiSelect stops being a distinct code path. But it converts a structured answer into text the
+     receiving Claude has to re-interpret, and 30 of 425 is frequent enough that this would be a visible downgrade
+     rather than an edge case.
+  4. Type something.
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  5. Chat about this
+
+Enter to select · ↑/↓ to navigate · Esc to cancel
