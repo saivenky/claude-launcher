@@ -2658,7 +2658,19 @@ def _board(focus_sid: str = "") -> dict:
             # cursor at all — a consumer must branch on that, never read it as 0
             # (ADR 0020: a defaulted 0 is what drove the wrong keystrokes), and
             # `askSet.tappable` is already False in that case.
-            cursor = widget["cursor"]
+            #
+            # ONLY when the Ask Set reconciled. `cursor` is one field carrying two
+            # incompatible spaces — rows for a widget, options for a menu — and
+            # nothing on the wire says which. The Set is what tells a consumer it
+            # is looking at row-space, so handing it row-space WITHOUT one is
+            # handing it a number it will read in the other space: a stale widget
+            # frame on screen while the pending tool_use has already moved on to
+            # an approval leaves `askSet` {} and `options` filled from `sel`, and
+            # the client's menu path then reads a row index as an option index.
+            # That is ADR 0020's wrong-space bug in a transient window, so this
+            # refuses rather than narrows it (ADR 0021: an unreadable position is
+            # None, never a plausible number).
+            cursor = widget["cursor"] if askset else None
         # A menu or widget owns the screen — there is no free-text input box to
         # mistake its body for unsent text (that false ⚠ was the original bug).
         # The guard lives in `_read_pane` so it cannot be forgotten here.

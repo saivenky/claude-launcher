@@ -1938,6 +1938,26 @@ class AskSetBoardTests(unittest.TestCase):
             self.assertFalse(landed["affordance"])
             self.assertTrue(o["label"].startswith(landed["label"]))
 
+    def test_a_widget_without_a_reconciled_set_reports_no_cursor_at_all(self):
+        """`cursor` carries two incompatible spaces — rows for a widget, options
+        for a menu — and nothing on the wire says which. The **Ask Set** is what
+        tells a consumer it is looking at row-space, so row-space without one is a
+        number the client will read in the other space.
+
+        The window is real: a stale widget frame still painted while the pending
+        `tool_use` has moved on to an approval leaves `askSet` {} and `options`
+        filled from the menu parse. Answering then steps by a row index read as an
+        option index — ADR 0020's wrong-space bug, transiently. It refuses instead
+        (ADR 0021)."""
+        rows = _fixture_rows("ask_multi.jsonl")
+        tu = server._pending_tool_use(rows)
+        tu["name"] = "Bash"                       # the pending call is now an approval
+        tu["input"] = {"command": "ls"}
+        server._tail_rows = lambda sid: rows
+        focus = server._board()["focus"]
+        self.assertEqual(focus["askSet"], {})     # nothing reconciled...
+        self.assertIsNone(focus["cursor"])        # ...so no position is offered
+
     def test_the_pane_is_captured_once_per_poll(self):
         # The Ask Set added no second capture and no second file read: ADR 0014's
         # discipline, which is why `widget` and `rendered` are passed into
