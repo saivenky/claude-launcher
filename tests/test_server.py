@@ -1586,6 +1586,31 @@ class PaneFixtureMatrixTests(unittest.TestCase):
                                      f"{o['label']!r} steps onto {landed['label']!r}")
                     self.assertTrue(o["label"].startswith(landed["label"]))
 
+    def test_every_capture_routes_free_text_somewhere_it_can_land(self):
+        # The seventh defect, in the matrix so a renderer change breaks it here
+        # rather than in someone's afternoon: text typed straight at a widget was
+        # measured to vanish, and the Enter after it answered with the highlighted
+        # row (ADR 0020). Every widget capture must therefore route through the
+        # widget's OWN free-text row, and every non-widget capture must keep the
+        # ordinary path.
+        for name in self.names:
+            with self.subTest(fixture=name):
+                pane = _capture(name + ".pane")
+                pr = server._read_pane(pane)
+                route = server._text_route(pr)
+                if not name.startswith("ask_"):
+                    self.assertEqual(route.route, "plain")
+                    continue
+                self.assertEqual(route.route, "affordance",
+                                 f"{name}: free text has no route but Esc, which cancels")
+                w = server._pane_widget(pane)
+                landed = w["rows"][w["cursor"] + route.steps]
+                # It lands on the free-text row itself — not on `Chat about this`
+                # one seat further down, and not on an option, which would answer
+                # a question nobody chose.
+                self.assertTrue(landed["affordance"])
+                self.assertEqual(landed["label"].rstrip("."), server._FREE_TEXT_ROW)
+
     def test_every_capture_keeps_its_attributed_twin(self):
         # `-p` drops the ANSI attributes, and the current question TAB is marked
         # by nothing else — ADR 0020's escape hatch (anchor on the highlight
@@ -1623,6 +1648,53 @@ class PaneFixtureMatrixTests(unittest.TestCase):
                 section = readme[head:end if end != -1 else len(readme)]
                 self.assertTrue(re.search(r"Claude Code \d+\.\d+\.\d+", section),
                                 f"{name} carries no Claude Code version")
+
+
+class TextRouteTests(unittest.TestCase):
+    """`_text_route` — where free text can land, decided from one read of the
+    screen (ADR 0020's seventh and worst defect).
+
+    The defect it closes was measured, not argued: an external driver replicating
+    `respond_run`'s two calls against a live widget left the frame BYTE-IDENTICAL
+    across eleven typed characters, and the Enter after them returned an option
+    nobody chose. So "type it and press Enter" is not a fallback — it is the bug,
+    and every branch here either lands the text somewhere real or refuses."""
+
+    def test_a_plain_input_box_keeps_the_ordinary_path(self):
+        r = server._text_route(server._read_pane(_INPUT_PANE))
+        self.assertEqual((r.route, r.steps, r.reason), ("plain", None, ""))
+
+    def test_a_widget_routes_through_its_own_free_text_row(self):
+        r = server._text_route(server._read_pane(_capture("ask_multi.pane")))
+        # Row 2 of four, cursor on row 0 — the count ADR 0020's own table
+        # measured as landing on `Type something.`
+        self.assertEqual((r.route, r.steps, r.reason), ("affordance", 2, ""))
+
+    def test_a_missing_row_is_named_no_row_and_falls_to_esc(self):
+        pane = _capture("ask_multi.pane").replace("Type something.", "Ponder this.")
+        r = server._text_route(server._read_pane(pane))
+        self.assertEqual((r.route, r.steps, r.reason), ("esc", None, "no-row"))
+
+    def test_an_unread_cursor_is_named_no_cursor_and_never_counted_from_zero(self):
+        pane = _capture("ask_multi.pane").replace("❯ 1.", "  1.")
+        r = server._text_route(server._read_pane(pane))
+        self.assertEqual((r.route, r.steps, r.reason), ("esc", None, "no-cursor"))
+        self.assertIsNone(r.steps)   # NOT 2 counted from a defaulted cursor of 0
+
+    def test_an_uncaptured_pane_refuses_outright(self):
+        r = server._text_route(server._read_pane(""))
+        self.assertEqual((r.route, r.steps, r.reason), ("refuse", None, "no-pane"))
+        # "nobody looked" is a different answer from "we looked and saw a box",
+        # and conflating them is what put a blind send-keys at an unread screen.
+        self.assertNotEqual(r.route, "plain")
+
+    def test_it_takes_a_pane_read_and_a_raw_string_raises(self):
+        # Same discipline as `_ask_set`: an argument that can be got wrong
+        # silently is the same defect as a defaulted cursor (ADR 0021).
+        with self.assertRaises(TypeError):
+            server._text_route(_capture("ask_multi.pane"))
+        with self.assertRaises(TypeError):
+            server._text_route(server._pane_widget(_capture("ask_multi.pane")))
 
 
 def _retarget(pane: str, question: str, labels: list) -> str:
@@ -1983,6 +2055,30 @@ class AskSetBoardTests(unittest.TestCase):
         self.assertIsNone(focus["cursor"])
         self.assertFalse(focus["askSet"]["tappable"])
         self.assertEqual(focus["askSet"]["fallback"], "no-cursor")
+
+    def test_the_focus_says_where_the_reply_box_text_would_go(self):
+        # The phone cannot word its send button without this: on one route,
+        # sending prose presses Esc and CANCELS the ask, and that may not be
+        # discovered by tapping (ADR 0020).
+        focus = server._board()["focus"]
+        self.assertEqual(focus["textRoute"], {"route": "affordance", "reason": ""})
+
+    def test_the_destructive_route_is_named_on_the_wire_before_it_is_taken(self):
+        server._pane_contents = lambda rid: _capture("ask_multi.pane").replace(
+            "Type something.", "Ponder this.")
+        self.assertEqual(server._board()["focus"]["textRoute"],
+                         {"route": "esc", "reason": "no-row"})
+
+    def test_no_keystroke_count_crosses_the_wire_for_free_text(self):
+        # `steps` stays server-side, unlike `askSet[*].steps`: it is measured off
+        # a frame that is already up to a poll stale by the time a thumb moves,
+        # and `respond_run` re-reads and re-decides. What crosses is enough to
+        # word a button and useless for driving one.
+        for pane in (_capture("ask_multi.pane"), _INPUT_PANE, ""):
+            with self.subTest(pane=pane[:20]):
+                server._pane_contents = lambda rid, p=pane: p
+                self.assertEqual(set(server._board()["focus"]["textRoute"]),
+                                 {"route", "reason"})
 
     def test_an_idle_run_carries_no_ask_set(self):
         server.cached_runs = lambda: [{
@@ -3155,7 +3251,12 @@ class RespondRunTests(unittest.TestCase):
     """respond_run drives a live Run's pane over `tmux send-keys` (ADR 0010,
     slice 2). Text is typed literally (`-l`) then submitted by a SEPARATE Enter;
     selector keys map to fixed tmux key names sent bare; a stale/bogus id
-    no-ops, exactly as close_run does."""
+    no-ops, exactly as close_run does.
+
+    `self.pane` is what `capture-pane` hands back, because text is no longer
+    typed at whatever happens to be on screen: it is ROUTED off a read of that
+    screen (ADR 0020, `_text_route`). The default here is an ordinary input box,
+    which is the plain route and the behaviour this class has always asserted."""
 
     def setUp(self):
         self._saved_list, self._saved_tmux = server.list_runs, server._tmux
@@ -3163,12 +3264,15 @@ class RespondRunTests(unittest.TestCase):
         server.invalidate_runs()
         self.calls = []
         self.resolvable = True
+        self.pane = _INPUT_PANE
 
         def fake(*args, check=True):
             self.calls.append(args)
             if args[0] == "list-panes":
                 out = f"{_RUN}\x1f%7\n" if self.resolvable else ""
                 return types.SimpleNamespace(returncode=0, stdout=out, stderr="")
+            if args[0] == "capture-pane":
+                return types.SimpleNamespace(returncode=0, stdout=self.pane, stderr="")
             return types.SimpleNamespace(returncode=0, stdout="", stderr="")
 
         server._tmux = fake
@@ -3223,6 +3327,92 @@ class RespondRunTests(unittest.TestCase):
         self.assertFalse(server.respond_run(_RUN, "hi"))
         self.assertEqual(self._sends(), [])
 
+    # --- free text is ROUTED, never typed at whatever is on screen (ADR 0020) --
+
+    def test_free_text_steps_to_the_widgets_own_type_something_row_and_types_into_it(self):
+        # MEASURED, on 2.1.220. The fixture's cursor is on row 0 and
+        # `Type something.` is row 2 — the same count ADR 0020's table measured as
+        # landing there. Then the text goes STRAIGHT in: the highlighted row IS
+        # the buffer. An Enter to "open" it rejects the tool use instead (the live
+        # probe returned `The user doesn't want to proceed with this tool use`),
+        # so the ONLY Enter is the submit at the end.
+        self.pane = _capture("ask_multi.pane")
+        self.assertTrue(server.respond_run(_RUN, "a considered answer"))
+        sends = self._sends()
+        typed = ("send-keys", "-t", "%7", "-l", "a considered answer")
+        self.assertEqual(sends, [("send-keys", "-t", "%7", "Down"),
+                                 ("send-keys", "-t", "%7", "Down"),
+                                 typed,
+                                 ("send-keys", "-t", "%7", "Enter")])
+
+    def test_every_lead_in_key_is_its_own_send_keys_call(self):
+        # Also measured: `send-keys Down Down Enter` — one call, three key names —
+        # had both Downs SILENTLY DROPPED by the live TUI, and the Enter then
+        # answered with the highlighted row. tmux writes a batched call as one
+        # burst and the TUI reads it as a single keypress. One key per call is the
+        # Ask Set's tap path, and it is the one that works.
+        self.pane = _capture("ask_multi.pane")
+        server.respond_run(_RUN, "prose")
+        for c in self._sends():
+            self.assertLessEqual(len(c), 5)          # ("send-keys","-t",pane,[-l,]arg)
+            self.assertEqual(len([a for a in c[3:] if a != "-l"]), 1)
+
+    def test_the_step_count_is_measured_in_rows_on_every_widget_shape(self):
+        # Rows, not options: `Chat about this` and `Type something` are ordinary
+        # numbered rows, and counting in options is the wrong-answer table.
+        for name, downs in (("ask_single.pane", 3), ("ask_toggled.pane", 2)):
+            with self.subTest(name):
+                self.calls, self.pane = [], _capture(name)
+                self.assertTrue(server.respond_run(_RUN, "prose"))
+                self.assertEqual(self._sends()[:downs],
+                                 [("send-keys", "-t", "%7", "Down")] * downs)
+
+    def test_a_widget_with_no_type_something_row_refuses_without_consent(self):
+        pane = _capture("ask_multi.pane").replace("Type something.", "Ponder this.")
+        self.pane = pane
+        self.assertFalse(server.respond_run(_RUN, "prose"))
+        self.assertEqual(self._sends(), [])   # not one key, least of all the text
+
+    def test_and_with_consent_it_escapes_first_then_types(self):
+        self.pane = _capture("ask_multi.pane").replace("Type something.", "Ponder this.")
+        self.assertTrue(server.respond_run(_RUN, "prose", cancel_ask=True))
+        sends = self._sends()
+        esc = ("send-keys", "-t", "%7", "Escape")
+        typed = ("send-keys", "-t", "%7", "-l", "prose")
+        self.assertIn(esc, sends)
+        self.assertIn(typed, sends)
+        self.assertLess(sends.index(esc), sends.index(typed))
+
+    def test_an_unpainted_cursor_takes_the_esc_route_rather_than_counting_from_zero(self):
+        # The row is there; the cursor is not. A step count from a defaulted 0 is
+        # ADR 0021's archetype, so the route degrades to the honest destructive
+        # one — which still needs consent, and still says so.
+        self.pane = _capture("ask_multi.pane").replace("❯ 1.", "  1.")
+        self.assertFalse(server.respond_run(_RUN, "prose"))
+        self.assertEqual(self._sends(), [])
+        self.assertTrue(server.respond_run(_RUN, "prose", cancel_ask=True))
+        self.assertIn(("send-keys", "-t", "%7", "Escape"), self._sends())
+
+    def test_consent_can_only_permit_the_esc_route_never_select_it(self):
+        self.pane = _capture("ask_multi.pane")
+        self.assertTrue(server.respond_run(_RUN, "prose", cancel_ask=True))
+        self.assertNotIn(("send-keys", "-t", "%7", "Escape"), self._sends())
+        self.assertEqual(self._sends()[:2], [("send-keys", "-t", "%7", "Down")] * 2)
+
+    def test_an_unreadable_pane_sends_nothing_at_all(self):
+        # THE BUG BEING FIXED MUST NOT SURVIVE AS THE FALLBACK: a blind
+        # `send-keys -l` into a screen nobody read is what this whole slice is
+        # about (ADR 0021).
+        self.pane = ""
+        self.assertFalse(server.respond_run(_RUN, "prose"))
+        self.assertFalse(server.respond_run(_RUN, "prose", cancel_ask=True))
+        self.assertEqual(self._sends(), [])
+
+    def test_the_keys_path_takes_no_capture_at_all(self):
+        # An option tap stays ONE round trip: routing is a property of free text.
+        server.respond_run(_RUN, "", ["down", "enter"])
+        self.assertEqual([c for c in self.calls if c[0] == "capture-pane"], [])
+
 
 class RespondUnsentGuardTests(_HttpCase):
     """`POST /api/respond` refuses to blind-append onto a box that already holds
@@ -3244,8 +3434,8 @@ class RespondUnsentGuardTests(_HttpCase):
                       ("TOKEN", "_pane_contents", "respond_run")}
         server.TOKEN = "a-shared-secret"
         cls.sent = []
-        server.respond_run = lambda rid, text="", keys=None: (
-            cls.sent.append((rid, text, keys)) or True)
+        server.respond_run = lambda rid, text="", keys=None, cancel_ask=False: (
+            cls.sent.append((rid, text, keys, cancel_ask)) or True)
         cls.httpd = ThreadingHTTPServer(("127.0.0.1", 0), server.Handler)
         cls.port = cls.httpd.server_address[1]
         cls.thread = threading.Thread(target=cls.httpd.serve_forever, daemon=True)
@@ -3266,10 +3456,55 @@ class RespondUnsentGuardTests(_HttpCase):
                           {"runId": _RUN, "text": text, "token": "a-shared-secret"})
 
     def test_a_widget_frame_is_not_reported_as_unsent_text(self):
+        """A widget's body is not a draft — the ⚠ and its clear button may never
+        appear over a live question (that was ADR 0020's original bug).
+
+        WHAT THIS USED TO ASSERT, AND WHY IT WAS WRONG. It checked `200` and
+        `assertTrue(self.sent)` and stopped there, which enshrined the hole the
+        rewording opened: suppressing the false ⚠ removed the ONLY thing standing
+        between a free-text send and a bare `-l` + `Enter` into a live selector.
+        The old 409 was badly worded (it called the question "unsent text") but it
+        did stop the send; after the rewording nothing did, and the endpoint
+        answered the Ask with whatever row the cursor sat on. So the assertion is
+        not "it went through" — it is that it went through ROUTED."""
         server._pane_contents = lambda rid: _capture("ask_multi.pane")
         status, body = self._respond()
         self.assertEqual(status, 200, body)
         self.assertTrue(self.sent)
+        # The route is the point: this frame HAS a `Type something` row, so the
+        # send is safe precisely because `respond_run` will step to it. Asserted
+        # here rather than trusted, because this endpoint is where a blind send
+        # would re-enter.
+        self.assertEqual(
+            server._text_route(server._read_pane(_capture("ask_multi.pane"))).route,
+            "affordance")
+
+    def test_no_text_send_can_reach_a_bare_send_keys_while_a_widget_is_up(self):
+        # The finding in one assertion, over every widget capture on disk and the
+        # two ways a frame can be unreadable: a text send while a widget owns the
+        # screen is either ROUTED or REFUSED, and 200-with-a-blind-`-l` is not one
+        # of the outcomes. `_pane_input` is deliberately still fooled by these
+        # frames (that is the hazard), so the guard cannot be the unsent read.
+        for name in ("ask_multi", "ask_single", "ask_toggled"):
+            with self.subTest(name):
+                server._pane_contents = lambda rid, n=name: _capture(n + ".pane")
+                type(self).sent = []
+                status, body = self._respond()
+                route = server._text_route(server._read_pane(_capture(name + ".pane")))
+                self.assertEqual(route.route, "affordance", body)
+                self.assertEqual(status, 200, body)
+        # ...and where the routing cannot be worked out, the send is refused with
+        # a named reason rather than typed anyway.
+        for pane, why in ((_capture("ask_multi.pane").replace("Type something.", "Ponder."), "esc"),
+                          (_capture("ask_multi.pane").replace("❯ 1.", "  1."), "esc"),
+                          ("", "refuse")):
+            with self.subTest(why):
+                server._pane_contents = lambda rid, p=pane: p
+                type(self).sent = []
+                status, body = self._respond()
+                self.assertEqual(status, 409)
+                self.assertEqual(body["route"], why)
+                self.assertEqual(self.sent, [])
 
     def test_a_real_draft_still_stops_the_send(self):
         # The guard itself is intact — only what counts as "the box" changed.
@@ -3278,6 +3513,59 @@ class RespondUnsentGuardTests(_HttpCase):
         self.assertEqual(status, 409)
         self.assertEqual(body["existing"], "draft a reply but do not send")
         self.assertEqual(self.sent, [])
+
+    # --- the destructive route is never the silent default (ADR 0020) ---------
+
+    def _no_row(self):
+        return _capture("ask_multi.pane").replace("Type something.", "Ponder this.")
+
+    def test_a_send_that_would_cancel_the_ask_stops_and_says_so_in_words(self):
+        server._pane_contents = lambda rid: self._no_row()
+        status, body = self._respond()
+        self.assertEqual(status, 409)
+        self.assertEqual(body["route"], "esc")
+        self.assertEqual(body["reason"], "no-row")
+        # Plain language, not a code: the phone puts this in front of a person.
+        self.assertIn("CANCELS the question", body["message"])
+        self.assertEqual(self.sent, [])
+
+    def test_consent_is_its_own_field_and_reaches_respond_run(self):
+        # NOT `force`. Agreeing to append below a draft is a different act from
+        # agreeing to cancel a question, so it cannot be the same flag.
+        server._pane_contents = lambda rid: self._no_row()
+        status, _ = self._post("/api/respond", {"runId": _RUN, "text": "prose",
+                                                "token": "a-shared-secret", "force": True})
+        self.assertEqual(status, 409)
+        status, _ = self._post("/api/respond", {"runId": _RUN, "text": "prose",
+                                                "token": "a-shared-secret", "cancelAsk": True})
+        self.assertEqual(status, 200)
+        self.assertEqual(self.sent[-1][3], True)
+
+    def test_an_unreadable_screen_refuses_with_no_send_anyway_offered(self):
+        server._pane_contents = lambda rid: ""
+        status, body = self._respond()
+        self.assertEqual(status, 409)
+        self.assertEqual(body["route"], "refuse")
+        self.assertEqual(self.sent, [])
+        # ...and consent does not buy past it either: there is no route at all.
+        status, _ = self._post("/api/respond", {"runId": _RUN, "text": "prose",
+                                                "token": "a-shared-secret", "cancelAsk": True})
+        self.assertEqual(status, 409)
+        self.assertEqual(self.sent, [])
+
+    def test_a_widget_with_the_row_needs_no_consent_and_no_prompt(self):
+        server._pane_contents = lambda rid: _capture("ask_multi.pane")
+        status, _ = self._respond()
+        self.assertEqual(status, 200)
+        self.assertEqual(self.sent[-1][3], False)
+
+    def test_the_keys_only_path_is_not_gated_by_any_of_this(self):
+        # An option tap on a widget frame: no text, so no route, no capture, no
+        # prompt — the Ask Set's own path is untouched.
+        server._pane_contents = lambda rid: self._no_row()
+        status, _ = self._post("/api/respond", {"runId": _RUN, "keys": ["down", "enter"],
+                                                "token": "a-shared-secret"})
+        self.assertEqual(status, 200)
 
 
 class ClearInputTests(unittest.TestCase):

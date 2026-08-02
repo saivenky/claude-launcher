@@ -115,6 +115,12 @@ writing to the Run's pane (`tmux send-keys`; ADR 0010). The two-way sibling of *
 Launcher's own driving channel, distinct from the **Remote Control bridge**
 (Anthropic's cloud, one session, the Claude app). When the Run is busy,
 Claude Code's native input queue absorbs the response until the next turn.
+Free text is *routed*, never typed at whatever is on screen: while an **Ask
+Set** owns the pane it goes through the widget's own `Type something` row, and
+where that row cannot be used the only route left presses `Esc` first — which
+cancels the **Ask** instead of answering it, so the phone says so and asks
+before it happens (ADR 0020). A screen that could not be read is refused, not
+typed at (ADR 0021).
 Because it can *approve* tool calls, Respond removes the human-in-the-loop
 backstop — so it, unlike the read-only verbs, is gated by a shared secret.
 _Avoid_: drive (the channel-agnostic *capability*, not this one channel);

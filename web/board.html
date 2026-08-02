@@ -465,6 +465,18 @@ textarea.ti{display:block;resize:none;overflow-y:auto}
 .send{flex:0 0 auto}
 .send{background:var(--accent);color:var(--on-accent);border:0;border-radius:7px;padding:8px 16px;
 font:inherit;font-size:0.8125rem;font-weight:700;cursor:pointer}
+/* THE DESTRUCTIVE ROUTE (ADR 0020). When the question widget paints no usable
+`Type something` row, free text can only reach the Run by pressing Esc first —
+which CANCELS the ask instead of answering it. This keeps the send's weight and
+its place (free text must stay drivable from the phone) and loses its fill: an
+outline in `--red` reads as "this one is not the ordinary send" without becoming
+the brightest thing on the bar. Both themes define the token. */
+.send.danger{background:transparent;color:var(--red);border:1px solid var(--red)}
+/* The same warning in prose, above the box, so it can be READ before you type
+rather than only in the confirm that follows the tap. Prose, so it wears the
+reading face (ADR 0018) — and `block`, because `.queued`'s flex row was built for
+a single short line. */
+.queued.warn{display:block;font-family:var(--face);line-height:1.5;color:var(--red)}
 /* In the card's flow, above the sticky composer — not inside it. It wraps now,
 which it has to: the card lost `overflow:hidden` (see .focus), and this row of
 six controls was only ever fitting a phone by being clipped by it. */

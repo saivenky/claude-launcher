@@ -235,6 +235,25 @@ async function sendRespond(f, payload, force) {
   } catch (e) { toast("respond unreachable"); return false; }
   const data = await r.json().catch(() => ({}));
   if (r.status === 401) { localStorage.removeItem("cl_token"); toast("token rejected — re-enter"); return false; }
+  // The screen could not be read, so nothing was typed at it (ADR 0021). There
+  // is no "send anyway" here on purpose: the anyway IS the bug — a blind
+  // send-keys at a frame nobody read.
+  if (r.status === 409 && data.route === "refuse") {
+    toast(data.message || "could not read the screen — nothing sent");
+    return false;
+  }
+  // The destructive route, raised from the pane as it is NOW rather than as the
+  // last poll saw it. The button below is already labelled for this when the
+  // poll agreed; this is the same question asked against a fresher read, and it
+  // is what makes a stale label unable to cancel a question silently.
+  if (r.status === 409 && data.route === "esc") {
+    if (window.confirm((data.message || "sending this cancels the question") +
+        "\n\nCancel the question and send your text to the input box anyway?")) {
+      return sendRespond(f, Object.assign({}, payload, {cancelAsk: true}), force);
+    }
+    toast("cancelled — the ask is untouched");
+    return false;
+  }
   if (r.status === 409) {   // the box already has unsent text — never blind-append
     if (window.confirm("This session already has unsent text:\n\n" + (data.existing || "") +
         "\n\nSend your reply anyway? It will be added below the above.")) {
@@ -1425,7 +1444,16 @@ const ASK_WHY = {
   "no-cursor": "the screen paints no cursor, so there is nothing to count " +
     "keystrokes from.",
 };
-const ASK_WHY_TAIL = " Answer at the terminal, or send prose in the box below.";
+// WHAT THE BOX BELOW ACTUALLY DOES, which is not what this line used to claim.
+// Three of the five refusals above happen WHILE the widget is still on screen,
+// and "send prose in the box below" was then an invitation to the destructive
+// path: with no cursor to step from there is nothing to count keystrokes from,
+// so free text can only reach that Run by pressing Esc first — which cancels the
+// question. The server decides which route is available and the composer is
+// labelled for it (`textRoute`), so this points at that label rather than
+// promising an outcome it does not control.
+const ASK_WHY_TAIL = " Answer at the terminal, or use the box below — it says " +
+  "there whether prose can answer this question or would cancel it.";
 
 // The Ask block: which Ask of the Set, its header, the full question, and the
 // options with the descriptions that decide them.
@@ -1635,6 +1663,20 @@ function focusCard(f) {
     respond.append(el("div", "queued",
       "⏳ busy — what you send queues until this turn ends"));
   }
+  // WHERE THIS TEXT WOULD ACTUALLY GO (ADR 0020). A question widget is not an
+  // input box: the server routes prose through the widget's own `Type something`
+  // row, and when that row cannot be used the only route left is `Esc`, which
+  // CANCELS the ask. That is not an ordinary send and it does not get the
+  // ordinary button — it is said here, before you type, and again in a confirm
+  // before it happens. The label is computed server-side (`textRoute`); this
+  // client never counts a keystroke of its own.
+  const cancels = ((f.textRoute || {}).route || "") === "esc";
+  if (cancels) {
+    respond.append(el("div", "queued warn",
+      "⚠ this question has no usable “Type something” row — sending prose here " +
+      "presses Esc first, which CANCELS the ask rather than answering it. Your " +
+      "text then goes to the ordinary input box."));
+  }
   const row = el("div", "replyrow");
   // A TEXTAREA, one row at rest and pixel-identical to the `<input>` it replaces
   // (ADR 0015). **Respond** carries prose — a paragraph, a path, a pasted error —
@@ -1646,14 +1688,32 @@ function focusCard(f) {
   ti.rows = 1;
   ti.placeholder = isBlocked(f) ? "answer…"
     : f.lane === "working" ? "queue a note for the next turn…" : "type your reply…";
-  const send = el("button", "send", "respond →");
+  // A DIFFERENT CONTROL FOR A DIFFERENT ACT. Not a disabled send (free text must
+  // always have a route away from the desk) and not the same `respond →` in a
+  // warning colour: the verb itself changes, because what the tap does changes.
+  const send = el("button", cancels ? "send danger" : "send",
+                  cancels ? "cancel ask & send →" : "respond →");
   // Clear only once the text is actually sent. The box now survives rebuilds,
   // so clearing optimistically (or not at all) would carry a stale value back
   // in and make a sent reply look unsent. It has to shrink back with the text —
   // an emptied five-row box would leave the bar standing at five rows.
   const fire = async () => {
     const v = ti.value.trim();
-    if (v && await sendRespond(f, {text: v})) { ti.value = ""; growComposer(ti); }
+    if (!v) return;
+    // The label came from a poll and a poll is up to four seconds old, so the
+    // send carries consent explicitly and the server re-reads the pane and
+    // decides again. Both halves are needed: this confirm is what stops a
+    // destructive act being one tap, and the server's own check is what stops a
+    // stale label authorising one.
+    if (cancels && !window.confirm(
+        "Esc CANCELS this question — it does not answer it. The Run drops to " +
+        "its ordinary input box and your text goes there, with the question " +
+        "unanswered.\n\nCancel the ask and send?")) {
+      toast("cancelled — the ask is untouched");
+      return;
+    }
+    const payload = cancels ? {text: v, cancelAsk: true} : {text: v};
+    if (await sendRespond(f, payload)) { ti.value = ""; growComposer(ti); }
   };
   send.addEventListener("click", fire);
   ti.addEventListener("input", () => growComposer(ti));

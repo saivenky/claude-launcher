@@ -1278,7 +1278,8 @@ _RESPOND_KEYS = {
 }
 
 
-def respond_run(run_id: str, text: str = "", keys: list | None = None) -> bool:
+def respond_run(run_id: str, text: str = "", keys: list | None = None,
+                cancel_ask: bool = False) -> bool:
     """Inject a reply and/or keys into a live Run's pane. Acts only on a
     currently-live **Managed Run** (mirrors close_run); a stale, bogus or
     foreign id no-ops.
@@ -1289,6 +1290,20 @@ def respond_run(run_id: str, text: str = "", keys: list | None = None) -> bool:
     newline can never ride inside the literal text and stick unsent in the box.
     Selector keys are bare tmux key names from the fixed map (no `-l`), so the
     client can never inject a raw escape sequence.
+
+    TEXT IS ROUTED, NOT TYPED (ADR 0020). Before a single character is sent the
+    pane is read and `_text_route` decides where it can land: straight into the
+    input box, through the widget's own `Type something` row, or — only with
+    `cancel_ask` — after an `Esc` that cancels the Ask. A frame that could not be
+    read sends NOTHING. The routing lives here, in the one function that actually
+    presses the keys, so no caller and no client can skip it: the endpoint's own
+    read is for wording the confirmation, and this read is the one that decides.
+    It costs one `capture-pane` per free-text send and none at all on the keys
+    path, so an option tap is still a single round trip (ADR 0014).
+
+    `cancel_ask` is CONSENT, not a preference: it can only ever permit the `Esc`
+    route, never select it. Passing it on a frame that has a `Type something` row
+    changes nothing.
     """
     keys = keys or []
     if not _is_managed_run(run_id):
@@ -1305,6 +1320,40 @@ def respond_run(run_id: str, text: str = "", keys: list | None = None) -> bool:
 
     ok = False
     if text:
+        route = _text_route(_read_pane(_pane_contents(run_id)))
+        if route.route == "refuse":
+            return False            # nobody read the screen — type nothing at it
+        if route.route == "esc" and not cancel_ask:
+            return False            # cancelling an Ask is never the silent default
+        lead: list[str] = []
+        if route.route == "affordance":
+            # Step the cursor onto the widget's own free-text row and STOP.
+            # THE ROW IS THE BUFFER: while it is highlighted the literal text
+            # types straight into it (the label is replaced by what you type, and
+            # the widget's own hint gains `ctrl+g to edit in Nvim`), and the
+            # trailing Enter below submits it as the answer. Measured on a live
+            # probe against 2.1.220: that sequence produced the tool_result
+            # `The user answered: "Pick a third"="measure it first, then decide"`.
+            #
+            # An Enter here to "open" the row does NOT open it — it REJECTS the
+            # tool use outright (`The user doesn't want to proceed with this tool
+            # use`) and drops to the ordinary input box. The first version of
+            # this code sent one, and the probe is the only reason we know.
+            lead = [("Down" if route.steps > 0 else "Up")] * abs(route.steps)
+        elif route.route == "esc":
+            lead = ["Escape"]       # cancels the Ask Set, dropping to the input box
+        # ONE `send-keys` PER KEY, measured the hard way. Batched as
+        # `send-keys Down Down Enter` — one call, three key names — a live probe
+        # had the two Downs SILENTLY DROPPED and the Enter answer the highlighted
+        # row: the tool recorded `ALPHA`, an option nobody chose, which is the
+        # very defect this routing exists to end. tmux writes a batched call as
+        # one burst and the TUI reads it as a single keypress. The Ask Set's own
+        # tap path already sends one key per call and works; this matches it.
+        # A half-sent navigation must never be followed by text, so the first
+        # failure aborts before anything is typed.
+        for k in lead:
+            if not send(k):
+                return False
         if send("-l", text):        # literal text, no bracketed paste
             send("Enter")           # submit is a SEPARATE keystroke (landmine #3)
             ok = True
@@ -2176,7 +2225,17 @@ _CHECKBOX = ("☐", "☒", "☑", "✔", "✓")
 # Matched with the trailing full stop stripped: on a multiSelect frame the row
 # renders `4. [ ] Type something` — no period — and an affordance read as an
 # option is one seat's worth of cursor drift on every row below it.
-_AFFORDANCES = ("Type something", "Chat about this")
+#
+# `_FREE_TEXT_ROW` is named on its own because it is not merely a row to skip:
+# it is the ONLY way free text reaches a Run whose screen a question widget owns
+# (ADR 0020, `_text_route`). A `send-keys -l` typed straight at the widget was
+# measured on a live probe to leave the frame byte-identical — eleven characters,
+# no filter, no echo, no error — and the Enter after it then answered with
+# whatever row the cursor sat on. So when this literal stops matching, free text
+# does not break loudly: it falls to the `Esc` route, which cancels the Ask
+# rather than answering it, and says so on the button.
+_FREE_TEXT_ROW = "Type something"
+_AFFORDANCES = (_FREE_TEXT_ROW, "Chat about this")
 # The marks a multiSelect toggle box can carry, ticked or blank.
 _TOGGLE_MARKS = " ✔✓xX"
 # The characters a horizontal rule is drawn from. Rules frame the input box, and
@@ -2559,6 +2618,102 @@ def _read_pane(text: str) -> _PaneRead:
     )
 
 
+class _TextRoute(typing.NamedTuple):
+    """How free text must reach a Run's pane, decided from ONE read of it.
+
+    The composer's placeholder says `answer…`, and until this existed it lied.
+    ADR 0020 measured the old path on a live probe: `send-keys -l <text>` at a
+    question widget left the frame BYTE-IDENTICAL — eleven characters produced no
+    filter, no echo, no error — and the separate `Enter` then selected the
+    highlighted row, returning an option nobody chose. A considered answer was
+    discarded and replaced by whatever sat under the cursor. So a widget on
+    screen is not an input box, and text may not simply be typed at it.
+
+      route   "plain"      no widget owns the screen. Type it, then Enter — the
+                           path the ordinary composer has always taken, on an
+                           idle Run, a working Run and a permission menu alike.
+              "affordance" a widget owns the screen AND paints its own
+                           `Type something` row. Step to that row and type: the
+                           ROW IS THE BUFFER, and the trailing Enter submits it.
+                           Measured live on 2.1.220, this is the one route whose
+                           text comes back as `The user answered: "<question>"=
+                           "<your words>"` — an answer landing as an answer.
+              "esc"        a widget owns the screen and that row cannot be used.
+                           `Escape` cancels the Ask Set and drops to the real
+                           input box, where the text then lands. DESTRUCTIVE, and
+                           measured to be so: the tool comes back `The user
+                           doesn't want to proceed with this tool use ... STOP
+                           what you are doing`, and your words arrive after it as
+                           an ordinary message. Cancelling a question is not
+                           answering it, so it is
+                           never taken without explicit consent, and the phone
+                           says so on the button before it happens. It exists
+                           because free text must ALWAYS have a route: nearly
+                           everything must be drivable away from the desk.
+              "refuse"     nobody read the screen. No keystroke may follow, and
+                           in particular not a bare `send-keys -l`: typing into a
+                           frame you could not read is precisely the defect this
+                           function exists to end, and it must not survive as the
+                           fallback (ADR 0021).
+      steps   signed row steps for "affordance" — positive is that many Down,
+              negative that many Up — measured against the widget's ROWS, the
+              same space as `askSet[*].steps`, because the cursor steps through
+              affordances too. None on every other route.
+      reason  why this is not the ordinary path, in the same named-refusal
+              vocabulary the Ask Set uses: "" (plain or affordance — nothing was
+              wrong), "no-row" (the widget paints no `Type something`),
+              "no-cursor" (it does, but the frame paints no cursor, so no
+              keystroke count can be measured), "no-pane" (no capture at all).
+    """
+
+    route: str
+    steps: int | None
+    reason: str
+
+
+def _text_route(pane: _PaneRead) -> _TextRoute:
+    """Where free text goes, given what the screen shows. See `_TextRoute`.
+
+    Computed ONCE, server-side, and the count is never handed to a client to
+    redo: `steps` is arithmetic over a frame only the server has read, and a
+    client recomputing it from a payload one poll old is ADR 0020's wrong-answer
+    table with an extra step of latency in it.
+
+    Takes a `_PaneRead` — never a raw pane string — for the reason `_ask_set`
+    does: an argument that can be got wrong silently is the same defect as a
+    defaulted cursor (ADR 0021).
+    """
+    if not isinstance(pane, _PaneRead):
+        raise TypeError("_text_route() takes a _PaneRead from _read_pane(), "
+                        f"not {type(pane).__name__}")
+    if not pane.captured:
+        # NOT "plain". `plain` here would be a blind `send-keys -l` into a screen
+        # nobody looked at — the exact shape of the bug being fixed.
+        return _TextRoute("refuse", None, "no-pane")
+    if not pane.widget:
+        # No widget owns the screen, so the input box does: the ordinary Run,
+        # idle or working, keeps the path it has always had.
+        return _TextRoute("plain", None, "")
+    rows = pane.widget.get("rows") or []
+    cursor = pane.widget.get("cursor")
+    # `label` is already stripped of its toggle box by `_widget_rows`; the
+    # trailing full stop is the multiSelect/single-select rendering difference
+    # (`3. Type something.` vs `4. [ ] Type something`), matched the same way
+    # `_AFFORDANCES` is.
+    target = next((i for i, r in enumerate(rows)
+                   if r.get("affordance") and r.get("label", "").rstrip(".") == _FREE_TEXT_ROW),
+                  None)
+    if target is None:
+        return _TextRoute("esc", None, "no-row")
+    if cursor is None:
+        # The row is there and stepping to it is meaningless without a cursor to
+        # step FROM. `Esc` needs no reading of the screen to be exact, so free
+        # text still has a route — but it is the destructive one, and it is
+        # labelled as such rather than counted from a cursor nobody read.
+        return _TextRoute("esc", None, "no-cursor")
+    return _TextRoute("affordance", target - cursor, "")
+
+
 def _tmux_server_down() -> bool:
     """True when the claude-launcher tmux server isn't running.
 
@@ -2699,9 +2854,23 @@ def _board(focus_sid: str = "") -> dict:
         # key the client reads today, and it still serves the permission menu,
         # which has no Ask Set. It now carries the CURRENT Ask's options only —
         # never the whole Set's concatenated, which is the bug (ADR 0020).
+        # WHERE THE REPLY BOX'S TEXT WOULD GO, from the same one capture. The
+        # phone needs this BEFORE you type, because on one of the routes sending
+        # prose presses `Esc` first and cancels the question — that may not be
+        # the silent default, and a label is the only thing that can say so ahead
+        # of the tap (`_text_route`; ADR 0020).
+        #
+        # `steps` is deliberately NOT on the wire. It is measured against a frame
+        # this poll read and would be up to a poll stale by the time a thumb
+        # moved; the server re-reads and re-decides inside `respond_run`, which
+        # is the only place a keystroke count is ever computed. What crosses is
+        # the NAME of the route and why — enough to word a button, useless for
+        # driving one.
+        route = _text_route(pr)
         focus = dict(focus, lane=lane, aiTitle=_ai_title(focus["sessionId"]),
                      scrollback=scrollback, ask=ask, options=options,
-                     cursor=cursor, askSet=askset, pendingInput=pending, pinned=pinned)
+                     cursor=cursor, askSet=askset, pendingInput=pending, pinned=pinned,
+                     textRoute={"route": route.route, "reason": route.reason})
     # serverDown distinguishes a dead tmux server (all Runs gone silently) from
     # an ordinary empty board. The web client does not render this yet — plumbing
     # only; the empty-state UI is a documented follow-up (ADR 0010).
@@ -2992,6 +3161,34 @@ class Handler(BaseHTTPRequestHandler):
         if len(text) > MAX_RESPOND_CHARS or "\x00" in text:
             self._fail(400, "text too long")
             return
+        # Consent for the destructive route, and consent ONLY: it can permit an
+        # `Esc` that cancels the Ask, never ask for one.
+        cancel_ask = bool(body.get("cancelAsk"))
+        if text:
+            # ONE read, for the WORDING of what comes back. `respond_run` reads
+            # again and is authoritative — the two can disagree across a race,
+            # and when they do it is the later one that presses the keys.
+            pr = _read_pane(_pane_contents(run_id))
+            route = _text_route(pr)
+            if route.route == "refuse":
+                # ADR 0021: a failed read may not produce an action. The old code
+                # typed anyway, at whatever was on screen.
+                self._json(409, {"ok": False, "route": "refuse",
+                                 "message": "could not read this Run's screen, so "
+                                            "there is nowhere safe to put this text. "
+                                            "Nothing was sent."})
+                return
+            if route.route == "esc" and not cancel_ask:
+                # Said in full BEFORE anything happens, and answered by a
+                # different field than `force`: agreeing to append below a draft
+                # is not agreeing to cancel a question.
+                self._json(409, {"ok": False, "route": "esc", "reason": route.reason,
+                                 "message": "this Run is showing a question, and its "
+                                            "'Type something' row cannot be used, so "
+                                            "free text can only reach it by pressing "
+                                            "Esc first — which CANCELS the question "
+                                            "instead of answering it."})
+                return
         # Don't blind-append: if the box already holds unsent text (a half-typed
         # message, or a prior stuck send), refuse and hand it back so the caller
         # sees exactly what would be sent. `force` sends anyway (appends).
@@ -3005,13 +3202,21 @@ class Handler(BaseHTTPRequestHandler):
             # row the cursor was on. `/api/board` already gates `pendingInput`
             # this way; this path was the one that did not, and disagreeing with
             # itself is worse than either answer.
-            existing = _read_pane(_pane_contents(run_id)).unsent
+            #
+            # The SAME read the route came from, not a second capture: two reads
+            # of one screen can disagree, and an endpoint that disagrees with
+            # itself between two lines is worse than either answer.
+            existing = pr.unsent
             if existing:
                 self._json(409, {"ok": False, "message": "input box already has unsent text",
                                  "existing": existing[:500]})
                 return
-        if not respond_run(run_id, text, keys):
-            self._fail(400, "respond failed: not a live run, or nothing to send")
+        if not respond_run(run_id, text, keys, cancel_ask=cancel_ask):
+            # "the screen changed under it" is not padding: `respond_run` reads
+            # the pane again and can refuse on what it finds — a widget that
+            # appeared in the gap, or a capture that failed the second time.
+            self._fail(400, "respond failed: not a live run, nothing to send, "
+                            "or the screen changed under it")
             return
         self._json(200, {"ok": True})
 

@@ -189,6 +189,20 @@ the safe answer.
   "MultiAsk" is recorded as a flagged ambiguity: it names the rare case (326 of
   425 asks hold one question) and would force every call site to branch on
   cardinality, which is the branch the term exists to remove.
+- **The `Type something.` route was driven blind and had to be measured too.**
+  Two facts, both established by a live probe on 2.1.220 and neither guessable:
+  the highlighted row **is** the text buffer — the literal text types straight
+  into it and the trailing `Enter` submits it, returning
+  `The user answered: "<question>"="<your words>"` — while an `Enter` sent first
+  to "open" the row instead **rejects the tool use** (`The user doesn't want to
+  proceed with this tool use … STOP what you are doing`) and drops to the
+  ordinary input box, which is the `Esc` outcome by another name. And the
+  stepping keys must be **one `send-keys` call each**: batched as
+  `send-keys Down Down Enter` the two Downs were silently dropped and the Enter
+  answered the highlighted row — the wrong-answer table, reproduced by the fix
+  for it. Both are recorded in `respond_run`, and both are why this ADR's own
+  "capture before you edit" rule now extends to the keystrokes, not only the
+  parse.
 - **The one-tap answer now costs a poll per step.** A four-question Set is four
   round trips, and a three-tick `multiSelect` is four more. Accepted deliberately:
   the alternative is a script that cannot be verified between steps.

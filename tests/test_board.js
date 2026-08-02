@@ -218,11 +218,18 @@ let pendingText = "";
 let askSet = {};
 let legacyOpts = [];
 let legacyCursor = 0;
-const SB = () => [{role: "user", html: "<p>which one?</p>"},
+// Where the reply box's text would actually land (server.py::_text_route, ADR
+// 0020). Steerable, because one of its values — `esc` — means sending prose
+// CANCELS the ask rather than answering it, and the whole point is that the
+// phone says so before the tap instead of after it. The server ships the NAME
+// of the route and why; the keystroke count stays server-side.
+let textRoute = {route: "plain", reason: ""};
+const SB = () =>[{role: "user", html: "<p>which one?</p>"},
                   {role: "assistant", html: "<p>ctx</p>"}];
 let etagN = 0;
 const fetched = [];      // every URL board.js asked for
 const respondLog = [];
+const respondReplies = [];   // [status, body] per POST, in order; empty = plain 200
 const transferLog = [];  // every body posted to api/transfer
 let transferReply = {status: 200, body: {ok: true, runId: "r-transferred"}};
 // GET /api/recoverable: the **Resumable Sessions**, newest-first, with the
@@ -257,7 +264,7 @@ function fakeBoard(focusSid) {
       options: blocked ? legacyOpts : [],
       cursor: blocked ? legacyCursor : null,
       askSet: blocked ? askSet : {},
-      pendingInput: pendingText, pinned,
+      pendingInput: pendingText, pinned, textRoute,
     }) : null,
     upnext: order.filter((s) => s !== focus).map(strip),
     watching: world.filter((s) => s.lane === "working" && s !== focus).map(strip),
@@ -284,7 +291,13 @@ function fakeFetch(url, opts) {
     // A fresh ETag every time: the point is that unrelated churn forces renders.
     return res(200, fakeBoard(m ? decodeURIComponent(m[1]) : ""), "e" + (++etagN));
   }
-  if (url === "api/respond") { respondLog.push(JSON.parse(opts.body)); return res(200, {ok: true}); }
+  if (url === "api/respond") {
+    respondLog.push(JSON.parse(opts.body));
+    // Queued replies, consumed one per POST: the server refuses a send it would
+    // have to route through `Esc` and hands back a 409 naming the route, so a
+    // test has to be able to make the FIRST send fail and the retry succeed.
+    return respondReplies.length ? res(...respondReplies.shift()) : res(200, {ok: true});
+  }
   if (url === "api/transfer") {
     transferLog.push(JSON.parse(opts.body));
     return res(transferReply.status, transferReply.body);
@@ -2008,6 +2021,102 @@ const W = "wwwwwwww-3333-3333-3333-333333333333";
      JSON.stringify(respondLog.slice(n0)));
   legacyOpts = []; legacyCursor = 0;
 
+  // --- FREE TEXT: where it lands, and when landing it cancels the ask -------
+  // The seventh and worst of ADR 0020's defects, measured on a live probe: text
+  // typed straight at a question widget left the frame byte-identical, and the
+  // Enter after it answered with whatever row the cursor sat on. The server now
+  // routes it and says on the wire which route this is; everything below is the
+  // phone's half — the routing itself is not this file's to assert.
+  askSet = SET();
+  textRoute = {route: "affordance", reason: ""};
+  sandbox.setPinned(Q); await poll();
+  const sendBtn = () => focusWrap().querySelector(".send");
+  let n1 = respondLog.length, c1 = confirmLog.length;
+  ti().value = "the considered answer";
+  sendBtn().dispatch("click");
+  await settle();
+  ok("free text: the ordinary route is an ordinary send — no warning, no confirm",
+     sendBtn().textContent === "respond →" && !hasCls(sendBtn(), "danger") &&
+     confirmLog.length === c1 && respondLog.length === n1 + 1 &&
+     respondLog[n1].text === "the considered answer" &&
+     respondLog[n1].cancelAsk === undefined,
+     sendBtn().textContent + " || " + JSON.stringify(respondLog.slice(n1)));
+
+  textRoute = {route: "esc", reason: "no-row"};
+  await poll();
+  const warnOf = () => findAll(focusWrap(), "warn")[0];
+  ok("free text: when the only route is Esc, the button stops saying 'respond'",
+     sendBtn().textContent === "cancel ask & send →" && hasCls(sendBtn(), "danger"),
+     sendBtn().textContent + " / " + sendBtn().className);
+  ok("free text: and the composer says what Esc does, in words, before you type",
+     !!warnOf() && /CANCELS the ask/.test(warnOf().textContent),
+     warnOf() ? warnOf().textContent : "(no warning)");
+
+  n1 = respondLog.length; c1 = confirmLog.length;
+  confirmReply = false;
+  ti().value = "a considered answer";
+  sendBtn().dispatch("click");
+  await settle();
+  ok("free text: cancelling the ask is confirmed first, and 'no' sends nothing",
+     confirmLog.length === c1 + 1 && /CANCELS/.test(confirmLog[c1]) &&
+     respondLog.length === n1 && ti().value === "a considered answer",
+     JSON.stringify(confirmLog.slice(c1)) + " || " + JSON.stringify(respondLog.slice(n1)));
+
+  confirmReply = true;
+  n1 = respondLog.length;
+  sendBtn().dispatch("click");
+  await settle();
+  ok("free text: and 'yes' sends consent as its own field — never `force`",
+     respondLog.length === n1 + 1 && respondLog[n1].cancelAsk === true &&
+     respondLog[n1].force === undefined && respondLog[n1].text === "a considered answer",
+     JSON.stringify(respondLog.slice(n1)));
+
+  // The label came from a poll, and a poll is seconds old. The server re-reads
+  // the pane at send time and can refuse what the label said was fine — which is
+  // what stops a stale label cancelling a question silently.
+  textRoute = {route: "affordance", reason: ""};
+  await poll();
+  respondReplies.push([409, {ok: false, route: "esc", reason: "no-row",
+                             message: "free text can only reach it by pressing Esc first — " +
+                                      "which CANCELS the question instead of answering it."}]);
+  n1 = respondLog.length; c1 = confirmLog.length;
+  ti().value = "typed while the widget moved";
+  sendBtn().dispatch("click");
+  await settle();
+  ok("free text: a route that changed under the label is confirmed, then retried with consent",
+     confirmLog.length === c1 + 1 && /CANCELS the question/.test(confirmLog[c1]) &&
+     respondLog.length === n1 + 2 && respondLog[n1].cancelAsk === undefined &&
+     respondLog[n1 + 1].cancelAsk === true && ti().value === "",
+     JSON.stringify(respondLog.slice(n1)));
+
+  respondReplies.push([409, {ok: false, route: "esc", message: "cancels the question"}]);
+  confirmReply = false;
+  n1 = respondLog.length;
+  ti().value = "not this time";
+  sendBtn().dispatch("click");
+  await settle();
+  ok("free text: declining that one leaves the ask alone and keeps the text",
+     respondLog.length === n1 + 1 && ti().value === "not this time",
+     JSON.stringify(respondLog.slice(n1)));
+  confirmReply = true;
+
+  // NOBODY READ THE SCREEN. There is no "send anyway" here on purpose: the
+  // anyway IS the bug — a blind send-keys at a frame nobody looked at (ADR 0021).
+  respondReplies.push([409, {ok: false, route: "refuse",
+                             message: "could not read this Run's screen"}]);
+  n1 = respondLog.length; c1 = confirmLog.length;
+  ti().value = "into the dark";
+  sendBtn().dispatch("click");
+  await settle();
+  ok("free text: an unreadable screen is refused outright — not confirmed, not retried",
+     respondLog.length === n1 + 1 && confirmLog.length === c1 &&
+     ti().value === "into the dark" && /could not read/.test(doc.getElementById("toast").textContent),
+     doc.getElementById("toast").textContent + " || " + JSON.stringify(respondLog.slice(n1)));
+
+  textRoute = {route: "plain", reason: ""};
+  askSet = {};
+  ti().value = "";
+
   // THE LANDING, RE-DERIVED. The Ask block now runs hundreds of px past its own
   // question, so "clear the whole block" would spend the entire peek on every
   // Blocked landing and still come up short. The floor clears the question plus
@@ -2118,6 +2227,15 @@ const W = "wwwwwwww-3333-3333-3333-333333333333";
      [".opt", ".opt.on", ".opt.ro", ".askwhy", ".wlbl", ".askn", ".askhdr", ".obox",
       ".obox.unread", ".opt.done"].every((s) => !/#[0-9a-f]{3}|rgb/i.test(rule(s))),
      [".opt", ".askwhy", ".askn"].map(rule).join(" || "));
+
+  // The destructive send is a different control, and the stub runs no CSS — only
+  // the sheet can say it is dressed as one, in tokens both themes define.
+  ok("free text: the cancelling send is dressed as its own control, in tokens",
+     /var\(--red\)/.test(rule(".send.danger")) &&
+     !/#[0-9a-f]{3}|rgb/i.test(rule(".send.danger")) &&
+     !/#[0-9a-f]{3}|rgb/i.test(rule(".queued.warn")) &&
+     (HTML.match(/--red:/g) || []).length === 2,
+     rule(".send.danger") + " || " + rule(".queued.warn"));
 
   ok("column: one bounded reading column, wider than the old 640px phone width",
      /--col:740px/.test(HTML) && rule(".wrap").includes("var(--gut)"), rule(".wrap"));
