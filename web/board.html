@@ -66,10 +66,11 @@ header now, so the bottom edge is the composer and nothing else. Every offset
 that stood on it — .wrap's padding, #toast, .swipehint, .respond's sticky bottom
 and its .hid transform — lost the term rather than gained a zero. */
 /* The composer's height, and the only measured offset left. Only the swipe hint
-stands on it, and only until the first swipe — but a Blocked Focus grows this bar
-by a row of options, and the reply box is a textarea that grows per keystroke
-(board.js: growComposer), so it has to be measured rather than assumed, and
-re-measured as you type. */
+stands on it, and only until the first swipe — but the reply box is a textarea
+that grows per keystroke (board.js: growComposer), so it has to be measured
+rather than assumed, and re-measured as you type. A **Blocked** Focus used to
+grow this bar by a row of options too; since ADR 0020 the options are in the
+card, so the only thing that moves this number is your own typing. */
 --barh:52px;}
 /* A rem is --fs x 16px, and every font size below is one. See --fs. */
 html{font-size:calc(16px * var(--fs))}
@@ -366,8 +367,54 @@ on a 390px phone that put it under the composer. The landing takes a floor for i
 rather than this box moving (board.js: clearFloor): the peek above the seam is
 what pays, so nothing here is sticky and the read keeps the whole column. */
 .ask{padding:12px 16px;background:var(--panel2)}
+/* The eyebrow: what this block is, which **Ask** of the **Ask Set** it is, and
+the Ask's own header. Wraps, because a header is transcript text and a phone is
+390px. */
+.askhd{display:flex;align-items:baseline;gap:4px 8px;flex-wrap:wrap}
 .ask .lbl{font-size:0.625rem;letter-spacing:1px;text-transform:uppercase;color:var(--accent)}
-.ask .qtext{font-size:0.84375rem;margin-top:4px;color:var(--fg-max)}
+/* A counter and a tab label — machine text, so they keep the machine face while
+the question and the options below wear the reading one (ADR 0018). */
+.askn{font-size:0.625rem;letter-spacing:.5px;color:var(--dim)}
+.askhdr{font-size:0.625rem;letter-spacing:.5px;color:var(--q)}
+/* The question is PROSE — the full, unclipped text of it (ADR 0020) — so it
+wears the reading face like every other sentence on this page. */
+.ask .qtext{font-family:var(--face);font-size:0.84375rem;margin-top:5px;
+line-height:1.5;color:var(--fg-max)}
+/* WHY THERE IS NOTHING TO TAP. Said in plain language, in the card, next to the
+options it is talking about — a refusal the phone cannot explain is the silent
+default ADR 0020 removed, wearing a different hat. PLAIN LANGUAGE IS PROSE, so
+it wears the reading face: this is a sentence you read, not a field you scan. */
+.askwhy{font-family:var(--face);margin-top:8px;font-size:0.6875rem;
+line-height:1.5;color:var(--fg3)}
+.wlbl{color:var(--accent)}
+/* THE OPTIONS LIVE HERE NOW, NOT ON THE STICKY BAR (ADR 0020). They were chips
+in a wrapping row inside `.respond`; each one carries its description now —
+median 175 chars, p90 285 — and four of those is ~320px of sticky bar on an
+844px phone. One column, full width: the thing you read and the thing you tap
+are one target. */
+.opts{display:flex;flex-direction:column;gap:6px;margin-top:10px}
+.opt{display:block;width:100%;text-align:left;background:var(--panel);
+border:1px solid var(--line);border-radius:8px;padding:8px 10px;
+font:inherit;color:var(--fg);cursor:pointer}
+button.opt:hover{border-color:var(--accent)}
+/* Not a disabled button: a read-only Ask must still READ. Grey-out says "wait";
+the honest word is "not from here", and `.askwhy` above says it. */
+.opt.ro{cursor:default;border-style:dashed;opacity:.8}
+/* A ticked multiSelect option, drawn from the pane's own toggle state and never
+from local memory. Border AND box, so it survives a phone in sunlight. */
+.opt.on{border-color:var(--q);background:var(--panel2)}
+.orow{display:flex;align-items:baseline;gap:7px}
+.obox{color:var(--q);flex:none}
+/* A THIRD STATE, and it is not "unticked". `checked: null` is the pane failing
+to read the box, and drawing that as ☐ would be this slice's own bug in
+miniature — an unread value rendered as a confident one. */
+.obox.unread{color:var(--dim)}
+.olbl{font-family:var(--face);font-size:0.8125rem;color:var(--fg-max)}
+.odesc{font-family:var(--face);font-size:0.75rem;line-height:1.5;
+color:var(--fg2);margin-top:4px}
+/* Ticking is not answering — the widget holds every toggle until this. */
+.opt.done{text-align:center;border-color:var(--accent);color:var(--accent);
+font-size:0.75rem}
 /* THE COMPOSER *IS* THE BOTTOM EDGE (ADR 0015). It used to stand on the intake
 dock at `bottom:var(--dockh)`; the dock is deleted, so it stands on the viewport
 and owns the `env(safe-area-inset-bottom)` the dock absorbed on its behalf.
@@ -387,10 +434,8 @@ actually typing into it. */
 .respond.hid{transform:translateY(100%);opacity:0}
 /* A working Focus keeps its reply box; this says where the text goes. */
 .queued{display:flex;align-items:center;gap:6px;color:var(--m);font-size:0.6875rem;margin:0 2px 7px}
-.opts{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px}
-.opt{background:transparent;border:1px solid var(--line);color:var(--fg);border-radius:6px;
-padding:5px 12px;font:inherit;font-size:0.8125rem;cursor:pointer}
-.opt:hover{border-color:var(--accent);color:var(--accent)}
+/* `.opts` / `.opt` are NOT here any more — they are up in `.ask`, in the card
+(ADR 0020). This bar is the reply box and nothing else. */
 /* BOTTOM-ALIGNED, not centred: the box grows upward (see textarea.ti) and
 `respond →` must stay exactly where your thumb left it, so the row aligns on the
 one edge that does not move. Under the default `stretch` the button would have

@@ -1147,16 +1147,32 @@ function goNewest(seam) {
 // BELOW the **Scrollback** (focusCard), so a landing that parks the seam 250px
 // down and stops leaves the blocker off screen: measured at 390×844, the seam at
 // 250 and 535px of live prose put the Ask's top at 778 behind a composer whose
-// top was 744. The option buttons were fine — they ride the sticky `.respond` —
-// so the page offered three answers to a question it was not showing. A Blocked
-// Run is the case the whole Board exists for, so the landing takes a FLOOR: park
-// the seam, then scroll on until the Ask clears the composer.
+// top was 744. A Blocked Run is the case the whole Board exists for, so the
+// landing takes a FLOOR: park the seam, then scroll on until the Ask clears the
+// composer.
+//
+// THE OLD REASONING FOR WHAT THE FLOOR CLEARS IS DEAD (ADR 0020). It said an
+// over-tall Ask could run under the bar because "the options are already up" —
+// they rode the sticky `.respond`, so only the question was ever at risk. The
+// options are now IN the Ask block, each with its description, so an Ask that
+// runs under the bar takes every answer with it: the page would be showing a
+// question and no way to answer it, which is the same failure the floor exists
+// to prevent, one element further down.
+//
+// So the floor's bottom is the FIRST option, not the block's own bottom. Four
+// options at ADR 0020's median 175 chars is ~320px of options under the
+// question, more than the peek can ever buy — demanding all of them would spend
+// the entire peek on every Blocked landing and STILL come up short, which is a
+// worse trade than a flick. Through the first option guarantees the header, the
+// full question and at least one answer with the reasoning that decides it; the
+// rest is one flick, and it is now beneath something you can already read
+// rather than behind a bar. (An unsent-text warning still outranks it — you must
+// see that before you type over it — and it sits below the options anyway.)
 //
 // What gives way is the PEEK, and only the peek: the extra is capped at
 // `seam − HEAD_PAD`, so the seam never rises past the header and the newest prose
 // — the reply the Ask is asking about — is never scrolled off the top to make
-// room for it. An Ask taller than what that buys keeps its top on screen and
-// runs under the bar; it is one flick away and the options are already up.
+// room for it.
 function clearFloor(seam, top, bottom) {
   if (!top || !top.getBoundingClientRect) return;
   const bar = focusWrap.querySelector(".respond");
@@ -1363,6 +1379,154 @@ function scrollbackEl(entries) {
   return sb;
 }
 
+// --- The **Ask** block (ADR 0020) ------------------------------------------
+// The transcript says WHAT is asked; the pane says WHERE the widget is standing.
+// Everything drawn below comes off `focus.askSet`, and every keystroke sent
+// comes off the server's `steps` — a SIGNED count already measured against the
+// widget's real rows. The client does not recompute it and must not: the
+// predecessor of this code did `i - (f.cursor || 0)`, which counted an index
+// into the wrong list from a cursor that may never have been read, and `|| 0`
+// turned "nobody painted a cursor" into "the cursor is on row 0". That default
+// was right often enough to hide four separate defects for months.
+//
+// `askSet` is `{}` for an approval, an idle Run and a permission menu — none of
+// them has question structure to model. Those keep the legacy `ask` / `options`
+// / `cursor` triple, and the cursor rule above holds there too: `null` means
+// unread, which means untappable.
+
+// How far the widget is from where a tap wants it, as keystrokes. `steps` is
+// signed and already measured; all this does is spell it.
+//   single-select: step, then Enter — one tap is the answer.
+//   multiSelect:   step, then Space — one tap is ONE TOGGLE. Submitting is a
+//                  separate control, because the widget submits the whole
+//                  question at once and a tick is not an answer.
+function stepKeys(steps, multi) {
+  const n = Math.abs(steps || 0);
+  return Array(n).fill(steps >= 0 ? "down" : "up").concat(multi ? "space" : "enter");
+}
+
+// Every way the phone can refuse to tap, in the words of what it means to the
+// person holding it. The server names five and they do NOT mean the same thing:
+// two of them are the ordinary, benign race (the Ask was answered at the desk
+// between the transcript read and the pane capture) and read as "look again";
+// three of them are the transcript and the screen actually disagreeing, and read
+// as "do not trust this until you have looked at the terminal". A refusal you
+// cannot tell apart from a different refusal is half a silent failure.
+const ASK_WHY = {
+  "no-pane": "nothing read this Run's screen this time round, so where the " +
+    "widget is standing is unknown. The next poll usually settles it.",
+  "no-widget": "the screen shows no question at all, while the transcript still " +
+    "has one pending — most likely it was just answered at the terminal.",
+  "unmatched": "the question on screen is not the one the transcript sent, so " +
+    "which Ask you are looking at is unknown. Its answers are withheld rather " +
+    "than drawn under the wrong question.",
+  "pane-mismatch": "the rows on screen do not account for these options — the " +
+    "widget may have been re-rendered. A keystroke count here would be a guess.",
+  "no-cursor": "the screen paints no cursor, so there is nothing to count " +
+    "keystrokes from.",
+};
+const ASK_WHY_TAIL = " Answer at the terminal, or send prose in the box below.";
+
+// The Ask block: which Ask of the Set, its header, the full question, and the
+// options with the descriptions that decide them.
+// Returns `{box, floor}` — `floor` is the FIRST option, which is what the
+// landing must clear (see clearFloor).
+function askEl(f) {
+  const set = (f.askSet && f.askSet.count) ? f.askSet : null;
+  const box = el("div", "ask");
+  const strip = el("div", "askhd");
+  strip.append(el("span", "lbl", "the ask"));
+  // "ask 1 of 2" ONLY when there is a 2. 326 of 425 Asks on disk are a Set of
+  // one (ADR 0020's census), so a permanent "ask 1 of 1" is a line of noise on
+  // three quarters of them — and `index` is -1 when nothing matched, which is
+  // not a position and must not be printed as one.
+  if (set && set.count > 1 && set.index >= 0) {
+    strip.append(el("span", "askn", "ask " + (set.index + 1) + " of " + set.count));
+  }
+  if (set && set.header) strip.append(el("span", "askhdr", set.header));
+  box.append(strip);
+  // The FULL question. `f.ask` is clipped to 200 chars for the queue's
+  // one-liner; `askSet.question` is not, and the tail of a question is where the
+  // actual choice usually is. Falls back to `f.ask` for an approval, and for an
+  // `unmatched` Set — where the server has already put the pane's own rendered
+  // question there, since that is the one thing certainly on screen.
+  box.append(el("div", "qtext", (set && set.question) || f.ask || ""));
+
+  const multi = !!(set && set.multiSelect);
+  let opts, tappable, why;
+  if (set) {
+    opts = set.options || [];
+    tappable = !!set.tappable;
+    why = set.fallback || "";
+  } else {
+    // A permission menu: no Ask Set, a flat list, and a cursor that indexes the
+    // options directly because the menu's rows ARE its options. Unread cursor,
+    // no tap — the same rule, not a special case.
+    const cur = typeof f.cursor === "number" ? f.cursor : null;
+    opts = (f.options || []).map((l, i) => ({
+      label: l, description: "", checked: null,
+      steps: cur === null ? null : i - cur}));
+    tappable = cur !== null && opts.length > 0;
+    why = tappable || !opts.length ? "" : "no-cursor";
+  }
+
+  if (!tappable && why) {
+    const w = el("div", "askwhy");
+    w.append(el("span", "wlbl", "read-only — "));
+    w.append(document.createTextNode(ASK_WHY[why] + ASK_WHY_TAIL));
+    box.append(w);
+  }
+
+  let floor = null;
+  if (opts.length) {
+    // ONE tap target per option, carrying the label AND the description. The
+    // description is *why* the option is there — median 175 chars, p90 285 — and
+    // splitting the read from the tap was explicitly rejected: you would be
+    // reading one thing and pressing another.
+    const list = el("div", "opts");
+    opts.forEach((o) => {
+      // A div, not a disabled button, when there is nothing to send: a
+      // read-only Ask must still READ, and a greyed-out button says "wait" when
+      // the honest word is "not from here".
+      const b = el(tappable ? "button" : "div",
+                   "opt" + (tappable ? "" : " ro") + (o.checked ? " on" : ""));
+      const row = el("div", "orow");
+      if (multi) {
+        // Rendered from the PAYLOAD's `checked`, never from local memory: this
+        // card is rebuilt every poll and the pane is the truth. A remembered
+        // tick would survive a toggle made at the terminal and lie about it.
+        //
+        // THREE STATES, not two. `null` is the pane failing to read the box —
+        // on every fallback it is what every option carries — and drawing that
+        // as ☐ would be this whole slice's bug in miniature: an unread value
+        // rendered as a confident one, which is `cursor || 0` again.
+        const unread = o.checked === null || o.checked === undefined;
+        row.append(el("span", "obox" + (unread ? " unread" : ""),
+                      unread ? "?" : o.checked ? "☑" : "☐"));
+      }
+      row.append(el("span", "olbl", o.label));
+      b.append(row);
+      if (o.description) b.append(el("div", "odesc", o.description));
+      if (tappable) {
+        // Only ever a real reading here: `tappable` means the pane read the box.
+        if (multi) b.setAttribute("aria-pressed", o.checked ? "true" : "false");
+        b.addEventListener("click", () => sendRespond(f, {keys: stepKeys(o.steps, multi)}));
+      }
+      list.append(b);
+      if (!floor) floor = b;
+    });
+    if (tappable && multi) {
+      // The submit, and the only Enter on a multiSelect Ask. Ticking is not
+      // answering: the widget holds every toggle until this.
+      const done = el("button", "opt done", "submit these ticks →");
+      done.addEventListener("click", () => sendRespond(f, {keys: ["enter"]}));
+      list.append(done);
+    }
+    box.append(list);
+  }
+  return {box: box, floor: floor};
+}
+
 function focusCard(f) {
   const cls = f.lane === "question" ? "focus bq" : f.lane === "approval" ? "focus bp" : "focus";
   const card = el("div", cls);
@@ -1430,19 +1594,21 @@ function focusCard(f) {
   // box of its own; it flows into the page scroll (see `.sb` in board.html).
   card.append(scrollbackEl(f.scrollback || []));
   const land = armedLanding;   // captured before the Ask below can re-enter here
-  let askBox = null, warnBox = null;
+  // `floorBot` is the deepest thing the landing must put on screen. Since the
+  // options moved into the card (ADR 0020) that is no longer the Ask box's own
+  // bottom — see clearFloor for why it is the FIRST option and not the last.
+  let askBox = null, warnBox = null, floorBot = null;
 
   // An **Ask** is the blocker of a **Blocked** Run and of nothing else
   // (CONTEXT.md). An idle Run's closing question is now visibly the last turn
   // above, so the old "(no explicit question — your move)" placeholder was ~62px
   // of chrome saying nothing; the server sends `ask: ""` off the blocked lanes.
   // Never draw an empty box.
-  if (isBlocked(f) && f.ask) {
-    const ask = el("div", "ask");
-    ask.append(el("div", "lbl", "the ask"));
-    ask.append(el("div", "qtext", f.ask));
-    card.append(ask);
-    askBox = ask;
+  if (isBlocked(f) && (f.ask || (f.askSet && f.askSet.count))) {
+    const a = askEl(f);
+    card.append(a.box);
+    askBox = a.box;
+    floorBot = a.floor;
   }
 
   if (f.pendingInput) {   // there's already unsent text in this session's box
@@ -1456,21 +1622,10 @@ function focusCard(f) {
     warnBox = warn;
   }
 
+  // THE OPTIONS ARE NOT HERE ANY MORE (ADR 0020) — they are in the Ask block
+  // above, each one carrying the description that decides it. `.respond` is the
+  // reply box and nothing else.
   const respond = el("div", "respond");
-  if (f.options && f.options.length) {
-    const opts = el("div", "opts");
-    // Selecting option i: step the selector cursor from where it actually sits
-    // (f.cursor, read off the rendered menu) to i, then enter.
-    const cur = f.cursor || 0;
-    f.options.forEach((o, i) => {
-      const b = el("button", "opt", o);
-      const d = i - cur;
-      const keys = Array(Math.abs(d)).fill(d >= 0 ? "down" : "up").concat("enter");
-      b.addEventListener("click", () => sendRespond(f, {keys}));
-      opts.append(b);
-    });
-    respond.append(opts);
-  }
   // The reply box is unconditional — idle, **Blocked** or working alike
   // (CONTEXT.md: Focus). Responding to a working Run is not a special case, so
   // nothing here is disabled; it just says where the text goes, once, next to
@@ -1576,7 +1731,7 @@ function focusCard(f) {
   // its floor is the **Ask** (or, when there is unsent text you must see before
   // you type over it, that warning under it). Nothing on an unblocked Focus is
   // below the read, so there is no floor there and the seam's 250px stands.
-  if (land) landOn(land.seam, land.sig, land.pad, askBox, warnBox || askBox);
+  if (land) landOn(land.seam, land.sig, land.pad, askBox, warnBox || floorBot || askBox);
   return card;
 }
 

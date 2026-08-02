@@ -40,8 +40,14 @@ const HTML = fs.readFileSync(path.join(ROOT, "web/board.html"), "utf8");
 // on it while that is still up, so the stub can place all three. The defaults put
 // the bar at the bottom of the viewport, the hint far below everything and the
 // Ask at the very top: the "nothing to clear" case every other test wants.
+// `optTop`/`optBottom` are the fifth, and they are new with ADR 0020: the
+// options are IN the Ask block now, each carrying its description, so the block
+// runs hundreds of px past its own question. What the landing must clear is
+// therefore the FIRST option, not the block's bottom — this is what lets a test
+// tell those two numbers apart.
 const layout = {cardBottom: 0, barTop: 800, barHeight: 0, seamTop: 0,
-                askTop: 0, askBottom: 0, pendBottom: 0, hintTop: 1e6};
+                askTop: 0, askBottom: 0, optTop: 0, optBottom: 0,
+                pendBottom: 0, hintTop: 1e6};
 const rect = (b, t) => ({top: t || 0, left: 0, right: 0, width: 0, bottom: b, height: b});
 
 // The composer's own metrics. The reply box is a textarea whose height is
@@ -121,6 +127,12 @@ class El {
       return {top: layout.askTop, left: 0, right: 0, width: 0,
               bottom: layout.askBottom, height: layout.askBottom - layout.askTop};
     }
+    // Every option answers with the same box; the landing only ever measures the
+    // first one, which is the one it guarantees is on screen.
+    if (cls.includes(" opt ")) {
+      return {top: layout.optTop, left: 0, right: 0, width: 0,
+              bottom: layout.optBottom, height: layout.optBottom - layout.optTop};
+    }
     // The pending-input warning sits UNDER the Ask, and when there is one it is
     // what the floor has to clear: you must see that there is unsent text before
     // you type over it.
@@ -198,6 +210,14 @@ const sbOf = {};
 // Unsent text already in the Run's own input box. Steerable because the warning
 // it draws is the other thing the landing's floor has to clear.
 let pendingText = "";
+// The **Ask Set** the server models and the phone draws one Ask of (ADR 0020) —
+// `{}` for an approval, an idle Run and a permission menu, which is why it is
+// steerable alongside the legacy `options`/`cursor` triple rather than instead
+// of it. Those two still serve the permission menu, and `cursor: null` is a real
+// value there: nobody read where the menu is standing.
+let askSet = {};
+let legacyOpts = [];
+let legacyCursor = 0;
 const SB = () => [{role: "user", html: "<p>which one?</p>"},
                   {role: "assistant", html: "<p>ctx</p>"}];
 let etagN = 0;
@@ -233,7 +253,10 @@ function fakeBoard(focusSid) {
   return {
     focus: focus ? Object.assign(strip(focus), {
       aiTitle: "about " + focus.title, scrollback: sbOf[focus.sessionId] || SB(),
-      ask: blocked ? "what now?" : "", options: [], cursor: 0,
+      ask: blocked ? "what now?" : "",
+      options: blocked ? legacyOpts : [],
+      cursor: blocked ? legacyCursor : null,
+      askSet: blocked ? askSet : {},
       pendingInput: pendingText, pinned,
     }) : null,
     upnext: order.filter((s) => s !== focus).map(strip),
@@ -1775,6 +1798,241 @@ const W = "wwwwwwww-3333-3333-3333-333333333333";
      findAll(zones(), "qrow").every((r) => !isNow(r)),
      findAll(zones(), "qrow").map((r) => r.className).join(" | "));
 
+  // --- The Ask Set: what is asked, and what a tap is worth (ADR 0020) -------
+  //
+  // The transcript says WHAT is asked; the pane says WHERE the widget stands.
+  // The client's job is to draw the first and to send the second WITHOUT
+  // recomputing it — the code these replace did `i - (f.cursor || 0)`, counting
+  // an index into the wrong list from a cursor that may never have been read.
+  // `|| 0` is what made that silent, so the cases below are mostly about the
+  // client refusing rather than the client answering.
+  const Q = "44444444-4444-4444-4444-444444444444";
+  const askOf = () => focusWrap().querySelector(".ask");
+  const optsOf = () => findAll(askOf(), "opt");
+  const whyText = () => {
+    const w = askOf().querySelector(".askwhy");
+    return w ? w.textContent : "";
+  };
+  // A question longer than the 200 chars `focus.ask` is clipped to, because the
+  // tail of a question is usually where the actual choice is.
+  const LONGQ = "Ticket 3 splits the detector from the retune, and the two share " +
+    "the range walk, the fixture and most of the review surface — so the only " +
+    "real difference is how much lands in one commit. Fold it into ticket 1, or " +
+    "keep the two separate?";
+  const SET = () => ({
+    index: 1, count: 2, question: LONGQ, header: "Granularity",
+    multiSelect: false, tappable: true, fallback: "",
+    options: [
+      // Signed, and measured against the widget's ROWS: the cursor is on the
+      // second option's row, so the first is one Up away and the second is zero.
+      {label: "Fold into ticket 1", description: "one tracer bullet, one review",
+       row: 2, steps: -1, checked: null},
+      {label: "Keep separate", description: "two tickets, two reviews, twice the run-up",
+       row: 3, steps: 0, checked: null},
+    ],
+  });
+  world = [S(Q, "question", 1, "asker"), S(A, "yourmove", 1, "alpha")];
+  // Three exchanges, so there IS something above the seam and the landing parks
+  // it 250px down rather than under the header — the peek is what the floor
+  // spends, so a Session with no peek would prove nothing about spending it.
+  sbOf[Q] = SB().concat(SB()).concat(SB());
+  askSet = SET();
+  win.scrollY = 0;
+  sandbox.setPinned(Q);
+  await poll();
+
+  ok("ask set: the block says which Ask of the Set it is, and the Ask's header",
+     /ask 2 of 2/.test(askOf().textContent) && /Granularity/.test(askOf().textContent),
+     askOf().textContent.slice(0, 80));
+  ok("ask set: the FULL question, not the 200-char clip the queue's one-liner takes",
+     askOf().querySelector(".qtext").textContent === LONGQ && LONGQ.length > 200,
+     String(askOf().querySelector(".qtext").textContent.length));
+  ok("ask set: and every option carries the description that decides it",
+     optsOf().length === 2 &&
+     optsOf().map((o) => o.querySelector(".odesc").textContent).join("|") ===
+       "one tracer bullet, one review|two tickets, two reviews, twice the run-up",
+     optsOf().map((o) => o.textContent).join(" | "));
+  // The whole point of the slice: the options are a thing you READ, in the card,
+  // and the sticky bar is the reply box and nothing else.
+  ok("ask set: the options are in the card — the sticky bar keeps only the reply box",
+     findAll(focusWrap().querySelector(".respond"), "opt").length === 0 &&
+     optsOf().length === 2 && !!focusWrap().querySelector(".ti"),
+     focusWrap().querySelector(".respond").textContent);
+
+  let n0 = respondLog.length;
+  optsOf()[0].dispatch("click");
+  await settle();
+  ok("ask set: a tap sends the SERVER's signed steps — an Up, because the cursor is past it",
+     respondLog.length === n0 + 1 &&
+     JSON.stringify(respondLog[n0].keys) === JSON.stringify(["up", "enter"]),
+     JSON.stringify(respondLog.slice(n0)));
+  n0 = respondLog.length;
+  optsOf()[1].dispatch("click");
+  await settle();
+  ok("ask set: and zero steps is a bare enter — the index into the options is never used",
+     respondLog.length === n0 + 1 &&
+     JSON.stringify(respondLog[n0].keys) === JSON.stringify(["enter"]),
+     JSON.stringify(respondLog.slice(n0)));
+
+  // 326 of 425 Asks on disk are a Set of one, so a permanent "ask 1 of 1" is
+  // noise on three quarters of every ask this Board will ever draw.
+  askSet = Object.assign(SET(), {index: 0, count: 1});
+  await poll();
+  ok("ask set: a Set of one draws no position line — 'ask 1 of 1' is noise",
+     !/ask 1 of/.test(askOf().textContent) && optsOf().length === 2,
+     askOf().textContent.slice(0, 60));
+
+  // multiSelect: one tap is ONE TOGGLE, and the ticks are the pane's, never
+  // this card's — it is rebuilt every poll and the pane is the truth.
+  const MULTI = (a, b) => Object.assign(SET(), {
+    index: 0, count: 1, multiSelect: true, header: "Pick any",
+    options: [
+      {label: "the detector", description: "walks the range", row: 0, steps: 0, checked: a},
+      {label: "the retune", description: "accepts the proposal", row: 1, steps: 1, checked: b},
+    ],
+  });
+  askSet = MULTI(true, false);
+  await poll();
+  ok("ask set: a multiSelect draws its ticks from the payload, and marks them twice over",
+     optsOf()[0].textContent.startsWith("☑") && hasCls(optsOf()[0], "on") &&
+     optsOf()[1].textContent.startsWith("☐") && !hasCls(optsOf()[1], "on"),
+     optsOf().map((o) => o.className + ":" + o.textContent.slice(0, 3)).join(" | "));
+  n0 = respondLog.length;
+  optsOf()[1].dispatch("click");
+  await settle();
+  ok("ask set: one tap on a multiSelect is ONE TOGGLE — space, never enter",
+     respondLog.length === n0 + 1 &&
+     JSON.stringify(respondLog[n0].keys) === JSON.stringify(["down", "space"]),
+     JSON.stringify(respondLog.slice(n0)));
+  // The pane is the truth: the tap above must not have left a tick behind in the
+  // client. Force a REBUILD with the same Ask Set — a card that remembered the
+  // tap would now disagree with the screen it is supposed to be reporting, and
+  // the card is rebuilt every time anything about this Run moves.
+  world[0].updatedAt = 2000;
+  await poll();
+  ok("ask set: the tick is not remembered locally — the next poll re-reads the pane",
+     optsOf()[1].textContent.startsWith("☐") && !hasCls(optsOf()[1], "on"),
+     optsOf().map((o) => o.textContent.slice(0, 3)).join(" | "));
+  askSet = MULTI(true, true);
+  await poll();
+  ok("ask set: and when the pane says both are ticked, both are ticked",
+     optsOf().every((o) => hasCls(o, "on") || hasCls(o, "done")),
+     optsOf().map((o) => o.className).join(" | "));
+  const doneBtn = optsOf().find((o) => hasCls(o, "done"));
+  n0 = respondLog.length;
+  doneBtn.dispatch("click");
+  await settle();
+  ok("ask set: submitting the ticks is a separate control, and the only enter on it",
+     !!doneBtn && respondLog.length === n0 + 1 &&
+     JSON.stringify(respondLog[n0].keys) === JSON.stringify(["enter"]),
+     JSON.stringify(respondLog.slice(n0)));
+
+  // A refusal, and every shape of it. The read survives; the tap does not.
+  askSet = Object.assign(SET(), {
+    tappable: false, fallback: "no-cursor",
+    options: SET().options.map((o) => Object.assign({}, o, {row: null, steps: null})),
+  });
+  await poll();
+  n0 = respondLog.length;
+  optsOf().forEach((o) => o.dispatch("click"));
+  await settle();
+  ok("ask set: an untappable Ask still READS — options and descriptions, in full",
+     optsOf().length === 2 && optsOf().every((o) => hasCls(o, "ro")) &&
+     /two tickets, two reviews/.test(askOf().textContent),
+     optsOf().map((o) => o.className).join(" | "));
+  ok("ask set: and nothing on it can send a keystroke — not one control, not one tap",
+     respondLog.length === n0 && optsOf().every((o) => o.tag !== "button") &&
+     findAll(askOf(), "done").length === 0,
+     JSON.stringify(respondLog.slice(n0)));
+  ok("ask set: it says WHY, in plain language, and where to answer instead",
+     /read-only/.test(whyText()) && /no cursor/.test(whyText()) &&
+     /terminal/.test(whyText()) && /box below/.test(whyText()), whyText());
+
+  // A REFUSED multiSelect has no toggle state either — `checked` is null on
+  // every option of every fallback. Drawing that as ☐ would be this slice's own
+  // bug in miniature: an unread value rendered as a confident one, which is
+  // `cursor || 0` wearing a checkbox.
+  askSet = Object.assign(MULTI(null, null), {tappable: false, fallback: "pane-mismatch"});
+  await poll();
+  ok("ask set: an unread toggle is a third state — never drawn as 'not ticked'",
+     optsOf().every((o) => o.textContent.startsWith("?") && !hasCls(o, "on")) &&
+     findAll(askOf(), "unread").length === 2,
+     optsOf().map((o) => o.textContent.slice(0, 2)).join(" | "));
+
+  // `unmatched` is the original bug's own case: we do not know WHICH Ask is on
+  // screen, so its answers are withheld rather than drawn under the wrong
+  // question — and the block still has to make sense with none.
+  askSet = {index: -1, count: 2, question: "", header: "", multiSelect: false,
+            options: [], tappable: false, fallback: "unmatched"};
+  await poll();
+  ok("ask set: `unmatched` carries no options at all — never q1's answers under q2",
+     optsOf().length === 0 && !!askOf(), askOf() && askOf().textContent);
+  ok("ask set: and with no options the block still says what it is looking at, and why not",
+     askOf().querySelector(".qtext").textContent === "what now?" &&
+     !/ask 0 of|ask -1/.test(askOf().textContent) && /not the one/.test(whyText()),
+     askOf().textContent.slice(0, 120));
+
+  // Five refusals, five different causes — a refusal you cannot tell apart from
+  // a different refusal is half a silent failure.
+  const whys = [];
+  for (const fb of ["no-pane", "no-widget", "unmatched", "pane-mismatch", "no-cursor"]) {
+    askSet = Object.assign(SET(), {tappable: false, fallback: fb});
+    await poll();
+    whys.push(whyText());
+  }
+  ok("ask set: each way of refusing says a different thing, because each has a different cause",
+     new Set(whys).size === 5 && whys.every((w) => w.length > 40), JSON.stringify(whys));
+
+  // The permission menu has no Ask Set — the legacy triple still serves it, and
+  // the cursor rule is the same rule: unread means untappable. This is the exact
+  // line `|| 0` used to paper over.
+  askSet = {};
+  legacyOpts = ["Yes", "Yes, and don't ask again", "No"];
+  legacyCursor = null;
+  await poll();
+  n0 = respondLog.length;
+  optsOf().forEach((o) => o.dispatch("click"));
+  await settle();
+  ok("menu: an unread cursor is not row 0 — the permission menu refuses too",
+     optsOf().length === 3 && optsOf().every((o) => o.tag !== "button") &&
+     respondLog.length === n0 && /no cursor/.test(whyText()),
+     whyText() + " || " + JSON.stringify(respondLog.slice(n0)));
+  legacyCursor = 1;
+  await poll();
+  n0 = respondLog.length;
+  optsOf()[2].dispatch("click");
+  await settle();
+  ok("menu: and a cursor that WAS read steps from where it actually sits",
+     respondLog.length === n0 + 1 &&
+     JSON.stringify(respondLog[n0].keys) === JSON.stringify(["down", "enter"]),
+     JSON.stringify(respondLog.slice(n0)));
+  legacyOpts = []; legacyCursor = 0;
+
+  // THE LANDING, RE-DERIVED. The Ask block now runs hundreds of px past its own
+  // question, so "clear the whole block" would spend the entire peek on every
+  // Blocked landing and still come up short. The floor clears the question plus
+  // the FIRST option — the blocker and at least one answer, with its reasoning.
+  askSet = SET();
+  layout.seamTop = 400;
+  layout.barTop = 700; layout.barHeight = 100;
+  layout.askTop = 820; layout.askBottom = 2400;   // question + four descriptions
+  layout.optTop = 900; layout.optBottom = 960;    // the first option inside it
+  win.scrollY = 0; sandbox.setPinned(A); await poll();
+  win.scrollY = 0; sandbox.setPinned(Q); await poll();
+  ok("landing: a Blocked Focus now clears its blocker AND its first option",
+     win.scrollY === parked() + (layout.optBottom - (layout.barTop - 10)),
+     String(win.scrollY));
+  // Demanding the whole block would have hit the cap — every pixel of the peek
+  // spent, and the last three options still under the bar. A worse trade than a
+  // flick, and it costs you the newest prose the Ask is asking about.
+  ok("landing: not the whole option list — that would spend the entire peek and still fall short",
+     layout.askBottom - (layout.barTop - 10) > layout.seamTop - 52 &&
+     win.scrollY !== parked() + (layout.seamTop - 52),
+     String(win.scrollY) + " vs capped " + (parked() + layout.seamTop - 52));
+  layout.barTop = 800; layout.barHeight = 0;
+  layout.askTop = 0; layout.askBottom = 0; layout.optTop = 0; layout.optBottom = 0;
+  askSet = {};
+
   // --- What only the stylesheet can answer ----------------------------------
   // The stub runs no CSS, so everything above proves the client toggles a class.
   // Whether that class actually yields the pixels — and whether the column is
@@ -1834,6 +2092,32 @@ const W = "wwwwwwww-3333-3333-3333-333333333333";
   ok("chrome: the slide respects prefers-reduced-motion (the .spin precedent)",
      rm > 0 && HTML.slice(rm, rm + 220).includes(".fhead,.respond,.isheet{transition:none}"),
      HTML.slice(rm, rm + 220));
+
+  // ADR 0020's layout claim, in the one place that can prove it: the options
+  // LEFT the sticky bar. The DOM tests above prove the client builds them into
+  // the card; only the sheet can say the bar no longer dresses them, and that
+  // nothing wrapping-chip-shaped is left behind on it.
+  ok("ask set: the options are authored with the Ask, above the sticky bar's own rules",
+     HTML.indexOf(".opts{") < HTML.indexOf(".respond{") &&
+     HTML.indexOf(".opts{") > HTML.indexOf(".ask{") &&
+     rule(".respond").includes("position:sticky"), rule(".opts"));
+  ok("ask set: one option per row, full width — a chip row cannot carry a description",
+     /flex-direction:column/.test(rule(".opts")) && !/flex-wrap/.test(rule(".opts")) &&
+     /width:100%/.test(rule(".opt")), rule(".opts") + " || " + rule(".opt"));
+  // The read is prose and wears the reading face (ADR 0018); the counter and the
+  // widget's tab label are machine text and keep the machine one. Nothing here
+  // names a colour — a hardcoded literal cannot be swapped by the light theme.
+  // Everything you READ in this block — the question, the labels, the
+  // descriptions and the sentence explaining a refusal — is prose. The counter
+  // and the widget's tab label are not, and keep the machine face.
+  ok("ask set: everything you read in the block is prose, so it wears the reading face",
+     [".ask .qtext", ".olbl", ".odesc", ".askwhy"].every((s) => /var\(--face\)/.test(rule(s))) &&
+     ![".askn", ".askhdr"].some((s) => /var\(--face\)/.test(rule(s))),
+     [".askwhy", ".askn"].map(rule).join(" || "));
+  ok("ask set: and every colour on the block is a token, so both themes get it",
+     [".opt", ".opt.on", ".opt.ro", ".askwhy", ".wlbl", ".askn", ".askhdr", ".obox",
+      ".obox.unread", ".opt.done"].every((s) => !/#[0-9a-f]{3}|rgb/i.test(rule(s))),
+     [".opt", ".askwhy", ".askn"].map(rule).join(" || "));
 
   ok("column: one bounded reading column, wider than the old 640px phone width",
      /--col:740px/.test(HTML) && rule(".wrap").includes("var(--gut)"), rule(".wrap"));
