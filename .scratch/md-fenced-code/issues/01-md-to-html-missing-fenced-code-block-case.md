@@ -1,6 +1,10 @@
 # 01 — _md_to_html missing fenced code block case
 
+Status: ready-for-agent
+
 **Jotted:** 2026-08-01 16:57
+**Promoted out of the inbox:** 2026-08-01, unchanged — the grounding below was
+re-verified against `server.py` and still holds.
 
 > Claude Launcher appears to have a bug where the code fenced blocks don't render properly on my screen and they seem to just be one contiguous paragraph which makes no sense.
 
@@ -18,3 +22,24 @@ There is no branch for fenced code blocks (``` or ~~~). When a fenced block appe
 
 - web/board.html
 - server.py
+
+## Comments
+
+**2026-08-01** — Confirmed still open, and confirmed *visually*. While shipping
+ADR 0018/0019 the Board was screenshotted at 390x844 against a live **Run** whose
+reply contained a fenced table; it rendered as one unbroken run of inline-code
+spans wrapping across nine lines, exactly as this ticket predicts. So the bug is
+not subtle in practice — it is the most conspicuous thing on the screen whenever
+a Run answers with code, which is often.
+
+Re-grounded against current `server.py`: `grep` for a fence, `<pre>` or any
+backtick-run branch returns **nothing**, and the paragraph collector is still
+there (now ~`:1565`), still ending `out.append(f"<p>{_md_inline(' '.join(buf))}</p>")`.
+Nothing about this changed under ADR 0018/0019 — those moved only `board.html`
+and added `web/theme.js`; `_md_to_html` was not touched.
+
+One thing the fix now inherits: `board.html`'s `.md pre` / `.md code` rules are
+tokenised and theme-aware as of ADR 0018, and `.md code` already carries
+`--panel2` / `--q`. So whatever `<pre>` this eventually emits will theme itself
+correctly and needs no new colour — but it **must not** hardcode one, per ADR
+0018's closing note.
