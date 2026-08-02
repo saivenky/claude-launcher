@@ -17,6 +17,20 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import server  # noqa: E402
 from http.server import ThreadingHTTPServer  # noqa: E402
 
+_FIXTURES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures")
+
+
+def _capture(name: str) -> str:
+    """A verbatim `capture-pane` fixture, read from disk.
+
+    Never retyped into a literal: the exact whitespace IS the thing under test,
+    and ADR 0020 traces the whole renderer change going unnoticed to the inline
+    `_ASK_PANE` below — an iTerm frame frozen in Python that kept passing while
+    the real renderer moved out from under it. See tests/fixtures/README.md.
+    """
+    with open(os.path.join(_FIXTURES, name), encoding="utf-8") as fh:
+        return fh.read()
+
 _RUN = "11111111-1111-1111-1111-111111111111"      # a Run id (tmux window)
 _RUN2 = "22222222-2222-2222-2222-222222222222"     # the Run a Transfer resumes into
 _GOOD = "AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA"     # transcript + existing cwd
@@ -1119,6 +1133,9 @@ class TasksApiTests(_HttpCase):
         self.assertIn("tasks", json.loads(body))
 
 
+# REGRESSION fixture, kept deliberately. This is the iTerm-era renderer; the
+# tmux captures in tests/fixtures/ are the current one. It is the renderer that
+# changed under us with no test noticing, so both shapes stay covered.
 # A real AskUserQuestion widget as iTerm renders it: numbered options in a left
 # column, the highlighted option's description in a box-drawn side panel on the
 # SAME rows, a checkbox header, and the notes affordance. The whole thing is
@@ -1207,7 +1224,7 @@ class PaneParsingTests(unittest.TestCase):
         self.assertEqual(sel["options"],
                          ["Yes", "Yes, and don't ask again", "No, and tell Claude what to do differently"])
 
-    def test_widget_is_recognised_by_its_notes_affordance(self):
+    def test_widget_is_recognised_by_its_checkbox_header(self):
         self.assertTrue(server._is_question_widget(_ASK_PANE))
         self.assertFalse(server._is_question_widget(_PERMISSION_PANE))
         self.assertFalse(server._is_question_widget(_INPUT_PANE))
@@ -1219,6 +1236,141 @@ class PaneParsingTests(unittest.TestCase):
 
     def test_input_box_reads_a_real_draft(self):
         self.assertEqual(server._pane_input(_INPUT_PANE), "draft a reply but do not send")
+
+
+class AskWidgetPaneTests(unittest.TestCase):
+    """`_pane_widget` read against the two verbatim tmux captures — the current
+    renderer, where each option's description sits on the lines BELOW its label
+    rather than in a side panel beside it (ADR 0020).
+
+    Both shapes are here on purpose: `ask_multi` carries a tab strip, `ask_single`
+    a bare checkbox header, and 326 of the 425 asks on disk are single-question,
+    so the bare header is the common case and not a fallback.
+    """
+
+    def setUp(self):
+        self.multi = _capture("ask_multi.pane")
+        self.single = _capture("ask_single.pane")
+
+    def test_both_captures_are_recognised_as_the_widget(self):
+        # The old `"add notes"` signature returned False for BOTH — i.e. for
+        # every AskUserQuestion this renderer paints.
+        self.assertTrue(server._is_question_widget(self.multi))
+        self.assertTrue(server._is_question_widget(self.single))
+        self.assertFalse(server._is_question_widget(_PERMISSION_PANE))
+        self.assertFalse(server._is_question_widget(_INPUT_PANE))
+
+    def test_the_tools_options_exclude_the_widgets_own_rows(self):
+        self.assertEqual(server._pane_widget(self.multi)["options"],
+                         ["Keep split (Recommended)", "Merge into one"])
+
+    def test_the_affordance_rows_are_kept_and_marked_as_such(self):
+        # Not dropped: free text routes through `Type something.`, so a later
+        # slice has to be able to find which row it is.
+        rows = server._pane_widget(self.multi)["rows"]
+        self.assertEqual([r["label"] for r in rows],
+                         ["Keep split (Recommended)", "Merge into one",
+                          "Type something.", "Chat about this"])
+        self.assertEqual([r["affordance"] for r in rows],
+                         [False, False, True, True])
+
+    def test_assistant_prose_above_the_header_is_out_of_scope(self):
+        # The captured frame holds a four-item numbered ticket list Claude WROTE,
+        # indistinguishable from menu rows by shape. Anchoring on the checkbox
+        # header is what excludes it.
+        labels = [r["label"] for r in server._pane_widget(self.multi)["rows"]]
+        for prose in ("Range moves to the exercise, keyed by side",
+                      "Drop the plan-item range and stop training-prep sending it",
+                      "Detect an unreachable range",
+                      "Propose and accept the retune on the exercise card"):
+            self.assertNotIn(prose, labels)
+
+    def test_a_single_question_widget_has_no_tab_strip(self):
+        w = server._pane_widget(self.single)
+        self.assertEqual(w["tabs"], [])
+        self.assertEqual(w["header"], "multiSelect")
+        self.assertEqual(w["options"], [
+            "One tap = one toggle, then a separate done (Recommended)",
+            "Collect locally, send one sequence",
+            "Send multiSelect to free text"])
+
+    def test_the_tab_strip_yields_the_questions_but_not_submit(self):
+        # `✔ Submit` shares the strip with the question tabs; counted as a tab it
+        # would make a two-Ask Set look like three.
+        self.assertEqual(server._pane_widget(self.multi)["tabs"],
+                         [{"label": "Granularity", "checked": False},
+                          {"label": "Expand/contract", "checked": False}])
+
+    def test_the_cursor_is_read_and_not_defaulted(self):
+        # It sits on the first option in both captures, which a hardcoded 0 would
+        # also produce — so move it, and check the reading follows.
+        self.assertEqual(server._pane_widget(self.multi)["cursor"], 0)
+        moved = (self.multi.replace("❯ 1. Keep split", "  1. Keep split")
+                           .replace("  2. Merge into one", "❯ 2. Merge into one"))
+        self.assertEqual(server._pane_widget(moved)["cursor"], 1)
+        onto_affordance = (self.single.replace("❯ 1. One tap", "  1. One tap")
+                                      .replace("  4. Type something.",
+                                               "❯ 4. Type something."))
+        self.assertEqual(server._pane_widget(onto_affordance)["cursor"], 3)
+
+    def test_the_cursor_indexes_rows_so_it_counts_keystrokes(self):
+        # Cursor and rows share one index space: stepping is over every row the
+        # widget paints, affordances included. Indexing `options` instead is the
+        # arithmetic that answered 'Chat about this' to a question nobody asked.
+        w = server._pane_widget(self.multi)
+        self.assertEqual(len(w["rows"]), 4)
+        self.assertLess(w["cursor"], len(w["rows"]))
+
+    def test_a_numbered_line_in_the_question_body_does_not_shift_the_rows(self):
+        # The anchor puts prose ABOVE the header out of scope; the question body
+        # sits BELOW it and is assistant-authored too. Read top-down, a stray
+        # `1.` there claims row 1 and every real row shifts by one — ADR 0020's
+        # wrong-answer table, one line lower down the frame.
+        salted = self.multi.replace("into one tracer bullet?",
+                                    "into one tracer bullet?\n1. maybe this")
+        w = server._pane_widget(salted)
+        self.assertEqual(w["options"], ["Keep split (Recommended)", "Merge into one"])
+        self.assertEqual(len(w["rows"]), 4)
+
+    def test_a_tick_of_prose_below_the_widget_does_not_hide_it(self):
+        # `✓ done` is a checkbox header by shape. Anchoring on the last header
+        # outright hands it the anchor, the widget goes unseen, and the false ⚠
+        # this slice closes comes straight back.
+        trailing = self.multi + "\n✓ done\n"
+        self.assertTrue(server._is_question_widget(trailing))
+        self.assertEqual(server._pane_widget(trailing)["options"],
+                         ["Keep split (Recommended)", "Merge into one"])
+
+    def test_a_tab_strip_without_its_left_arrow_is_still_a_tab_strip(self):
+        # The `←` is absent on the first tab and in a narrow pane. Discriminating
+        # on it alone reads the strip as a bare header: two Asks become none.
+        narrow = self.multi.replace("←  ☐ Granularity", "☐ Granularity")
+        w = server._pane_widget(narrow)
+        self.assertEqual([t["label"] for t in w["tabs"]],
+                         ["Granularity", "Expand/contract"])
+        self.assertEqual(w["header"], "")
+
+    def test_a_permission_menu_is_not_a_widget_and_still_parses(self):
+        # No checkbox header at all, so the widget reader declines it; the
+        # contiguity-based `_parse_selector` keeps serving that lane.
+        self.assertEqual(server._pane_widget(_PERMISSION_PANE), {})
+        self.assertEqual(server._parse_selector(_PERMISSION_PANE)["options"],
+                         ["Yes", "Yes, and don't ask again",
+                          "No, and tell Claude what to do differently"])
+
+    def test_a_checked_off_line_of_prose_is_not_a_widget(self):
+        # Assistant output ticking things off is a checkbox header by shape. With
+        # no numbered rows under it there is nothing to drive, and saying yes
+        # would suppress the unsent-text read on a Run that is not Blocked.
+        self.assertEqual(server._pane_widget(
+            "✓ ran the tests\n✓ committed\n\nAnything else?\n"), {})
+
+    def test_the_prompt_is_read_off_a_tab_strip_frame(self):
+        # `_pane_question` shares the anchor, so the multi shape reaches it too.
+        self.assertTrue(server._pane_question(self.multi).startswith(
+            "Ticket 3 (detector) is verifiable"))
+        self.assertTrue(server._pane_question(self.single).startswith(
+            "30 of the 425 asks on disk"))
 
 
 class PaneContentsTests(unittest.TestCase):
@@ -1298,6 +1450,20 @@ class BlockedFocusTests(unittest.TestCase):
 
     def test_the_widget_is_not_reported_as_unsent_input(self):
         self.assertEqual(server._board()["focus"]["pendingInput"], "")
+
+    def test_the_current_renderer_raises_no_false_unsent_warning(self):
+        # The bug this slice closes. With the widget undetected, `pending` fell
+        # through to `_pane_input`, which scraped the widget's body out from
+        # between its framing rules — so the phone painted **⚠ unsent text
+        # already in this session's input box** over the question itself, beside
+        # a 'clear the box' button that fires hundreds of BSpace into a live
+        # selector. It fired on all 425 asks, not the 99 multi-question ones.
+        for name in ("ask_multi.pane", "ask_single.pane"):
+            with self.subTest(name):
+                server._pane_contents = lambda rid, n=name: _capture(n)
+                focus = server._board()["focus"]
+                self.assertEqual(focus["pendingInput"], "")
+                self.assertEqual(focus["lane"], "question")
 
 
 # The exact command from the live incident (session d4440820, obsidian Run

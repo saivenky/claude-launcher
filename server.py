@@ -1847,7 +1847,9 @@ def _lane_of(run: dict) -> str:
 # A rendered selector line: an optional cursor glyph, an optional "N." / "N)"
 # index, then the label. Claude Code marks the current option with a cursor
 # glyph; permission menus and the trust prompt are numbered.
-_OPT_RE = re.compile(r"^\s*([❯›>])?\s*\d+[.)]\s+(\S.*?)\s*$")
+# Groups: the cursor glyph, the index (the widget reader checks it runs
+# unbroken), the label.
+_OPT_RE = re.compile(r"^\s*([❯›>])?\s*(\d+)[.)]\s+(\S.*?)\s*$")
 # Box-drawing glyphs (U+2500–U+257F). The AskUserQuestion widget paints the
 # highlighted option's description in a side panel on the SAME rows as the
 # option labels; splitting a label on the first box glyph drops that bleed.
@@ -1891,7 +1893,7 @@ def _parse_selector(text: str) -> dict:
     for ln in text.split("\n"):
         m = _OPT_RE.match(ln)
         if m:
-            label = _BOX_RE.split(m.group(2), 1)[0].strip()[:80]   # drop any side-panel bleed
+            label = _BOX_RE.split(m.group(3), 1)[0].strip()[:80]   # drop any side-panel bleed
             cur.append((bool(m.group(1)), label))
         elif cur:
             groups.append(cur)
@@ -1929,14 +1931,158 @@ def _pane_input(text: str) -> str:
     return "\n".join(out).strip()
 
 
+_CHECKBOX = ("☐", "☑", "✔", "✓")
+# The checkbox header line of an AskUserQuestion widget, in both shapes it
+# renders in. Single-question (326 of the 425 asks on disk — the COMMON case):
+# a bare ` ☐ multiSelect`. Multi-question: a tab strip, `←  ☐ Granularity
+# ☐ Expand/contract  ✔ Submit  →`, whose first glyph is the arrow, not the box.
+# ADR 0020 makes this line the anchor for the whole widget, replacing both the
+# `"add notes"` signature (a version-pinned string the current renderer never
+# paints, so `_is_question_widget` returned False for EVERY ask) and
+# `_parse_selector`'s contiguity premise.
+_HEADER_RE = re.compile(r"^\s*(←\s+)?[" + re.escape("".join(_CHECKBOX)) + r"]\s*\S")
+# The widget's own rows, as opposed to the tool's options. They are numbered
+# menu rows like any other, so nothing but the label tells them apart — and a
+# caller that mixes them in steps the cursor into `Chat about this` and answers
+# a question nobody was asked (ADR 0020's measured wrong-answer table).
+#
+# This IS a version-pinned string, and that is the failure class ADR 0020 indicts
+# in `"add notes"`. It is kept only because the structural discriminator the ADR
+# names — the rows the transcript's own option labels do not account for — is the
+# cross-check that lands with the Ask Set, not here. Until then: a renamed
+# affordance silently becomes an option, and the tests below are what would say so.
+_AFFORDANCES = ("Type something.", "Chat about this")
+
+
+def _widget_rows(lines: list[str]) -> list[dict]:
+    """The widget's menu rows in visual order, or [] if these lines carry none.
+
+    Scanned BOTTOM-UP for the run numbered N…1, because the descending run is the
+    only thing that separates a menu row from a numbered line inside the question
+    body. Top-down, the first stray `1.` in assistant text below the header claims
+    the slot and every real row shifts by one — which is ADR 0020's wrong-answer
+    table (`2 × down + enter` landing on `Type something.`), reintroduced one line
+    lower down the frame. Descriptions and the horizontal rule above
+    `Chat about this` split the rows apart, so contiguity cannot be the rule; the
+    numbering is.
+    """
+    rows, expect = [], None
+    for ln in reversed(lines):
+        m = _OPT_RE.match(ln)
+        if not m:
+            continue
+        n = int(m.group(2))
+        if expect is None:
+            expect = n
+        elif n != expect:
+            break                       # the run broke: everything above is prose
+        label = _BOX_RE.split(m.group(3), 1)[0].strip()[:80]   # drop side-panel bleed
+        rows.append({"label": label, "affordance": label in _AFFORDANCES,
+                     "_cursor": bool(m.group(1))})
+        expect -= 1
+        if not expect:                  # reached row 1 — the whole menu is in hand
+            break
+    # A run that never reaches 1 is a fragment, not a menu, and its indices would
+    # not be the keystroke counts the caller means. Refuse rather than mislead.
+    return list(reversed(rows)) if expect == 0 else []
+
+
+def _widget_anchor(lines: list[str]) -> int | None:
+    """Index of the AskUserQuestion widget's checkbox header, or None.
+
+    The last header WITH ROWS UNDER IT. `capture-pane -p` returns only the visible
+    frame, but one frame still holds more than one candidate: an earlier paint of
+    the widget above the live one, and any `✓ …` line of assistant output, which
+    is a header by shape. Taking the last header outright hands the anchor to that
+    tick and the whole widget goes unseen — which is the false ⚠ this slice
+    closes, back again. Requiring rows makes the anchor the widget itself.
+
+    Everything above the anchor is out of scope, which is what stops `_OPT_RE`
+    matching assistant PROSE — `tests/fixtures/ask_multi.pane` carries a four-item
+    numbered ticket list above the widget, indistinguishable from menu rows by
+    shape alone.
+    """
+    return next((i for i in range(len(lines) - 1, -1, -1)
+                 if _HEADER_RE.match(lines[i]) and _widget_rows(lines[i + 1:])), None)
+
+
+def _pane_widget(text: str) -> dict:
+    """The AskUserQuestion widget read off the rendered pane, or {} if the pane
+    shows no widget (a permission menu, a plain input box, ordinary output).
+
+    Kept separate from `_parse_selector` deliberately. A permission prompt has no
+    checkbox header at all, so it can never satisfy this anchor; folding the two
+    would mean one function with two anchors and two option-scan rules, and the
+    permission path — which the old contiguity rule still serves correctly — has
+    no reason to move. One reader per widget shape.
+
+    Per ADR 0020 the pane is a POSITION sensor, not a content source: the labels
+    here exist to be cross-checked against the structured `AskUserQuestion`
+    tool_use, which carries the full (untruncated) labels and their descriptions.
+    Returned keys:
+
+      rows        every menu row below the anchor, in visual order, each
+                  `{"label", "affordance"}` — the sequence the cursor steps
+                  through, so `rows` and not `options` is what a keystroke count
+                  is measured against.
+      options     the tool's own options, i.e. the non-affordance rows.
+      cursor      index INTO `rows` of the `❯` glyph (0 when unmarked).
+      tabs        for a multi-question frame, `{"label", "checked"}` per question
+                  tab; `[]` for the single-question shape.
+      header      the single-question header text (`""` when a tab strip).
+
+    Two things ADR 0020 asks of the pane are deliberately NOT here yet, so that
+    their absence is a stated gap rather than a silently missing key:
+
+    - Which tab is CURRENT. The renderer marks it with ANSI attributes that
+      `capture-pane -p` drops, and ADR 0020 declined to parse ANSI. The caller
+      identifies the current Ask by matching the rendered question text against
+      the structured questions instead.
+    - Which options are TOGGLED on a `multiSelect` question (30 of 425 asks).
+      `tests/fixtures/ask_single.pane` is a multiSelect with nothing ticked yet,
+      so no capture on hand shows how a ticked row renders — and guessing that
+      shape is how `"add notes"` happened. Capture a toggled frame first.
+    """
+    lines = text.split("\n")
+    hdr = _widget_anchor(lines)
+    if hdr is None:
+        return {}
+    scanned = _widget_rows(lines[hdr + 1:])
+    cursor = next((i for i, r in enumerate(scanned) if r["_cursor"]), 0)
+    rows = [{"label": r["label"], "affordance": r["affordance"]} for r in scanned]
+    strip = lines[hdr].strip()
+    tabs, header = [], ""
+    # A tab strip, not a bare header: more than one checkbox, or the right-hand
+    # arrow. NOT the leading `←` on its own — that arrow is absent on the first
+    # tab and in a narrow pane, and reading such a strip as a bare header turns a
+    # two-Ask Set into no Ask Set at all.
+    if sum(strip.count(c) for c in _CHECKBOX) > 1 or strip.endswith("→"):
+        for tok in re.split(r"\s{2,}", strip.strip("← →").strip()):
+            label = tok[1:].strip()
+            # `✔ Submit` is the widget's own submit control, not a question — it
+            # sits in the same strip and would otherwise be counted as a third
+            # Ask in a two-Ask Set. Told apart by its glyph, which is never the
+            # empty box a pending question tab carries.
+            if tok[:1] in _CHECKBOX and label and not (tok[:1] != "☐" and label == "Submit"):
+                tabs.append({"label": label, "checked": tok[:1] != "☐"})
+    else:
+        header = strip[1:].strip()
+    return {"rows": rows, "options": [r["label"] for r in rows if not r["affordance"]],
+            "cursor": cursor, "tabs": tabs, "header": header}
+
+
 def _is_question_widget(text: str) -> bool:
     """True when the pane shows the AskUserQuestion widget (as opposed to a
-    permission menu or a plain input box). Its notes affordance — absent from
-    every other prompt — is the stable signature."""
-    return "add notes" in text
+    permission menu or a plain input box).
 
-
-_CHECKBOX = ("☐", "☑", "✔", "✓")
+    The signature is the checkbox header, which is structural. The old one was
+    the literal `"add notes"` — an affordance the current tmux renderer stopped
+    painting, and nothing told us. With this False, the widget's body fell
+    through to `_pane_input` and the phone painted **⚠ unsent text already in
+    this session's input box** over the question itself, beside a 'clear the box'
+    button that would have fired hundreds of BSpace into a live selector.
+    """
+    return bool(_pane_widget(text))
 
 
 def _pane_question(text: str) -> str:
@@ -1946,8 +2092,7 @@ def _pane_question(text: str) -> str:
     to the transcript yet, so the structured question in `_ask_of` is
     unavailable. Anchored on the LAST header — earlier frames are stale."""
     lines = text.split("\n")
-    hdr = next((i for i in range(len(lines) - 1, -1, -1)
-                if lines[i].strip()[:1] in _CHECKBOX), None)
+    hdr = _widget_anchor(lines)
     if hdr is None:
         return ""
     q = []
