@@ -135,6 +135,23 @@ body{line-height:calc(1.6*var(--lhx))}
 .sb{padding:calc(7px*var(--lhx)) 15px calc(14px*var(--lhx))}
 .qrow{padding:calc(9px*var(--lhx)) 11px}
 .recovrow{padding:calc(11px*var(--lhx)) 8px}
+
+/* ---- the label gutter has to scale WITH the type, or the Record breaks ----
+Found at 1.25x, not by reading: `CLAUDE` wants 43.8px of a 40px track and, with
+no `white-space:nowrap` on .rl, it does not overflow — it WRAPS, to two lines.
+That is the one thing a Record may not do. ADR 0017 spends ~52px a Record on a
+fixed three-line shape precisely so the column can be skimmed without reading a
+value, and a label that wraps at one size and not another is that shape gone.
+
+So the three tracks that hold the gutter, and the number column beside it, move
+from px to rem: 40px -> 2.5rem and 13px -> 0.85rem, identical at 1.0x and
+scaling from there. Measured after: `claude` back to one line, at a cost of
+~10px off the value column. Everything else stays px on purpose — --fs is a
+type scale, not a zoom. These four move because they are holding TYPE. */
+.rf{grid-template-columns:2.5rem minmax(0,1fr) auto}
+.rfpend{grid-template-columns:0.85rem 2.5rem minmax(0,1fr)}
+.wkrow>.rl.rw{flex:0 0 2.5rem}
+.rn{flex:0 0 0.85rem}
 """
 
 # --- 5. the knob panel -----------------------------------------------------
@@ -230,7 +247,7 @@ PANEL_JS = """/* ============ PROTOTYPE KNOBS — NOT PART OF THE BOARD ========
     system:'-apple-system,BlinkMacSystemFont,"SF Pro Text",Inter,system-ui,sans-serif',
     avenir:'"Avenir Next","Avenir",system-ui,sans-serif',
     verdana:'Verdana,"DejaVu Sans",Geneva,sans-serif',
-    charter:'Charter,"Iowan Old Style",Georgia,"Times New Roman",serif'
+    charter:'Charter,"Iowan Old Style",Georgia,serif'
   };
   var state = {theme:'dark', fs:'1', face:'system', lhx:'1'};
   var kb = document.getElementById('kb');

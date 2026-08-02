@@ -6,7 +6,7 @@
     system:'-apple-system,BlinkMacSystemFont,"SF Pro Text",Inter,system-ui,sans-serif',
     avenir:'"Avenir Next","Avenir",system-ui,sans-serif',
     verdana:'Verdana,"DejaVu Sans",Geneva,sans-serif',
-    charter:'Charter,"Iowan Old Style",Georgia,"Times New Roman",serif'
+    charter:'Charter,"Iowan Old Style",Georgia,serif'
   };
   var state = {theme:'dark', fs:'1', face:'system', lhx:'1'};
   var kb = document.getElementById('kb');
