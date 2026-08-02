@@ -192,6 +192,12 @@ the safe answer.
 - **The one-tap answer now costs a poll per step.** A four-question Set is four
   round trips, and a three-tick `multiSelect` is four more. Accepted deliberately:
   the alternative is a script that cannot be verified between steps.
+- **The generalisation became its own decision.**
+  [ADR 0021](0021-the-renderer-is-unversioned-so-every-parse-fails-loudly.md) —
+  the renderer is unversioned, so every parse must fail loudly. Four of the
+  defects above were version-pinned assumptions that degraded *silently into an
+  action*, which is a rule about all pane parsing rather than about the Ask, and
+  it binds parsers this ADR never touched.
 
 ## Escape hatch
 
