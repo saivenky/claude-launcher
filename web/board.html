@@ -338,6 +338,14 @@ font-size:0.84375rem;line-height:1.54;color:var(--fg2)}
 .md p{margin:0 0 8px} .md strong{color:var(--fg-max);font-weight:600}
 .md code,.md pre{font-family:var(--mono);font-size:0.75rem}
 .md code{background:var(--panel2);border:1px solid var(--line);border-radius:4px;padding:0 4px;color:var(--q)}
+/* Code is the other thing that cannot wrap its way narrow, so like a table it
+scrolls on its own axis rather than widening the page. The nested <code> drops
+the inline pill's chrome — the <pre> already is the box. Tokens only, per
+ADR 0018: nothing here hardcodes a colour. */
+.md pre{background:var(--panel2);border:1px solid var(--line);border-radius:4px;
+margin:8px 0;padding:7px 9px;overflow-x:auto;max-width:100%}
+.md pre code{background:none;border:0;border-radius:0;padding:0;
+color:var(--fg2);white-space:pre}
 .md ul{margin:6px 0;padding-left:18px} .md li{margin:3px 0}
 /* A table cannot wrap its way narrow, so it is the one thing that keeps a
 scrollbar — its own, on its own axis, instead of the whole page's. */

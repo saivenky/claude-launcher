@@ -36,7 +36,8 @@ Two places could do it:
 
 Render server-side, escape-first. `_md_to_html` `html.escape`s every text run
 *before* emitting any markup, and emits only a fixed tag set (`h3`–`h6`, `p`,
-`strong`, `code`, `ul`/`li`, `table`/`tr`/`th`/`td`). A `<script>` in a
+`strong`, `code`, `pre`, `ul`/`li`, `table`/`tr`/`th`/`td`) and **no attributes
+at all**. A `<script>` in a
 transcript therefore arrives as the text `&lt;script&gt;`, never as an element —
 so the `innerHTML` sink cannot execute it. The exception is confined to exactly
 one assignment, greppable in `board.js` as the sole `.innerHTML =`; every other
@@ -67,7 +68,16 @@ inert until explicitly rendered, so the failure mode is "shows as text," not
 ## Escape hatch
 
 If the Board ever needs richer markdown (nested lists, blockquotes, fenced
-code with languages), grow `_md_to_html`'s whitelist — never switch to a
-general HTML passthrough. The moment a real markdown library is warranted,
+code with languages), grow `_md_to_html`'s whitelist **and the list above with
+it** — never switch to a general HTML passthrough.
+
+`pre` was added this way: fenced code was swept into the paragraph collector and
+rendered as one contiguous run, the most conspicuous bug on the screen whenever
+a Run answered with code. The fence's info string (` ```python `) is **dropped**,
+not rendered — carrying it would mean a `class` attribute, and the renderer's
+"no attributes at all" is a cheaper thing to audit than an attribute plus the
+character class that keeps it inside its quotes. Nothing styles a language, so
+it would have bought the sink a new shape for no pixels. If syntax highlighting
+is ever wanted, that trade is the decision to revisit. The moment a real markdown library is warranted,
 vendor one that emits a sanitized subset server-side; do not move rendering to
 the client to get it.

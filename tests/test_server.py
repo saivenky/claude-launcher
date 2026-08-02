@@ -3023,5 +3023,95 @@ class DispatchSpawnTests(unittest.TestCase):
             self.assertTrue(os.path.isdir(os.path.dirname(log)))
 
 
+class FencedCodeTests(unittest.TestCase):
+    """A fenced block is its own element, not swept into the paragraph collector."""
+
+    def test_a_fenced_block_becomes_one_pre(self):
+        html_out = server._md_to_html("```\nfoo()\nbar()\n```")
+        self.assertEqual(html_out, "<pre><code>foo()\nbar()</code></pre>")
+
+    def test_newlines_inside_a_fence_survive(self):
+        html_out = server._md_to_html("```\na\n\nb\n```")
+        self.assertIn("a\n\nb", html_out)
+        self.assertNotIn("<p>", html_out)
+
+    def test_a_tilde_fence_works_too(self):
+        self.assertEqual(server._md_to_html("~~~\nx\n~~~"), "<pre><code>x</code></pre>")
+
+    def test_an_info_string_is_dropped_not_rendered(self):
+        html_out = server._md_to_html("```python\nx = 1\n```")
+        self.assertEqual(html_out, "<pre><code>x = 1</code></pre>")
+
+    def test_an_info_string_reaches_no_attribute_however_hostile(self):
+        # The renderer emits no attributes at all, so ADR 0006's innerHTML sink
+        # gains no new shape from a transcript we do not own.
+        html_out = server._md_to_html('```a"b <c> onload=x\nx\n```')
+        self.assertEqual(html_out, "<pre><code>x</code></pre>")
+
+    def test_a_longer_fence_carries_inner_fences_whole(self):
+        # How a transcript quotes markdown at us: a 5-backtick wrapper around a
+        # 3-backtick block. The inner fences must not close the outer one.
+        html_out = server._md_to_html("`````\nmd:\n```\ninner\n```\n`````")
+        self.assertEqual(
+            html_out, "<pre><code>md:\n```\ninner\n```</code></pre>")
+
+    def test_a_shorter_run_does_not_close_a_longer_fence(self):
+        html_out = server._md_to_html("````\na\n```\nb\n````")
+        self.assertEqual(html_out, "<pre><code>a\n```\nb</code></pre>")
+
+    def test_a_longer_run_does_close_a_shorter_fence(self):
+        html_out = server._md_to_html("```\na\n`````")
+        self.assertEqual(html_out, "<pre><code>a</code></pre>")
+
+    def test_an_indented_fence_sheds_its_own_indent(self):
+        html_out = server._md_to_html("  ```\n  x = 1\n    deeper\n  ```")
+        self.assertEqual(html_out, "<pre><code>x = 1\n  deeper</code></pre>")
+
+    def test_markdown_inside_a_fence_stays_literal(self):
+        html_out = server._md_to_html("```\n# not a heading\n- not a list\n**not bold**\n```")
+        self.assertNotIn("<h3>", html_out)
+        self.assertNotIn("<ul>", html_out)
+        self.assertNotIn("<strong>", html_out)
+        self.assertIn("**not bold**", html_out)
+
+    def test_html_inside_a_fence_is_escaped(self):
+        html_out = server._md_to_html("```\n<script>alert(1)</script>\n```")
+        self.assertNotIn("<script>", html_out)
+        self.assertIn("&lt;script&gt;", html_out)
+
+    def test_a_table_inside_a_fence_is_not_a_table(self):
+        html_out = server._md_to_html("```\n| a | b |\n|---|---|\n| 1 | 2 |\n```")
+        self.assertNotIn("<table>", html_out)
+        self.assertTrue(html_out.startswith("<pre><code>"))
+
+    def test_an_unterminated_fence_takes_the_rest_of_the_text(self):
+        html_out = server._md_to_html("```\nfoo\nbar")
+        self.assertEqual(html_out, "<pre><code>foo\nbar</code></pre>")
+
+    def test_prose_around_a_fence_stays_prose(self):
+        html_out = server._md_to_html("before\n\n```\ncode\n```\n\nafter")
+        self.assertEqual(
+            html_out, "<p>before</p>\n<pre><code>code</code></pre>\n<p>after</p>")
+
+    def test_a_fence_after_prose_without_a_blank_line_still_breaks_out(self):
+        html_out = server._md_to_html("before\n```\ncode\n```")
+        self.assertEqual(html_out, "<p>before</p>\n<pre><code>code</code></pre>")
+
+    def test_an_empty_fence_emits_an_empty_pre(self):
+        self.assertEqual(server._md_to_html("```\n```"), "<pre><code></code></pre>")
+
+    def test_two_fences_are_two_blocks(self):
+        html_out = server._md_to_html("```\na\n```\n```\nb\n```")
+        self.assertEqual(
+            html_out, "<pre><code>a</code></pre>\n<pre><code>b</code></pre>")
+
+    def test_a_tilde_fence_is_not_closed_by_a_backtick_fence(self):
+        html_out = server._md_to_html("~~~\n```\n~~~")
+        self.assertEqual(html_out, "<pre><code>```</code></pre>")
+
+    def test_inline_code_still_renders_outside_a_fence(self):
+        self.assertEqual(server._md_to_html("a `b` c"), "<p>a <code>b</code> c</p>")
+
+
 if __name__ == "__main__":
     unittest.main()

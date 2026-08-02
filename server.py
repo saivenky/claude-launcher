@@ -1521,6 +1521,11 @@ def _ai_title(session_id: str) -> str:
 # fixed tag set is produced. The client innerHTMLs the result — a bounded,
 # deliberate exception to the no-innerHTML rule of ADR 0003, made safe here by
 # escape-first. See ADR 0006.
+# The one place the fence shape is written down. Both the block branch below
+# and the paragraph collector that must break on it read this.
+_FENCE_RE = re.compile(r"^([ \t]*)(`{3,}|~{3,})(.*)$")
+
+
 def _md_inline(s: str) -> str:
     s = html.escape(s)
     s = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", s)
@@ -1535,6 +1540,31 @@ def _md_to_html(text: str) -> str:
         ln = lines[i]
         if not ln.strip():
             i += 1
+            continue
+        # Fenced code first: everything up to the closing fence is literal, so
+        # this branch must win over headings, tables and lists — a `#` or a `|`
+        # inside a block is code, not markup. Escaped with html.escape rather
+        # than _md_inline, because `**` and backticks inside code are also code.
+        # No info string is kept: it would be the renderer's only attribute, and
+        # nothing styles a language, so it would buy the innerHTML sink (ADR
+        # 0006) a new shape for no pixels.
+        m = _FENCE_RE.match(ln)
+        if m:
+            indent, fence = m.group(1), m.group(2)
+            # The closer must be at least as long as the opener and the same
+            # character, so a 5-backtick fence can carry ``` blocks intact —
+            # which is how a transcript quotes markdown at us.
+            close = re.compile(rf"^\s*{fence[0]}{{{len(fence)},}}\s*$")
+            i += 1
+            code = []
+            while i < len(lines) and not close.match(lines[i]):
+                # An indented fence indents its body too; that indent is the
+                # fence's, not the code's.
+                code.append(lines[i][len(indent):] if lines[i][:len(indent)] == indent else lines[i])
+                i += 1
+            i += 1  # the closing fence, or one past the end if it never came
+            body = html.escape("\n".join(code))
+            out.append(f"<pre><code>{body}</code></pre>")
             continue
         m = re.match(r"^(#{1,4})\s+(.*)", ln)
         if m:
@@ -1562,7 +1592,9 @@ def _md_to_html(text: str) -> str:
             continue
         buf = [ln]
         i += 1
-        while i < len(lines) and lines[i].strip() and not re.match(r"^(#{1,4}\s|\s*([-*]|\d+\.)\s)", lines[i]):
+        while i < len(lines) and lines[i].strip() and not (
+                re.match(r"^(#{1,4}\s|\s*([-*]|\d+\.)\s)", lines[i])
+                or _FENCE_RE.match(lines[i])):
             buf.append(lines[i])
             i += 1
         out.append(f"<p>{_md_inline(' '.join(buf))}</p>")
