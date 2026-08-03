@@ -94,6 +94,28 @@ person, is what catches the next `☒`.
   which the vocabulary/logic split is designed to make obvious.
 - **Version stamps make "which renderer is this?" answerable.** Every fixture
   records the version it was taken under; all of ADR 0020's were `2.1.220`.
+- **The matrix bounds what we can READ, never what the keys DO.** It is a
+  guarantee about parsing, and one live behaviour sits outside it. Free text is
+  routed by typing into the widget's highlighted `Type something` row; on 2.1.220
+  that path and the `Esc` path are **indistinguishable in the transcript** —
+  both end in the rejection `tool_result` with the prose arriving as the next
+  user turn, and only the correct in-row sequence actually answers the tool. So a
+  renderer change that breaks in-row typing degrades free text to "cancel and
+  type" **silently**, because the parse still succeeds and every assertion still
+  holds. That is this ADR's own failure mode in the one place its mechanisms
+  cannot reach.
+
+  Two related facts are on the same footing, both established by live probe and
+  neither observable from a capture: an `Enter` on that row *rejects* the tool
+  rather than opening the row, and lead-in keys must be **one `send-keys` call
+  each** — batched, the TUI drops them and the trailing `Enter` answers the
+  highlighted row, which is ADR 0020's wrong-answer table reproduced by its own
+  fix.
+
+  The closing move is a deliberate live probe after a Claude Code upgrade:
+  answer a real Ask from the phone by free text and check the `tool_result` says
+  the user *answered* rather than declined. `tools/capture-widget.py` gets the
+  evidence for everything else; it cannot get this.
 
 ## Escape hatch
 
