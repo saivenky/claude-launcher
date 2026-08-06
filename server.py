@@ -616,8 +616,17 @@ _RECENT_DIRS_MAX = 12        # dropdown length that fits a phone
 _RECENT_DIRS_SCAN = 200      # project dirs inspected — bounds a huge history
 
 
-def _cwd_from_transcript(path: str) -> str:
-    """The authoritative ``cwd`` recorded in a transcript, or '' if none."""
+def _origin_from_transcript(path: str) -> tuple[str, str]:
+    """A transcript's ``(cwd, entrypoint)`` — the two fields the first row
+    carrying a cwd records together, read in ONE pass.
+
+    ``entrypoint`` is how the **Session** was started: ``"cli"`` for a human at
+    a terminal, ``"sdk-py"`` and friends for the Agent SDK or a `claude -p`. It
+    rides along with the cwd because it sits on the same row, so no caller that
+    wants both pays for a second read of the file. Missing (an old or
+    third-party transcript that never wrote the field) is reported as '', and
+    every caller must read that as *unknown*, never as headless.
+    """
     try:
         with open(path) as fh:
             for line in fh:
@@ -627,10 +636,16 @@ def _cwd_from_transcript(path: str) -> str:
                     continue
                 cwd = o.get("cwd")
                 if cwd:
-                    return cwd
+                    entrypoint = o.get("entrypoint")
+                    return cwd, entrypoint if isinstance(entrypoint, str) else ""
     except OSError:
-        return ""
-    return ""
+        return "", ""
+    return "", ""
+
+
+def _cwd_from_transcript(path: str) -> str:
+    """The authoritative ``cwd`` recorded in a transcript, or '' if none."""
+    return _origin_from_transcript(path)[0]
 
 
 def _recent_dirs(base: str = _PROJECTS_STATE) -> list[str]:
@@ -682,6 +697,30 @@ def _recent_dirs(base: str = _PROJECTS_STATE) -> list[str]:
 _RECOVERABLE_MAX = 30        # rows served — a phone-sized, newest-first window
 _RECOVERABLE_SCAN = 200      # project dirs opened — bounds a huge history
 
+_INTERACTIVE_ENTRYPOINT = "cli"   # the only entrypoint a human sits in front of
+
+
+def _is_headless_entrypoint(entrypoint: str) -> bool:
+    """True for a **Headless Session**'s recorded ``entrypoint``.
+
+    A Headless Session is one whose transcript records no interactive
+    entrypoint — written by the Agent SDK (`sdk-py`, …) or a `claude -p`, with
+    no human at a terminal at any point. **Recover** must not offer one: an
+    unattended agent can leave dozens of transcripts a minute apart, and they
+    pass every other filter (their cwd exists; with no tty their process is
+    invisible to `_live_session_ids`, so they look dead even while running).
+
+    The same call `_foreign_rows` makes for *processes* — a headless
+    `claude -p` "is nobody's Run, and it must never become transferable" — made
+    here for *transcripts*. Keep the two in step: origin decides, never location.
+
+    Unknown ('' — an old or third-party transcript that never wrote the field)
+    counts as interactive. The failure modes are not symmetric: a spurious row
+    in the picker is an annoyance, a silently unrecoverable Session after a
+    restart is the exact thing Recover exists to prevent.
+    """
+    return bool(entrypoint) and entrypoint != _INTERACTIVE_ENTRYPOINT
+
 
 def _recoverable_sessions(base: str = _PROJECTS_STATE,
                           live: "set[str] | None" = None) -> list[dict]:
@@ -692,9 +731,14 @@ def _recoverable_sessions(base: str = _PROJECTS_STATE,
     _RECOVERABLE_SCAN project dirs are inspected (a dir's mtime bumps when a
     session file lands, mirroring _recent_dirs), their transcripts are ordered by
     their own mtime and opened newest-first only until _RECOVERABLE_MAX rows fill,
-    and each open reads just the head for the cwd (_cwd_from_transcript). A
-    Session with a live Run is excluded; one whose recorded cwd no longer exists
-    is hidden. Recovery-set pre-tick flags are slice 02 — this is the list only.
+    and each open reads just the head for the cwd and entrypoint together
+    (_origin_from_transcript — one read, both fields). A Session with a live Run
+    is excluded; one whose recorded cwd no longer exists is hidden; and so is a
+    **Headless Session** (_is_headless_entrypoint), which no human ever drove.
+    That last exclusion happens HERE and not downstream, so the recovery set's
+    recency cluster forms over the surviving rows only — a burst of headless
+    transcripts must not chain the pre-tick set through real work.
+    Recovery-set pre-tick flags are slice 02 — this is the list only.
     """
     if live is None:
         live = _live_session_ids()
@@ -724,9 +768,11 @@ def _recoverable_sessions(base: str = _PROJECTS_STATE,
 
     rows: list[dict] = []
     for mtime, path, session_id in candidates:
-        cwd = _cwd_from_transcript(path)
+        cwd, entrypoint = _origin_from_transcript(path)
         if not cwd or not os.path.isdir(cwd):
             continue   # no cwd recorded, or a dead-cwd Session — hidden entirely
+        if _is_headless_entrypoint(entrypoint):
+            continue   # a **Headless Session** — nobody's Run to hand back
         rows.append({
             "sessionId": session_id,
             "dir": _display_path(cwd),          # ~ for home, as the board renders
@@ -817,7 +863,9 @@ def _foreign_rows(claude: dict[str, int], pane_ttys: set[str],
     subprocess call. `_parse_claude_ttys` keeps its `ttys*` filter, which is what
     makes a headless `claude -p` — a **Dispatch**, a script, CI — invisible here:
     it has no tty, it is nobody's Run, and it must never become transferable.
-    Widening that filter would put CI jobs on the Board.
+    Widening that filter would put CI jobs on the Board. `_recoverable_sessions`
+    makes the same call on the transcript side, by entrypoint rather than by
+    tty (see `_is_headless_entrypoint`); the two must not drift.
 
     A `claude` sitting in a tmux pane we did not stamp is Foreign too (its pane
     is dropped by `_parse_tmux_panes`, so its tty is not in `pane_ttys`). That is

@@ -195,6 +195,7 @@ _S2 = "a2a2a2a2-2222-2222-2222-222222222222"
 _SHOME = "b0b0b0b0-0000-0000-0000-000000000000"
 _SLIVE = "cccccccc-3333-3333-3333-333333333333"
 _SDEAD = "dddddddd-4444-4444-4444-444444444444"
+_SSDK = "eeeeeeee-5555-5555-5555-555555555555"
 
 
 class RecoverableSessionsTests(unittest.TestCase):
@@ -215,9 +216,10 @@ class RecoverableSessionsTests(unittest.TestCase):
         server.PROJECTS_ROOT = self._saved_root
         shutil.rmtree(self.tmp, ignore_errors=True)
 
-    def _txn(self, slug, sid, cwd, mtime, texts=("hello",)):
+    def _txn(self, slug, sid, cwd, mtime, texts=("hello",), entrypoint=None):
         """A transcript for `sid` in project dir `slug`, first line carrying
-        `cwd`, `texts` written as successive user messages, stamped `mtime`."""
+        `cwd` (and `entrypoint`, when given, as Claude Code records it on that
+        same row), `texts` written as successive user messages, stamped `mtime`."""
         d = os.path.join(self.state, slug)
         os.makedirs(d, exist_ok=True)
         p = os.path.join(d, sid + ".jsonl")
@@ -226,6 +228,8 @@ class RecoverableSessionsTests(unittest.TestCase):
             o = {"type": "user", "message": {"content": [{"type": "text", "text": t}]}}
             if i == 0:
                 o["cwd"] = cwd
+                if entrypoint is not None:
+                    o["entrypoint"] = entrypoint
             lines.append(json.dumps(o))
         with open(p, "w") as fh:
             fh.write("\n".join(lines) + "\n")
@@ -279,6 +283,60 @@ class RecoverableSessionsTests(unittest.TestCase):
             self._txn(f"proj-{i:02d}", sid, alpha, 1000 + i)
         rows = server._recoverable_sessions(base=self.state, live=set())
         self.assertEqual(len(rows), server._RECOVERABLE_MAX)
+
+    def test_headless_origin_excluded_absent_or_cli_entrypoint_kept(self):
+        """A **Headless Session** — one whose transcript records no interactive
+        entrypoint — is never offered. Absent field == interactive: fail toward
+        showing, because old and third-party transcripts do not carry it."""
+        alpha = os.path.join(self.root, "alpha")
+        self._txn("proj-sdk", _SSDK, alpha, 5000, entrypoint="sdk-py")   # headless
+        self._txn("proj-cli", _S1, alpha, 4000, entrypoint="cli")        # a terminal
+        self._txn("proj-old", _S2, alpha, 3000)                          # no field
+
+        ids = [r["sessionId"] for r in server._recoverable_sessions(
+            base=self.state, live=set())]
+        self.assertEqual(ids, [_S1, _S2])
+        self.assertNotIn(_SSDK, ids)
+
+    def test_headless_cluster_does_not_inflate_the_recovery_set(self):
+        """The exclusion is upstream of the recency cluster: a burst of headless
+        transcripts newer than real work must neither pre-tick nor chain the set
+        through to older Sessions it would otherwise not reach."""
+        alpha = os.path.join(self.root, "alpha")
+        # 6 SDK transcripts a minute apart, newest on top …
+        for i in range(6):
+            sid = f"{i:08d}-9999-9999-9999-999999999999"
+            self._txn(f"proj-sdk-{i}", sid, alpha, 100_000 - 60 * i, entrypoint="sdk-py")
+        # … then real work, far enough below the burst that chaining through it
+        # would be the only way the older Session could join the set.
+        self._txn("proj-a", _S1, alpha, 100_000 - 60 * 5 - 10 * 60)
+        self._txn("proj-b", _S2, alpha, 100_000 - 60 * 5 - 40 * 60)
+
+        rows = server._recoverable_sessions(base=self.state, live=set())
+        self.assertEqual([r["sessionId"] for r in rows], [_S1, _S2])
+        # the surviving pair is 30min apart -> a gap over G, so only the anchor
+        # pre-ticks. With the headless burst counted it would have been both.
+        count = server._recovery_set_size([r["mtime"] for r in rows])
+        self.assertEqual(count, 1)
+
+    def test_resume_guard_still_accepts_a_headless_session(self):
+        """Only what Recover *offers* narrows. A Headless Session is still a
+        Resumable Session: paste its sessionId and Resume must still work — the
+        escape hatch for the day you do want to reopen one."""
+        alpha = os.path.join(self.root, "alpha")
+        self._txn("proj-sdk", _SSDK, alpha, 5000, entrypoint="sdk-py")
+        saved = (server._transcript_path, server._session_cwd, server._live_session_ids)
+        find, cwd_of = saved[0], saved[1]        # point both at the fixture state
+        server._transcript_path = lambda sid, *a, **k: find(sid, self.state)
+        server._session_cwd = lambda sid, *a, **k: cwd_of(sid, self.state)
+        server._live_session_ids = lambda: set()
+        try:
+            workdir, message = server._resume_guard(_SSDK)
+        finally:
+            (server._transcript_path, server._session_cwd,
+             server._live_session_ids) = saved
+        self.assertEqual(message, "")
+        self.assertEqual(os.path.realpath(workdir), alpha)
 
 
 class RecoverySetTests(unittest.TestCase):
