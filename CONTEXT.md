@@ -56,19 +56,40 @@ _Avoid_: reopen, restore, continue (overloaded by `claude --continue`)
 
 **Resumable Session**:
 A **Session** with a transcript on disk *and* a working directory that still
-exists, but no live **Run** — one the Launcher can bring back. The rows the
-**Recover** picker lists. A Session whose cwd is gone is not resumable (there
-is nowhere to `cd`), and a Session with a live Run is not either (the
-one-live-Run-per-Session guard refuses it).
+exists, but no live **Run** — one the Launcher can bring back. A Session whose
+cwd is gone is not resumable (there is nowhere to `cd`), and a Session with a
+live Run is not either (the one-live-Run-per-Session guard refuses it). Wider
+than what the **Recover** picker lists: a **Headless Session** is Resumable and
+is still never offered there, because being resumable is a fact about the
+Session while being *offered* is a judgement about whether you wanted it back.
 _Avoid_: closed session (a Run can be absent for reasons other than closing),
 dead session (the Session is never dead — only its Run)
+
+**Headless Session**:
+A **Session** whose transcript records no interactive entrypoint — written by
+the Claude Agent SDK or a `claude -p`, with no human at a terminal at any point.
+A property of *origin*, fixed at birth and read from the transcript, never of
+where it ran: a Session in the same directory that someone actually sat in front
+of is not one. **Recover** never offers a Headless Session, because an
+unattended agent can leave dozens an hour and nobody is waiting on any of them
+(ADR 0022) — but it is still a **Resumable Session**, so **Resume** by
+`sessionId` brings it back. The transcript-side twin of the tty test that keeps a
+headless `claude -p` off the **Board**: the same call about origin, made on a
+different substrate.
+_Avoid_: SDK session (names one writer of several), unattended / background
+session (each is true of the moment it ran, but the property is the origin, not
+the moment), agent session (every **Run** is an agent), dispatch (a **Dispatch**
+leaves no Session at all)
 
 **Recover**:
 Discover and **resume** — as Managed Runs, in bulk — the **Resumable
 Sessions** that were live before a restart. The discovery-and-bulk sibling of
 **Resume**: where Resume takes one `sessionId` you already know, Recover lists
 Resumable Sessions newest-first and pre-selects the **recovery set**, so one
-tap brings a whole batch back. It resumes each member exactly as Resume does —
+tap brings a whole batch back. It lists only the Sessions a human drove — a
+**Headless Session** is filtered out before the recovery set is even computed,
+so a burst of them cannot crowd the window or drag the pre-tick (ADR 0022).
+It resumes each member exactly as Resume does —
 a new **Run** per Session — and nothing of the old Run comes with it: any
 in-flight turn from before the restart is already lost (as with **Transfer**).
 Only the Sessions are reopened; no prior *state* is restored.
@@ -354,6 +375,11 @@ _Avoid_: access, availability
   **Recover**, makes it live and drops it from the picker. A **Foreign Run**
   makes its Session *not* Resumable — the resume guard already counts it
   (ADR 0012)
+- A **Headless Session** is **Resumable** but never **Recover**able: the picker
+  offers a strict subset of the Resumable Sessions. That gap is the only one of
+  its kind in this glossary, and it is deliberate — Recover guesses what you
+  wanted (ADR 0013), so it is allowed to be wrong in the direction of offering
+  less, where **Resume** obeys a `sessionId` you typed and is not
 - After a machine restart no **Run** survives, so every Session that had one
   becomes **Resumable**. The **recovery set** is the Launcher's guess at which
   of those were *live at the restart* — a heuristic over transcript mtimes, not
@@ -519,6 +545,13 @@ _Avoid_: access, availability
   narrowed to **Blocked** Runs only. The prose-`?` heuristic that fed it on an
   **idle** Run produced a second copy of the last **turn**, not new
   information, so an idle Run has no **Ask** at all.
+- "intake agent" was used for an unattended agent in *another* repo whose
+  headless Sessions were filling the **Recover** picker — flagged, and the word
+  is not shared. **Intake** here is the **Board**'s create-side (launch,
+  **resume**, **Recover**, **Task** / **Dispatch**) and nothing else. That
+  agent is named by what it leaves behind on this side of the boundary — a
+  **Headless Session** — because its own name is not ours to spend, and the
+  filter would be wrong if it were about one agent rather than about origin.
 - "depend on Tailscale" was used to mean the whole tool — resolved:
   Tailscale is only the **Launcher transport**; the **Remote Control
   bridge** is unaffected.
