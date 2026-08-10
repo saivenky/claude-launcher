@@ -38,6 +38,22 @@ formerly an iTerm pane), and a **Foreign Run**.
 _Avoid_: session (that's the durable thread here — and tmux's own container,
 see *Flagged ambiguities*), window, tab, terminal, process, instance
 
+**Workspace**:
+Which project a **Run** is in, as one word — the name you switch *between*. The
+basename of the Run's working directory, which is the repo for
+`~/projects/<repo>` and the repo-plus-discriminator for a worktree at
+`~/projects/.worktrees/<repo>-<slug>`, because that layout flattens the slug into
+the directory name. *That flattening is load-bearing*: nest the worktrees instead
+and the Workspace becomes the slug alone, with the repo gone. A **Session** in a
+directory that no longer exists still has one; a Run with no working directory at
+all has none, and the **Board** says so rather than putting something else in the
+slot. Not a path — the path is a separate field, and a Workspace never contains a
+`/`.
+_Avoid_: project (the repo, not the checkout — two worktrees of one repo are two
+Workspaces), repo (same), dir / cwd / path (the Workspace is derived *from* the
+path and is not one), title (what the field was called while it held four
+different kinds of string)
+
 **Foreign Run**:
 A live **Run** the Launcher did not start — a `claude` someone ran by hand in
 any other terminal, so it has no tmux window and no `@cl_run_id`. The Launcher
@@ -182,8 +198,13 @@ _Avoid_: dashboard, list (it is more than a list now), inbox, feed
 **Focus**:
 The single **Run** the **Board** shows in full — its **scrollback**, its
 **ask** when it has one, and the reply box — as opposed to the queued rows. At
-most one. *You* choose it: a row tap, a swipe, or the first actionable Run when
-you hold none. It stays yours until you move it or it resolves. Urgency orders
+most one. *You* choose it: a row tap, a swipe, or, when you hold none, urgency's
+head if anything wants you and otherwise the newest live Run. The second half of
+that fallback is not a nicety: a **Board** whose Runs are all merely **working**
+has no urgent head, and a Focus of *none* takes the header, the queue's way in
+and the swipe with it — live Runs and no route to any of them (ADR 0023). An
+empty Board means nothing is live, never that nothing is urgent. Its header names
+the **Workspace** first and alone, on a row of its own. It stays yours until you move it or it resolves. Urgency orders
 the queue, never the Focus — a newly-**Blocked** Run joins the queue; it does
 not take the Focus from you.
 _Avoid_: card (the Focus's rendering, not the concept), selection, current,
@@ -413,6 +434,15 @@ _Avoid_: access, availability
   **resumed**. Spawning it is the whole interaction
 - A **Task** and a **Dispatch** are told apart by one field — `command`
   starts a **Run**, `exec` starts a Dispatch. Never both
+- Every **Run** has a **Workspace**, Managed or **Foreign** alike, derived by the
+  same rule from the same field — so the one thing that says where you are is
+  never computed two ways. It is the only identity a **Run** carries that you can
+  read at a glance: a `sessionId` is for pasting, a **Session**'s summary says
+  what the work is and not where it lives
+- Wherever a **Run** is named — a queue row, the **Focus**'s header, the
+  **Ask** — the **Workspace** is what names it, and it truncates last. It is
+  answering a different question from everything beside it (*where am I*, not
+  *what is happening*), so nothing else on the surface can stand in for it
 - A **Board** holds exactly one **Focus**; every other actionable **Run**
   queues behind it by urgency. A **Blocked** Run outranks the queue, not the
   Focus

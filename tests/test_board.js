@@ -251,7 +251,8 @@ function fakeBoard(focusSid) {
   let focus = focusSid ? world.find((s) => s.sessionId === focusSid) : null;
   const pinned = !!focus;
   if (!focus) focus = order[0] || null;
-  const strip = (s) => ({runId: s.runId, sessionId: s.sessionId, title: s.title, dir: "/p/" + s.title,
+  const strip = (s) => ({runId: s.runId, sessionId: s.sessionId, workspace: s.workspace,
+                         dir: "/p/" + s.workspace,
                          status: "", bridge: "", updatedAt: s.updatedAt, lane: s.lane, pri: s.pri, one: s.one});
   // The **Ask** is a property of being **Blocked** and of nothing else: server.py
   // blanks it off the question/approval lanes (ADR 0014). Mirrored here, or the
@@ -259,7 +260,7 @@ function fakeBoard(focusSid) {
   const blocked = focus && (focus.lane === "question" || focus.lane === "approval");
   return {
     focus: focus ? Object.assign(strip(focus), {
-      aiTitle: "about " + focus.title, scrollback: sbOf[focus.sessionId] || SB(),
+      aiTitle: "about " + focus.workspace, scrollback: sbOf[focus.sessionId] || SB(),
       ask: blocked ? "what now?" : "",
       options: blocked ? legacyOpts : [],
       cursor: blocked ? legacyCursor : null,
@@ -398,9 +399,9 @@ function ok(name, cond, extra) {
 // `pri` must not go through `|| 1` — 0 IS a priority (high), and coercing it to
 // normal quietly defuses the no-cut-in test: nothing outranks the held Focus, so
 // it passes without the client doing anything.
-const S = (sid, lane, pri, title) => ({sessionId: sid, runId: "r-" + sid, lane,
-                                       pri: pri === undefined ? 1 : pri,
-                                       title, updatedAt: 1000, one: "one-" + title});
+const S = (sid, lane, pri, workspace) => ({sessionId: sid, runId: "r-" + sid, lane,
+                                           pri: pri === undefined ? 1 : pri,
+                                           workspace, updatedAt: 1000, one: "one-" + workspace});
 const A = "aaaaaaaa-1111-1111-1111-111111111111";
 const B = "bbbbbbbb-2222-2222-2222-222222222222";
 const W = "wwwwwwww-3333-3333-3333-333333333333";
@@ -527,13 +528,13 @@ const W = "wwwwwwww-3333-3333-3333-333333333333";
   // the assertions that matter are the negative ones: it is not in the queue, it
   // cannot be answered, and none of the Focus discipline above moves because of it.
   const F = "ffffffff-4444-4444-4444-444444444444";
-  foreignWorld = [{sessionId: F, title: "mine", dir: "~/projects/mine", status: "waiting",
+  foreignWorld = [{sessionId: F, workspace: "mine", dir: "~/projects/mine", status: "waiting",
                    bridge: "session_abc", updatedAt: 1000, one: "the last thing it said"}];
   const held = shownSid();   // B, from the respond test above
   await poll();
   const fr = findAll(zones(), "frow");
   ok("foreign: it gets a row of its own", fr.length === 1, "rows: " + fr.length);
-  ok("foreign: showing title, dir, status and last message",
+  ok("foreign: showing workspace, dir, status and last message",
      fr.length === 1 && ["mine", "~/projects/mine", "waiting", "the last thing it said"]
        .every((s) => fr[0].textContent.includes(s)), fr.length && fr[0].textContent);
   const acts = fr.length ? findAll(fr[0], "iconbtn") : [];
@@ -1212,7 +1213,7 @@ const W = "wwwwwwww-3333-3333-3333-333333333333";
   await poll();
   const fmeta = () => findAll(focusWrap(), "fmeta")[0].textContent;
   ok("header: the badge names the lane, and the meta is the age and nothing else",
-     findAll(focusWrap(), "fbadge")[0].textContent === "blocked · question" &&
+     findAll(focusWrap(), "fbadge")[0].textContent === "question" &&
      /^[0-9]+[smhd]$/.test(fmeta()), fmeta());
   ok("header: no lane word survives beside it to say the same thing twice",
      !/waiting|idle|working/.test(fmeta()) && !SRC.includes("LANE_NOUN["), fmeta());
@@ -1235,6 +1236,15 @@ const W = "wwwwwwww-3333-3333-3333-333333333333";
   ok("ask: a Blocked Focus draws one, carrying the blocker",
      askBox().length === 1 && askBox()[0].textContent.includes("what now?"),
      JSON.stringify(askBox().map((a) => a.textContent)));
+  // The Workspace stamp, and NOT as a duplicate of the header's: `.fhead` is
+  // slid out by syncChrome while you read, which is the state an approval lands
+  // in at the bottom of a long scrollback. Approving is the one irreversible act
+  // on the Board and it must never be done with nothing on screen naming the
+  // project (ADR 0023).
+  ok("ask: it stamps the Workspace, so an approval is never answered blind",
+     findAll(askBox()[0], "askws").length === 1 &&
+     findAll(askBox()[0], "askws")[0].textContent === world[0].workspace,
+     JSON.stringify(findAll(askBox()[0], "askws").map((a) => a.textContent)));
 
   // The composer is unconditional (CONTEXT.md: Focus). Responding to a working
   // Run is not a special case — its input queues until the turn ends. Each lane

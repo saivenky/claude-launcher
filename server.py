@@ -333,6 +333,25 @@ def _display_path(p: str) -> str:
     return p
 
 
+def _workspace(d: str) -> str:
+    """The **Workspace** of a Run: which project it is in, as one word.
+
+    The basename of the working directory and nothing cleverer. That is right for
+    `~/projects/<repo>` AND for a worktree at
+    `~/projects/.worktrees/<repo>-<slug>`, because this workspace's convention
+    flattens the discriminator into the directory name — so the repo and the slug
+    are both already there. THAT IS THE DEPENDENCY: move to nested worktrees
+    (`.worktrees/<repo>/<slug>`) and this returns `<slug>` alone, losing the repo,
+    and the fix is here. Asking git for the repo root instead would cost a
+    subprocess per Run per board poll to serve a layout nobody here uses.
+
+    None, never a fallback, when there is no cwd: a Run with no directory has no
+    Workspace, and the pane title that used to land in this slot read as a repo
+    name without being one. The client says `—` rather than lie (CONTEXT.md).
+    """
+    return (d or "").rstrip("/").split("/")[-1] or None
+
+
 _CONTROL_CHAR_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 
 
@@ -2902,8 +2921,7 @@ def _board(focus_sid: str = "") -> dict:
         if lane in ("question", "approval"):
             ask, _, _ = _ask_of(sid)
             one = ask or one
-        proj = (r.get("dir") or "").rstrip("/").split("/")[-1]
-        items.append({"runId": r.get("id"), "sessionId": sid, "title": proj or r.get("title", ""),
+        items.append({"runId": r.get("id"), "sessionId": sid, "workspace": _workspace(r.get("dir")),
                       "dir": r.get("dir", ""), "status": r.get("status", ""), "bridge": r.get("bridge", ""),
                       "attach": r.get("attach", ""),
                       "updatedAt": r.get("updatedAt"), "lane": lane, "pri": _pri(sid), "one": one})
@@ -2929,7 +2947,18 @@ def _board(focus_sid: str = "") -> dict:
     focus = next((it for it in items if it["sessionId"] == focus_sid), None) if focus_sid else None
     pinned = focus is not None
     if focus is None:
-        focus = order[0] if order else None
+        # URGENCY FIRST, THEN ANYTHING LIVE. `order` is the triage order and it
+        # holds only the Runs that want you — so when every Run is merely
+        # working (or dormant, or snoozed) it is empty, and a focus of None used
+        # to paint "All clear" with no `.fhead`, hence no queue pill and no
+        # swipe target: a phone with several live Runs and NO ROUTE TO ANY OF
+        # THEM. The rail hid it, being wide enough to list them anyway.
+        # `CONTEXT.md` already promised a working Focus is a legitimate Focus
+        # ("idle, Blocked or working alike"); this is the one place that did not
+        # honour it. The chain keeps `order` itself untouched, so `upnext` and
+        # `counts.needYou` still mean what they meant — nothing that does not
+        # want you has joined the triage list. Empty now means nothing is live.
+        focus = next((g[0] for g in (order, working, dormant, snoozed) if g), None)
     other = [it for it in order if it is not focus]
     working = [it for it in working if it is not focus]
     dormant = [it for it in dormant if it is not focus]
@@ -3064,9 +3093,9 @@ def _foreign_items() -> list[dict]:
     section is outside the triage surface entirely.
     """
     rows = [{"sessionId": r.get("sessionId", ""),
-             # The project, exactly as the queue rows title themselves — falling
-             # back to the Session's opening ask when there is no dir to name.
-             "title": (r.get("dir") or "").rstrip("/").split("/")[-1] or r.get("title", ""),
+             # The **Workspace**, derived exactly as a Managed row's is — one
+             # function, so a Foreign Run is never named by a different rule.
+             "workspace": _workspace(r.get("dir")),
              "dir": r.get("dir", ""),
              "status": r.get("status", ""),
              "bridge": r.get("bridge", ""),

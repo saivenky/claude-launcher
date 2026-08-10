@@ -2956,8 +2956,52 @@ class BoardPayloadTests(unittest.TestCase):
             "status": "busy", "bridge": "session_abc", "updatedAt": 5000, "snippet": "",
         }]
         board = server._board()
-        self.assertIsNone(board["focus"])                    # a working Run is not a focus
-        self.assertEqual(board["watching"][0]["bridge"], "session_abc")
+        # A working Run IS a Focus now — it is the fallback when nothing wants
+        # you, because the alternative was a phone holding live Runs with no
+        # route to any of them. It does not join `watching`, being the Focus.
+        self.assertEqual(board["focus"]["sessionId"], _GOOD)
+        self.assertEqual(board["focus"]["bridge"], "session_abc")
+        self.assertEqual(board["watching"], [])
+
+    def test_the_workspace_is_the_basename_of_the_cwd(self):
+        # Right for a repo AND for this workspace's worktree layout, which
+        # flattens the discriminator into the directory name — so two worktrees
+        # of one repo are two different Workspaces (ADR 0023).
+        self.assertEqual(server._workspace("~/projects/claude-launcher"), "claude-launcher")
+        self.assertEqual(server._workspace("~/projects/.worktrees/claude-launcher-recover-filter"),
+                         "claude-launcher-recover-filter")
+        self.assertEqual(server._workspace("~/projects/x/"), "x")
+
+    def test_no_cwd_means_no_workspace(self):
+        # None, not a stand-in. The pane title that used to land here read as a
+        # project name without being one, and the phone cannot tell the two apart.
+        self.assertIsNone(server._workspace(""))
+        self.assertIsNone(server._workspace(None))
+
+    def test_a_board_of_only_working_runs_still_has_a_focus(self):
+        # The bug this fixes: `order` is blocked + idle, so an all-busy Board had
+        # no focus, hence no `.fhead`, hence no queue pill and no swipe target —
+        # live Runs and no route to any of them from a phone (ADR 0023).
+        server.cached_runs = lambda: [
+            {"id": _RUN, "sessionId": _GOOD, "title": "x", "dir": "~/projects/x",
+             "status": "busy", "bridge": "", "updatedAt": 5000, "snippet": ""},
+            {"id": _RUN2, "sessionId": _LIVE, "title": "y", "dir": "~/projects/y",
+             "status": "busy", "bridge": "", "updatedAt": 9000, "snippet": ""},
+        ]
+        board = server._board()
+        self.assertEqual(board["focus"]["sessionId"], _LIVE)   # freshest of the working
+        self.assertEqual([it["sessionId"] for it in board["watching"]], [_GOOD])
+
+    def test_the_fallback_does_not_pad_the_triage_list(self):
+        # `order` is untouched, so `upnext` and `counts.needYou` still mean "wants
+        # you" — a working Focus is a route, not a demand.
+        server.cached_runs = lambda: [
+            {"id": _RUN, "sessionId": _GOOD, "title": "x", "dir": "~/projects/x",
+             "status": "busy", "bridge": "", "updatedAt": 5000, "snippet": ""},
+        ]
+        board = server._board()
+        self.assertEqual(board["upnext"], [])
+        self.assertEqual(board["counts"]["needYou"], 0)
 
     def test_no_wall_clock_time_on_the_wire(self):
         # The client formats ages from raw updatedAt, so an idle board yields a
@@ -3041,7 +3085,7 @@ class ForeignBoardTests(unittest.TestCase):
 
     def test_the_row_shows_what_it_can(self):
         row = server._board()["foreign"][0]
-        self.assertEqual(row["title"], "mine")            # the project, as a queue row titles itself
+        self.assertEqual(row["workspace"], "mine")        # the Workspace, derived as a queue row's is
         self.assertEqual(row["dir"], "~/projects/mine")
         self.assertEqual(row["status"], "waiting")
         self.assertEqual(row["one"], "the last thing it said")
@@ -3061,9 +3105,12 @@ class ForeignBoardTests(unittest.TestCase):
         # Control bridge is Anthropic's cloud, not this terminal.
         self.assertEqual(server._board()["foreign"][0]["bridge"], "session_abc")
 
-    def test_a_title_falls_back_to_the_opening_ask_without_a_dir(self):
+    def test_no_dir_means_no_workspace_rather_than_a_stand_in(self):
+        # It used to fall back to the opening ask, which put a sentence in the
+        # slot that names a project — a Foreign Run with no cwd read as a repo
+        # called "an ask typed at the Mac". None, and the phone draws the dash.
         server.cached_foreign_runs = lambda: [dict(self.FOREIGN, dir="")]
-        self.assertEqual(server._board()["foreign"][0]["title"], "an ask typed at the Mac")
+        self.assertIsNone(server._board()["foreign"][0]["workspace"])
 
     def test_newest_activity_first(self):
         server.cached_foreign_runs = lambda: [

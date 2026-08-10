@@ -171,7 +171,13 @@ document.addEventListener("keydown", (e) => {
   setIntake(false);
 });
 
-const LANE_LABEL = {question: "blocked · question", approval: "blocked · approval",
+// THE SHAPE, NOT THE STATE. These read `blocked · question` / `blocked · approval`
+// once, and at 18 characters the badge was the widest thing in the header's second
+// row — competing with the **Workspace** for a phone's pixels to say a word the
+// card's own coloured top border (`.bq` / `.bp`) already says. "Blocked" is the
+// state; `question` and `approval` are the two shapes of an **Ask**, which is the
+// part you cannot get from a colour. The other three lanes were never the problem.
+const LANE_LABEL = {question: "question", approval: "approval",
                     yourmove: "your move", working: "working", snoozed: "snoozed"};
 // THERE IS NO LANE_NOUN. It captioned the age in the Focus's header with a
 // second word for the lane `.fbadge` beside it already names, and that duplicate
@@ -190,6 +196,62 @@ function el(tag, cls, txt) {
   if (cls) e.className = cls;
   if (txt != null) e.textContent = txt;
   return e;
+}
+
+// --- eliding: two functions, because a name and a path are not the same thing --
+// One function branching on "/" would be one function with two contracts, and
+// neither caller is ever ambiguous about which it holds: `.fdir` is handed a
+// **Workspace** (already a basename, server-side) and `.recovdir` is handed a
+// path. So they are named for what they take.
+//
+// Both measure, they do not estimate: `scrollWidth > clientWidth` is the browser
+// telling you it clipped, at the real font, after layout. Call them from a
+// `nextFrame` — before layout every width is 0 and every string "fits". That is
+// also why they no-op cleanly under the stub DOM the tests run: it has no
+// layout, so nothing is ever measured as clipped and the text stands as given.
+
+// The **Workspace**, repo-biased. Two worktrees of one repo differ ONLY in the
+// slug (`claude-launcher-scrollback-fold` vs `claude-launcher-recover-filter`),
+// so a head-first truncation — CSS's ellipsis, i.e. what this replaces — keeps
+// the part you already knew and drops the only part that tells them apart. That
+// is the context switch failing, which is the whole reason this exists. Keep
+// enough of the repo to recognise it, then the tail, whole.
+// TRUE means "this node is overflowing and there is a real measurement saying
+// so". `clientWidth` of 0 is not a narrow box, it is a box nobody laid out — an
+// unattached node, a hidden parent, or the stub DOM the tests drive — and
+// treating it as narrow elides every string on the page down to a stump. So the
+// unmeasured case leaves the text exactly as given.
+function clipped(node) {
+  return node.clientWidth > 0 && node.scrollWidth > node.clientWidth;
+}
+
+const WS_PREFIX = 10;
+function elideWorkspace(node, name) {
+  node.textContent = name || "—";
+  if (!name || !clipped(node)) return;
+  for (let tail = name.length - WS_PREFIX; tail > 0; tail--) {
+    node.textContent = name.slice(0, WS_PREFIX) + "…" + name.slice(name.length - tail);
+    if (!clipped(node)) return;
+  }
+  // Narrower than `head…t`: nothing sensible is left, so stop rather than emit
+  // a string that is more ellipsis than name.
+}
+
+// A path, by whole segments. A path is a LIST, not a string: eliding mid-segment
+// gives `~/project…er-scrollback-fold`, which reads as a typo rather than as a
+// path with something missing. Dropping `.worktrees` entire is honest and costs
+// nothing anyone reads. First segment and last segment always survive — the last
+// especially, since it is the Workspace by another name.
+function elidePath(node, path) {
+  node.textContent = path || "";
+  if (!path || !clipped(node)) return;
+  const parts = path.replace(/\/+$/, "").split("/");
+  // `drop` segments after the first go; the first and everything past them stay.
+  // Fewer than three segments has no middle to drop — CSS clips it, as before.
+  for (let drop = 1; parts.length - drop >= 2; drop++) {
+    node.textContent = parts[0] + "/…/" + parts.slice(drop + 1).join("/");
+    if (!clipped(node)) return;
+  }
 }
 
 function age(ms) {
@@ -659,7 +721,15 @@ function renderRecoverList() {
     cb.addEventListener("change", updateRecoverGo);
     const mid = el("div", "recovmid");
     mid.append(el("div", "recovtitle2", s.title || "claude"));
-    mid.append(el("div", "recovdir", s.dir || ""));
+    // The prompt stays the title and the path stays beneath it — this row is
+    // picked by "which conversation was that", and the opening prompt answers it
+    // better than a repo name does. What changed is the truncation: head-first
+    // ellipsis on `~/projects/.worktrees/claude-launcher-scrollback-fold` kept
+    // `~/projects/.workt…` — every character of it shared with every other row —
+    // and dropped the only part that told them apart. By segment instead.
+    const rd = el("div", "recovdir");
+    mid.append(rd);
+    nextFrame(() => elidePath(rd, s.dir || ""));
     const when = s.mtime ? age(s.mtime * 1000) + " ago" : "";   // mtime is epoch SECONDS
     row.append(cb, mid, el("div", "recovtime", when));
     recovListEl.append(row);
@@ -1464,6 +1534,14 @@ function askEl(f) {
   const box = el("div", "ask");
   const strip = el("div", "askhd");
   strip.append(el("span", "lbl", "the ask"));
+  // THE WORKSPACE, HERE TOO, AND IT IS NOT A DUPLICATE OF THE HEADER'S (ADR
+  // 0023). `.fhead` is sticky, so it is on screen whenever the card is — except
+  // that syncChrome slides it out with `.hid` while you read, which is exactly
+  // the state you are in when an approval lands at the bottom of a long
+  // **Scrollback**. Approving a tool call is the one irreversible thing on the
+  // Board; it must not be possible to do it with nothing on screen saying which
+  // project it lands in.
+  if (f.workspace) strip.append(el("span", "askws", f.workspace));
   // "ask 1 of 2" ONLY when there is a 2. 326 of 425 Asks on disk are a Set of
   // one (ADR 0020's census), so a permanent "ask 1 of 1" is a line of noise on
   // three quarters of them — and `index` is -1 when nothing matched, which is
@@ -1559,8 +1637,17 @@ function focusCard(f) {
   const cls = f.lane === "question" ? "focus bq" : f.lane === "approval" ? "focus bp" : "focus";
   const card = el("div", cls);
 
+  // ROW ONE IS THE **WORKSPACE**, ALONE (ADR 0023). Everything else in this
+  // header wears `flex:0 0 auto`; `.fdir` was the only item that could shrink,
+  // so it absorbed every shortfall and `claude-launcher` arrived on a phone as
+  // `claude-lau…`. The previous fix deleted a different item's word and left
+  // that inversion standing, which is why it came back. The name now takes the
+  // whole first row and the chrome wraps beneath it — two rows at EVERY width
+  // and lane, fixed, because a header that changes height reflows the sticky
+  // strip the **Scrollback** scrolls under.
   const head = el("div", "fhead");
-  head.append(el("span", "fdir", f.title || f.dir || "claude"));
+  const dir = el("span", "fdir");
+  head.append(dir);
   head.append(el("span", "fbadge", LANE_LABEL[f.lane] || f.lane));
   head.append(el("span", "grow"));
   // Split, because this strip is now four things wide on a 390px phone and the
@@ -1574,10 +1661,12 @@ function focusCard(f) {
   // lanes — whose badge is the widest of the five — the row overflowed to 426px.
   // A page wider than the phone is not a wrap: `width=device-width` shrink-to-fits
   // the WHOLE read to 91%, which is every measurement in ADR 0017 quietly wrong,
-  // and it does it on exactly the Runs the Board exists for. `.fdir` — the
-  // project name, the one thing here you actually read — was down to two
-  // characters. It gets those pixels.
+  // and it does it on exactly the Runs the Board exists for.
   head.append(el("span", "fmeta", age(f.updatedAt)));
+  // Measured, not guessed — and after layout, so `.fdir` has a real width to be
+  // compared against. A Run with no cwd has no Workspace and gets `—`: the pane
+  // title that used to fall in here read as a repo name without being one.
+  nextFrame(() => elideWorkspace(dir, f.workspace));
   // The queue's way in on a phone. It lives HERE, in the one strip that stays on
   // screen while you read, because the queue is a sheet at this width rather
   // than a stack under an unbounded **Scrollback** (board.html: .zones). CSS
@@ -1810,8 +1899,10 @@ function qrow(item, opts) {
   body.append(el("span", "qbadge", ROW_BADGE[item.lane] || ""));
   const dir = el("span", "qdir");
   if (item.pri === 0) { dir.append(el("span", "flag", "⚑ ")); }
-  dir.append(document.createTextNode(item.title || item.dir || "claude"));
+  const ws = el("span", "qws");
+  dir.append(ws);
   body.append(dir);
+  nextFrame(() => elideWorkspace(ws, item.workspace));
   body.append(el("span", "qone", item.one || ""));
   body.addEventListener("click", () => setPinned(item.sessionId));
   row.append(body);
@@ -1839,8 +1930,10 @@ function frow(item) {
   const row = el("div", "frow");
   const head = el("div", "fghead");
   head.append(el("span", "fgbadge", item.status || "running"));
-  head.append(el("span", "fgdir", item.title || item.dir || "claude"));
+  const fgws = el("span", "fgdir");
+  head.append(fgws);
   head.append(el("span", "fgage", age(item.updatedAt)));
+  nextFrame(() => elideWorkspace(fgws, item.workspace));
   const link = deepLink(item.bridge);
   if (link) {
     const a = el("a", "iconbtn", "↗");
@@ -1849,7 +1942,14 @@ function frow(item) {
     head.append(a);
   }
   row.append(head);
-  if (item.dir) row.append(el("div", "fgpath", item.dir));
+  if (item.dir) {
+    // A path, so it elides by whole segments — `~/…/claude-launcher-recover-filter`
+    // rather than a stump. The last segment is the Workspace above by another
+    // name, and it is the one that must survive.
+    const p = el("div", "fgpath");
+    row.append(p);
+    nextFrame(() => elidePath(p, item.dir));
+  }
   row.append(el("div", "fgone", item.one || ""));
   // Deliberately not a third .iconbtn beside ↗: that glyph row is the queue's,
   // and copying it here would make these read as rows demanding attention. A
@@ -1897,7 +1997,7 @@ async function transferRun(item, btn) {
   // It is a Managed Run now, invisible until `claude` reaches `ps` — the same
   // gap a launch or a resume leaves, so reuse the same optimistic card and
   // burst-poll. The poll also clears the Foreign row it replaced.
-  if (res.ok) watch(res.runId, item.title || "transfer");
+  if (res.ok) watch(res.runId, item.workspace || "transfer");
   etag = null; poll();
 }
 
@@ -2340,7 +2440,7 @@ function swipeFocus(dir) {
   markSwipeUsed();
   flashEdge(dir);
   const it = ringItem(next);
-  toast("→ " + ((it && (it.title || it.dir)) || "run"));
+  toast("→ " + ((it && (it.workspace || it.dir)) || "run"));
   setPinned(next);   // the ONE mechanism that moves the Focus. Never a second.
 }
 
