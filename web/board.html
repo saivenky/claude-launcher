@@ -51,9 +51,15 @@ card, the queue, the Foreign Runs, and the **Intake** sheet alike. Nothing here
 was ever laid out for a wide screen — 640px of transcript reads short, and a
 bottom sheet spanning viewport-edge-to-edge under a centred card made a monitor
 look like a stretched phone. 740px is what a prototype on real turns settled on.
-`--gut` is the whole trick: on a phone `max()` pins it to today's 14px, so the
-phone is pixel-identical to before; past ~768px it becomes the centring margin. */
---col:740px;--gut:max(14px,calc(50% - var(--col)/2));
+`--gut` is the whole trick: on a phone `max()` pins it to a flat floor; past
+~768px it becomes the centring margin, so the floor never reaches a monitor.
+That floor is 6px and was 14px (ADR 0024). The **Focus** stopped being drawn as a
+card in the same change, and the two numbers were one number: 14px of gutter and
+15px of `.sb` padding were BOTH paying for a border that marked one-of-many on a
+surface that is only ever one. It is the page now, so it takes the page's edge.
+EVERY horizontal gutter on this sheet reads this token — including `.zones`,
+which used to say `14px` in its own hand and would have quietly stayed there. */
+--col:740px;--gut:max(6px,calc(50% - var(--col)/2));
 /* The split rail's width, and 0 everywhere it does not exist. Every surface
 that spans the page — the reading column, the Intake sheet, the edge cue, the
 toast — offsets by it rather than sliding under it, so on a phone (where it is
@@ -90,10 +96,19 @@ h1{font-size:0.875rem;margin:0;letter-spacing:.5px}
 
 .empty{border:1px dashed var(--line);border-radius:10px;padding:26px 16px;text-align:center;color:var(--dim)}
 
-/* No `overflow:hidden` any more: it would clip the sticky chrome below out of
-existence. The card's own children carry the corners instead. */
-.focus{background:var(--panel);border:1px solid var(--line);border-top:2px solid var(--m);
-border-radius:10px;--lane:var(--m)}
+/* THE FOCUS IS NOT A CARD (ADR 0024). It was a bordered, rounded, `--panel` box
+until the arithmetic was done on a phone: 14px of gutter + 1px of border + 15px
+of `.sb` put the read at 30px per side and ~36 characters on a line, where the
+readability band starts at 45. The box was not worth its share of that, because
+a card is what distinguishes ONE OF MANY and a **Focus** is at most one — it was
+drawing a boundary against nothing and charging the read for it. There is no
+`overflow:hidden` and no `border-radius` left to need one; there are no corners.
+What survives is the status lane and only it: `border-top` is not the box's edge
+but the one pixel-level thing that says **Blocked** from **working** at a glance,
+and it is where `--lane` — which `.live` and `.seaml` both read — is set. Losing
+it would take the seam's accent with it. So: no background (the page's own shows
+through, which is the point), no side or bottom border, 2px of status on top. */
+.focus{border-top:2px solid var(--m);--lane:var(--m)}
 .focus.bq{border-top-color:var(--q);--lane:var(--q)}
 .focus.bp{border-top-color:var(--p);--lane:var(--p)}
 
@@ -111,9 +126,16 @@ reached a phone as `claude-lau…` and two worktrees of one repo became the same
 row. Fixed height, not conditional — a header that grows only when the name is
 long reflows this sticky strip mid-read, which is the one thing the block above
 says it must never do. */
-.fhead{display:flex;flex-wrap:wrap;row-gap:7px;align-items:center;gap:8px;padding:11px 14px;
+/* Sticky chrome must be OPAQUE — the **turns** scroll under it — so the one
+thing this cannot do is lose its background. Under ADR 0024 that background is
+`--bg` rather than `--panel`: the card is gone, so `--panel` would draw the strip
+as a tinted bar floating over the read, which is the box again in one dimension.
+Matching the page makes it invisible at rest and still opaque in flight. No
+horizontal padding and no corners for the same reason: it aligns with the read
+instead of insetting from a border that no longer exists. */
+.fhead{display:flex;flex-wrap:wrap;row-gap:7px;align-items:center;gap:8px;padding:11px 0;
 border-bottom:1px solid var(--line);
-position:sticky;top:0;z-index:2;background:var(--panel);border-radius:9px 9px 0 0;
+position:sticky;top:0;z-index:2;background:var(--bg);
 transition:transform .2s ease,opacity .2s ease}
 .fhead.hid{transform:translateY(-110%);opacity:0}
 /* `1 1 100%` is what claims the row. The ellipsis stays as the last resort for a
@@ -133,7 +155,10 @@ sessionId is 8 characters you never read on a phone (it is for pasting into a
 resume, which you do from a keyboard). It buys the margin that keeps row two one
 row on the widest lane. */
 @media(max-width:560px){.fsid{display:none}}
-.about{padding:8px 14px;border-bottom:1px solid var(--line);background:var(--panel2);font-size:0.78125rem}
+/* The other band, treated as `.ask` is (ADR 0024): tint to the viewport edge,
+text on `--gut`. */
+.about{padding:8px var(--gut);margin:0 calc(-1 * var(--gut));
+border-bottom:1px solid var(--line);background:var(--panel2);font-size:0.78125rem}
 .albl{color:var(--dim);text-transform:uppercase;font-size:0.5625rem;letter-spacing:1px;margin-right:9px}
 
 /* --- the Scrollback: the Focus's recent turns, oldest first (ADR 0014) ---
@@ -151,7 +176,13 @@ like a log file and skim like one. Prose moves to the system UI face; monospace
 survives exactly where it MEANS machine — the label gutter, tool names, paths,
 counts, code — so the eye tells a path from a sentence without reading either.
 The height comes from the **Fold**; the read is not squeezed. */
-.sb{padding:7px 15px 14px;font-size:0.8125rem;border-bottom:1px solid var(--line);touch-action:pan-y;
+/* ZERO HORIZONTAL PADDING (ADR 0024). This was `15px`, inset inside a card that
+was itself inset — two gutters and a border stacked to 30px per side on a phone,
+and the prose paid all of it. The card is gone, so the inner inset has nothing
+left to inset FROM: the read now runs to `--gut` and stops there. The
+`border-bottom` went with it — a single hairline above the composer is the only
+rule left inside the read, and this one would have been the second. */
+.sb{padding:7px 0 14px;font-size:0.8125rem;touch-action:pan-y;
 font-family:var(--face)}
 .turn{margin-bottom:15px} .turn:last-child{margin-bottom:2px}
 /* Only an OPENED **Record** draws this now: above the seam your prompt is a
@@ -371,7 +402,9 @@ display:block;overflow-x:auto;max-width:100%}
 .md th{color:var(--dim)}
 .md>:first-child{margin-top:0} .md>:last-child{margin-bottom:0}
 
-.pending{margin:10px 16px 0;padding:8px 10px;border:1px solid var(--red);border-radius:7px;
+/* This box STAYS (ADR 0024). It is not chrome marking one-of-many — it is a red
+warning, and the border is the warning. Only its margin drops to the column. */
+.pending{margin:10px 0 0;padding:8px 10px;border:1px solid var(--red);border-radius:7px;
 background:var(--red-wash)}
 .plbl{font-size:0.65625rem;color:var(--red);margin-bottom:4px}
 .ptext{font-size:0.75rem;color:var(--fg);white-space:pre-wrap;word-break:break-word;opacity:.85}
@@ -380,7 +413,12 @@ background:var(--red-wash)}
 on a 390px phone that put it under the composer. The landing takes a floor for it
 rather than this box moving (board.js: clearFloor): the peek above the seam is
 what pays, so nothing here is sticky and the read keeps the whole column. */
-.ask{padding:12px 16px;background:var(--panel2)}
+/* A BAND, NOT A BOX (ADR 0024). The `--panel2` tint stays — it is what separates
+the **Ask** from the prose above it now that no border does — but it runs the
+full width and its contents sit on `--gut`, in line with the read. Padded to
+`--gut` and pulled out by the same, so the tint reaches the viewport edge while
+not one character of the question moves off the column. */
+.ask{padding:12px var(--gut);margin:0 calc(-1 * var(--gut));background:var(--panel2)}
 /* The eyebrow: what this block is, which **Ask** of the **Ask Set** it is, and
 the Ask's own header. Wraps, because a header is transcript text and a phone is
 390px. */
@@ -441,9 +479,13 @@ and owns the `env(safe-area-inset-bottom)` the dock absorbed on its behalf.
 `.actions` is still out of it and back in the card's flow, so the bar that
 follows you down the page is just the reply row: a full action strip riding this
 edge would spend the pixels ADR 0014 and ADR 0015 exist to recover. */
-.respond{padding:10px 16px calc(10px + env(safe-area-inset-bottom,0px));
+/* Sticky and opaque, so `--bg` for the same reason `.fhead` takes it (ADR 0024),
+and no corners. Its `border-top` is now the ONE hairline inside the read — `.sb`
+gave up its `border-bottom` to make that true — and it is load-bearing: without
+the card there is nothing else saying where the read stops and the reply starts. */
+.respond{padding:10px 0 calc(10px + env(safe-area-inset-bottom,0px));
 position:sticky;bottom:0;z-index:2;
-background:var(--panel);border-top:1px solid var(--line);border-radius:0 0 9px 9px;
+background:var(--bg);border-top:1px solid var(--line);
 box-shadow:0 -10px 20px -12px var(--shadow-strong);
 transition:transform .2s ease,opacity .2s ease}
 /* `100%` is the bar's OWN height, so a composer grown to five rows still slides
@@ -500,7 +542,7 @@ a single short line. */
 /* In the card's flow, above the sticky composer — not inside it. It wraps now,
 which it has to: the card lost `overflow:hidden` (see .focus), and this row of
 six controls was only ever fitting a phone by being clipped by it. */
-.actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:2px 16px 11px}
+.actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:2px 0 11px}
 .grow{flex:1}
 .prisel{font-size:0.71875rem;color:var(--dim);cursor:pointer}.prisel b{color:var(--accent)}
 .ghost{background:transparent;border:1px solid var(--line);color:var(--dim);border-radius:6px;
@@ -643,8 +685,12 @@ font:inherit;font-size:0.8125rem;padding:9px 10px;border-radius:7px;cursor:point
 .tseed{width:100%;background:var(--panel2);color:var(--fg);border:1px solid var(--line);border-radius:7px;
 padding:7px 9px;font:inherit;font-size:0.8125rem;margin-bottom:6px;resize:vertical}
 .tbtns{display:flex;gap:6px;flex-wrap:wrap}
-.startcard{display:flex;align-items:center;gap:10px;background:var(--panel);border:1px solid var(--line);
-border-top:2px solid var(--dim);border-radius:10px;padding:12px 14px;margin-bottom:8px;color:var(--dim)}
+/* It is the **Focus** before there is one, so it wears whatever the Focus wears
+— which since ADR 0024 is a status rule and nothing else. Keeping the box here
+would have been worse than keeping it there: a bordered placeholder resolving
+into an unbordered read is the box flickering in and out on every launch. */
+.startcard{display:flex;align-items:center;gap:10px;
+border-top:2px solid var(--dim);padding:12px 0;margin-bottom:8px;color:var(--dim)}
 .spin{flex:0 0 auto;width:11px;height:11px;border:2px solid var(--line);border-top-color:var(--accent);
 border-radius:50%;animation:spin 1s linear infinite}
 @keyframes spin{to{transform:rotate(360deg)}}
@@ -767,7 +813,12 @@ takes the **Focus** and puts it away again. Reverted to ordinary flow at >=900px
 by the media query below, where the rail has already drawn it. */
 .zones{position:fixed;left:0;right:0;bottom:0;z-index:41;background:var(--panel);
 border-top:1px solid var(--line);border-radius:16px 16px 0 0;max-height:82vh;overflow-y:auto;
-padding:8px 14px calc(16px + env(safe-area-inset-bottom,0px));box-shadow:0 -8px 34px var(--shadow-sheet);
+/* `var(--gut)`, not the `14px` this said in its own hand until ADR 0024 — the one
+place on the sheet that spelled the gutter out instead of reading the token. It
+went unnoticed only because the two numbers happened to agree; the moment the
+gutter moved, this sheet would have sat 8px inboard of everything else on the
+page and nothing would have said why. */
+padding:8px var(--gut) calc(16px + env(safe-area-inset-bottom,0px));box-shadow:0 -8px 34px var(--shadow-sheet);
 transform:translateY(101%);visibility:hidden;transition:transform .22s ease,visibility .22s}
 .zones.open{transform:none;visibility:visible}
 .zgrab{width:38px;height:4px;border-radius:2px;background:var(--line);margin:2px auto 10px}
@@ -790,7 +841,12 @@ border-radius:999px;font:inherit;font-size:0.65625rem;letter-spacing:.4px;paddin
 .zones{position:static;transform:none;visibility:visible;background:none;border:0;
 border-radius:0;max-height:none;overflow:visible;padding:0;box-shadow:none}
 .zgrab,.zscrim,.zbtn{display:none}
-:root{--rail:290px;--gut:max(14px,calc(50% - var(--rail)/2 - var(--col)/2))}
+/* The 6px floor is a phone's edge and never reaches a monitor — past ~1030px the
+calc dominates — so it is written here only to keep the two declarations the same
+shape. Note what does NOT appear in this block: the **Focus** is given no border
+back at width. It has no edge against the rail and does not need one (ADR 0024);
+the centred `--col` is edge enough and the rail carries its own background. */
+:root{--rail:290px;--gut:max(6px,calc(50% - var(--rail)/2 - var(--col)/2))}
 .rail{display:block;position:fixed;left:0;top:0;bottom:0;width:var(--rail);z-index:31;background:var(--panel2);border-right:1px solid var(--line);overflow-y:auto;padding:12px 10px calc(14px + env(safe-area-inset-bottom,0px))}
 .railhead{display:flex;align-items:baseline;gap:8px;padding:2px 4px 8px;color:var(--dim);font-size:0.625rem;letter-spacing:1.1px;text-transform:uppercase}
 .railhead b{color:var(--accent);font-size:0.75rem;letter-spacing:.3px}

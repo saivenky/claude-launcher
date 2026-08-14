@@ -2249,10 +2249,56 @@ const W = "wwwwwwww-3333-3333-3333-333333333333";
 
   ok("column: one bounded reading column, wider than the old 640px phone width",
      /--col:740px/.test(HTML) && rule(".wrap").includes("var(--gut)"), rule(".wrap"));
-  ok("column: which collapses to today's 14px gutters on a phone — nothing changes there",
-     /--gut:max\(14px,calc\(50% - var\(--col\)\/2\)\)/.test(HTML));
+  ok("column: which collapses to a flat 6px gutter on a phone (ADR 0024)",
+     /--gut:max\(6px,calc\(50% - var\(--col\)\/2\)\)/.test(HTML));
   ok("column: and the fixed Intake sheet snaps to the SAME column, not the viewport edge",
      rule(".isheet").includes("var(--gut)"), rule(".isheet"));
+  // --- the Focus is the page, not a card on it (ADR 0024) -------------------
+  // The stub runs no CSS, so the stylesheet is the only place this decision can
+  // be asserted — and it is the kind that gets "fixed" back by a reader who sees
+  // a borderless reading surface next to a list of bordered rows and assumes the
+  // inconsistency is a bug. It is the rule: a card marks one of MANY, and a
+  // **Focus** is at most one.
+  ok("bleed: the Focus has no box — no panel fill, no border, no corners",
+     !/background:/.test(rule(".focus")) && !/border-radius/.test(rule(".focus")) &&
+     !/border:1px/.test(rule(".focus")), rule(".focus"));
+  ok("bleed: but it keeps the status rule, which is where --lane is set",
+     /border-top:2px solid var\(--m\)/.test(rule(".focus")) &&
+     /--lane:var\(--m\)/.test(rule(".focus")) &&
+     rule(".live").includes("var(--lane)"), rule(".focus"));
+  ok("bleed: the Scrollback pays no inner gutter — the read runs to --gut and stops",
+     /padding:7px 0 /.test(rule(".sb")), rule(".sb"));
+  ok("bleed: and ONE hairline is left inside the read, above the composer",
+     !/border-bottom/.test(rule(".sb")) &&
+     rule(".respond").includes("border-top:1px solid var(--line)"),
+     rule(".sb") + " || " + rule(".respond"));
+  // Sticky chrome must stay opaque — the turns scroll under it — so the risk of
+  // dropping the card was chrome that kept --panel and became a floating bar.
+  ok("bleed: sticky chrome wears the PAGE's background, not the vanished panel's",
+     rule(".fhead").includes("background:var(--bg)") &&
+     rule(".respond").includes("background:var(--bg)") &&
+     !/border-radius/.test(rule(".fhead")) && !/border-radius/.test(rule(".respond")),
+     rule(".fhead") + " || " + rule(".respond"));
+  ok("bleed: the launching placeholder wears what the Focus wears, so nothing flickers",
+     !/background:/.test(rule(".startcard")) && !/border-radius/.test(rule(".startcard")) &&
+     /border-top:2px/.test(rule(".startcard")), rule(".startcard"));
+  // The bands survive the box: they are what separates these from prose now.
+  ok("bleed: the Ask and the about-line are bands to the edge, text still on the column",
+     rule(".ask").includes("margin:0 calc(-1 * var(--gut))") &&
+     rule(".ask").includes("background:var(--panel2)") &&
+     rule(".about").includes("margin:0 calc(-1 * var(--gut))"),
+     rule(".ask") + " || " + rule(".about"));
+  // The gutter is ONE token or it is not a gutter. `.zones` spelled 14px in its
+  // own hand and agreed with --gut only by luck; ADR 0024 moved the number and
+  // that duplicate would have drifted silently.
+  // Scoped to the sheet, not the sheet-wide grep: `#toast` has a `padding:8px
+  // 14px` of its own and it is a pill's internal padding, not a page gutter.
+  // Every surface that spans the WIDTH is what has to read the token.
+  ok("gutter: every full-width surface reads the token — none spells it out",
+     [".wrap", ".isheet", ".zones", ".swipehint"].every(
+       (s) => /padding:[^;]*\bvar\(--gut\)/.test(rule(s))) &&
+     !/padding:8px 14px/.test(rule(".zones")),
+     [".wrap", ".isheet", ".zones", ".swipehint"].map((s) => s + " => " + rule(s)).join(" || "));
 
   // --- Intake, as only the markup and the stylesheet can say it (ADR 0015) ---
   // The sheet's contents are authored, not built, so the stub DOM cannot see them:
@@ -2295,7 +2341,7 @@ const W = "wwwwwwww-3333-3333-3333-333333333333";
      /\.queues\{display:none\}/.test(mqBlock), mqBlock.slice(-120));
   ok("rail: and the reading column is OFFSET by it, never overlapped",
      /--rail:290px/.test(mqBlock) &&
-     /--gut:max\(14px,calc\(50% - var\(--rail\)\/2 - var\(--col\)\/2\)\)/.test(mqBlock) &&
+     /--gut:max\(6px,calc\(50% - var\(--rail\)\/2 - var\(--col\)\/2\)\)/.test(mqBlock) &&
      rule(".wrap").includes("margin-left:var(--rail)") &&
      rule(".isheet").includes("left:var(--rail)"),
      rule(".wrap") + " || " + rule(".isheet"));

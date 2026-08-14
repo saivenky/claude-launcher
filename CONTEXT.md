@@ -207,8 +207,8 @@ empty Board means nothing is live, never that nothing is urgent. Its header name
 the **Workspace** first and alone, on a row of its own. It stays yours until you move it or it resolves. Urgency orders
 the queue, never the Focus — a newly-**Blocked** Run joins the queue; it does
 not take the Focus from you.
-_Avoid_: card (the Focus's rendering, not the concept), selection, current,
-active, top
+_Avoid_: card (it is not drawn as one — a card marks one of many, and a Focus is
+at most one, ADR 0024), selection, current, active, top
 
 **Scrollback**:
 The recent **turns** and **work** of the Focus's **Session**, newest last —
@@ -266,7 +266,7 @@ same three words are used at every depth of the **Fold**. Fixed shape is the
 whole value — the column can be skimmed without reading a value — which is why it
 beat a variable-length prose gist (ADR 0017). Tap it and it opens to prose in
 place, anchored, at 0px of drift.
-_Avoid_: card (the **Focus**'s rendering, and this is not it), row (names the
+_Avoid_: card (nothing singular on this page is drawn as one, ADR 0024), row (names the
 shape, not the thing), summary / gist / headline (each was the rejected design —
 a Record is three answers, not one sentence), entry (a **Turn** and a **Work**
 are entries; a Record folds several of them)
