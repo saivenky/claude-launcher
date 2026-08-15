@@ -1,6 +1,6 @@
 # 02 — HEAD_PAD must be measured, not written down
 
-Status: ready-for-agent
+**Status:** landed — d42d814
 
 Blocked by: 01
 
