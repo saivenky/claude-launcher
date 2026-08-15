@@ -79,10 +79,25 @@ grow this bar by a row of options too; since ADR 0020 the options are in the
 card, so the only thing that moves this number is your own typing. */
 --barh:52px;}
 /* A rem is --fs x 16px, and every font size below is one. See --fs. */
-html{font-size:calc(16px * var(--fs))}
+/* SCROLL ANCHORING IS OFF, ON BOTH, AND IT IS NOT A MICRO-OPTIMISATION. When
+layout ABOVE the viewport changes size the browser silently corrects `scrollY`
+to keep the visible content still — and that correction is indistinguishable,
+to a scroll handler, from a finger moving the same distance. `.fhead` condenses
+on scroll (see the chrome block below), so the handler that collapsed the header
+would be handed its own collapse back as travel and reverse itself, which
+restores the header, which reads as travel the other way: a slow drag parks you
+in the band where every correction clears the threshold and the strip flaps.
+Both elements, because either can be the scrolling box depending on the engine.
+This is the FIRST of the three things that killed that flicker in
+`.scratch/prototypes/focus-header.html`, and the one to keep if any is ever
+dropped — the other two are the transition below and syncChrome's settle window.
+They were never bisected; see the spec. Nothing else on this page relies on
+anchoring: the **Fold** does its own anchor arithmetic (board.js: keepAnchored)
+precisely because it never trusted the browser's. */
+html{font-size:calc(16px * var(--fs));overflow-anchor:none}
 *{box-sizing:border-box}
 body{margin:0;background:var(--bg);color:var(--fg);
-font:0.875rem/1.6 var(--mono)}
+font:0.875rem/1.6 var(--mono);overflow-anchor:none}
 /* The bottom padding no longer clears a fixed dock (ADR 0015) — nothing is fixed
 at this edge but the composer, which is sticky and inside the card. It does still
 own the page's own safe-area inset, which the dock used to absorb for it. */
@@ -114,18 +129,47 @@ through, which is the point), no side or bottom border, 2px of status on top. */
 
 /* --- the Focus's chrome: pixels only where it earns them ---
 The header and the composer are `position:sticky`, so the **turns** scroll UNDER
-them rather than around them, and `.hid` slides each one out with a transform.
-That pairing is the whole point: hidden chrome must reserve NO layout and hand
-its pixels straight to the read. A `max-height`/`display:none` hide cannot —
-it reflows the entire **Scrollback** and gives the reader nothing until it
-lands. Who wears `.hid` and when is board.js::syncChrome. */
-/* TWO ROWS, ALWAYS (ADR 0023). `.fdir` takes the whole first line and the rest
-wraps beneath it. Every other item here is `flex:0 0 auto`, which made the
-Workspace the strip's shock absorber: it alone shrank, so `claude-launcher`
-reached a phone as `claude-lau…` and two worktrees of one repo became the same
-row. Fixed height, not conditional — a header that grows only when the name is
-long reflows this sticky strip mid-read, which is the one thing the block above
-says it must never do. */
+them rather than around them. `.hid` is the same class on both and it means two
+different things, because the two bars are at different edges and only one of
+them is allowed to leave.
+
+`.respond` is bottom-docked, so hidden chrome there must reserve NO layout: it
+slides out with a transform and hands its pixels straight to the read. That
+rule was never wrong and is still the rule at that edge.
+
+`.fhead` USED TO CLAIM THE SAME AND COULD NOT DELIVER IT. `position:sticky` is
+IN FLOW — it paints somewhere else, it does not leave. `translateY(-110%)` plus
+`opacity:0` therefore moved a ~81px box's paint and kept every pixel of its
+layout, so hiding the header bought a blank band between the page header and
+the first line of the **Scrollback** rather than any read. Intermittent only in
+the sense that a **Focus** too short to scroll never hides its chrome at all.
+
+So the header's rule is not "it reserves nothing". It is that IT NEVER LEAVES —
+it gets smaller. Hidden, `.fhead` is one row carrying the **Workspace** and
+nothing else, ~31px against ~81px: the badge, the age, the sessionId, the queue
+pill, the ＋ and the session title all go, and the name does not. That is ADR
+0023 read at the one moment it matters most — wherever a **Run** is named the
+Workspace is what names it, and it truncates last — applied to a reader who is
+scrolled into a long read with several Runs live and an approval one tap away.
+A header that vanishes is the single treatment that breaks that rule on the
+surface where breaking it is worst: nothing on screen says which Run you are
+about to answer. Condensing spends ~31px to keep the answer to *where am I* and
+still returns the ~50px the hide was for.
+
+The cost is that collapsing the header is a real layout change, which is what
+the flicker guards above (`overflow-anchor`) and below (this block's transition,
+board.js::syncChrome's settle window) exist for. Today's bug is what damped that
+oscillation; any fix that collapses layout brings it back. Who wears `.hid` and
+when is board.js::syncChrome. */
+/* TWO ROWS AT REST, ALWAYS (ADR 0023). `.frow1` takes the whole first line —
+that was `.fdir`'s own job until the session title joined it there — and the
+rest wraps beneath it. Every item on row two is `flex:0 0 auto`, which is what
+made the Workspace the strip's shock absorber back when it shared their row: it
+alone shrank, so `claude-launcher` reached a phone as `claude-lau…` and two
+worktrees of one repo became the same row. Two rows is not conditional on the
+name's length — a header that grows only when the name is long reflows this
+sticky strip mid-read. The ONE height change allowed here is condense, which is
+the same for every Run and is guarded rather than avoided (block above). */
 /* Sticky chrome must be OPAQUE — the **turns** scroll under it — so the one
 thing this cannot do is lose its background. Under ADR 0024 that background is
 `--bg` rather than `--panel`: the card is gone, so `--panel` would draw the strip
@@ -133,14 +177,44 @@ as a tinted bar floating over the read, which is the box again in one dimension.
 Matching the page makes it invisible at rest and still opaque in flight. No
 horizontal padding and no corners for the same reason: it aligns with the read
 instead of insetting from a border that no longer exists. */
+/* COLOUR IS THE ONLY THING THAT MAY EASE HERE, and that is the second flicker
+guard. The condense changes the header's HEIGHT — padding and `.fdir`'s
+font-size — and a transition on a property that changes height reflows the page
+on EVERY frame of the animation, so a .2s collapse would feed board.js's scroll
+handler ~200ms of size changes instead of one. The box therefore snaps and only
+the fade to `--fg3` is animated; `.fdir` inherits that colour, so the ease is
+declared once, here, on the element that owns it. The transform/opacity pair
+this replaces animated a hide that no longer exists. */
 .fhead{display:flex;flex-wrap:wrap;row-gap:7px;align-items:center;gap:8px;padding:11px 0;
 border-bottom:1px solid var(--line);
 position:sticky;top:0;z-index:2;background:var(--bg);
-transition:transform .2s ease,opacity .2s ease}
-.fhead.hid{transform:translateY(-110%);opacity:0}
-/* `1 1 100%` is what claims the row. The ellipsis stays as the last resort for a
-name so long that even elideWorkspace's `head…tail` will not fit. */
-.fdir{flex:1 1 100%;font-weight:600;font-size:0.875rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
+transition:color .2s ease}
+/* THE CONDENSED HEADER (see the block above): one row, the Workspace, nothing
+else. Everything dropped here is either chrome for a Run you are not currently
+reading about (`.fbadge`, `.fmeta`, `.fsid`) or a Board-level verb that the
+escape hatch hands straight back the moment you tap the page (`.zbtn`,
+`.iplus` — board.js::showChrome). `.grow` goes with them or it would hold row
+two's empty space open. `display:none` is safe on all six BECAUSE the header
+keeps its box either way: the thing the old rule got wrong is the thing that
+makes this cheap. */
+.fhead.hid{padding:5px 0;color:var(--fg3)}
+.fhead.hid .fdir{font-size:0.75rem}
+.fhead.hid .fbadge,.fhead.hid .grow,.fhead.hid .fmeta,.fhead.hid .fsid,
+.fhead.hid .fabout,.fhead.hid .zbtn,.fhead.hid .iplus{display:none}
+/* ROW ONE IS A ROW OF ITS OWN NOW, because it holds two things (ADR 0023 gave
+the Workspace the first line; the session title moved up beside it when the
+`.about` band was folded in). `1 1 100%` on this wrapper is what claims the
+line — it is the job `.fdir` used to do alone. */
+.frow1{flex:1 1 100%;display:flex;align-items:baseline;gap:8px;min-width:0}
+/* THE FLEX HERE IS ADR 0023's RULE IN TWO DECLARATIONS, and reading them the
+wrong way round re-creates the bug that ADR exists for. `.fdir` is `0 1 auto`:
+sized by its content, and shrinkable only as a last resort. `.fabout` is
+`1 1 0` — a zero basis, so it takes what is LEFT and is the only item with
+anything to give back. A long title is ellipsised to nothing before the
+Workspace loses a character; a Workspace too long for the whole line, and only
+then, shrinks — at which point elideWorkspace measures the clip and rewrites it
+`head…tail` (board.js). The CSS ellipsis stays as the last resort behind that. */
+.fdir{flex:0 1 auto;font-weight:600;font-size:0.875rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
 .fbadge{font-size:0.625rem;text-transform:uppercase;letter-spacing:.7px;color:var(--m);
 border:1px solid var(--line);border-radius:4px;padding:1px 6px}
 .bq .fbadge{color:var(--q)} .bp .fbadge{color:var(--p)}
@@ -150,16 +224,23 @@ border:1px solid var(--line);border-radius:4px;padding:1px 6px}
 /* STILL HIDDEN, for a different reason now. It was hidden because four things
 did not fit across a 390px header; the Workspace has its own row since ADR 0023,
 so that pressure is off. What is left is that row two must not itself wrap — the
-header's fixed two-row height is the promise the sticky strip rests on, and the
+header's two-row resting height is the promise the sticky strip rests on, and the
 sessionId is 8 characters you never read on a phone (it is for pasting into a
 resume, which you do from a keyboard). It buys the margin that keeps row two one
 row on the widest lane. */
 @media(max-width:560px){.fsid{display:none}}
-/* The other band, treated as `.ask` is (ADR 0024): tint to the viewport edge,
-text on `--gut`. */
-.about{padding:8px var(--gut);margin:0 calc(-1 * var(--gut));
-border-bottom:1px solid var(--line);background:var(--panel2);font-size:0.78125rem}
-.albl{color:var(--dim);text-transform:uppercase;font-size:0.5625rem;letter-spacing:1px;margin-right:9px}
+/* THE SESSION TITLE IS NOT A BAND ANY MORE. It was the other tinted stripe to
+the viewport edge, treated as `.ask` still is (ADR 0024) — and it was carrying a
+second job it was never meant to have: with the header two rows and the title a
+third, "condense" would have dropped a stripe that was already reading as the
+separator between the chrome and the read. Trailing the **Workspace** on row
+one instead makes the resting header ONE band, so what the condensed state
+drops is a genuine second row. `--face` and no uppercase label: it is the one
+sentence of prose in the chrome (ADR 0018 — prose wears the reading face), the
+dimness says "not the name", and a `SESSION` label would have cost width the
+row spends on the title itself. */
+.fabout{flex:1 1 0;min-width:0;color:var(--dim);font-family:var(--face);
+font-size:0.8125rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 
 /* --- the Scrollback: the Focus's recent turns, oldest first (ADR 0014) ---
 NO max-height and NO overflow, deliberately. The `max-height:46vh;overflow-y:auto`

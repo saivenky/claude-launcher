@@ -1535,12 +1535,14 @@ function askEl(f) {
   const strip = el("div", "askhd");
   strip.append(el("span", "lbl", "the ask"));
   // THE WORKSPACE, HERE TOO, AND IT IS NOT A DUPLICATE OF THE HEADER'S (ADR
-  // 0023). `.fhead` is sticky, so it is on screen whenever the card is — except
-  // that syncChrome slides it out with `.hid` while you read, which is exactly
-  // the state you are in when an approval lands at the bottom of a long
-  // **Scrollback**. Approving a tool call is the one irreversible thing on the
-  // Board; it must not be possible to do it with nothing on screen saying which
-  // project it lands in.
+  // 0023). `.fhead` is sticky, so it is on screen whenever the card is — and
+  // syncChrome condenses it to the Workspace alone while you read, which is
+  // exactly the state you are in when an approval lands at the bottom of a long
+  // **Scrollback**. That the header keeps the name is why the two stamps agree
+  // rather than one covering for the other; this one is the lane-coloured one,
+  // in the block you are answering. Approving a tool call is the one
+  // irreversible thing on the Board; it must not be possible to do it with
+  // nothing on screen saying which project it lands in.
   if (f.workspace) strip.append(el("span", "askws", f.workspace));
   // "ask 1 of 2" ONLY when there is a 2. 326 of 425 Asks on disk are a Set of
   // one (ADR 0020's census), so a permanent "ask 1 of 1" is a line of noise on
@@ -1643,11 +1645,26 @@ function focusCard(f) {
   // `claude-lau…`. The previous fix deleted a different item's word and left
   // that inversion standing, which is why it came back. The name now takes the
   // whole first row and the chrome wraps beneath it — two rows at EVERY width
-  // and lane, fixed, because a header that changes height reflows the sticky
-  // strip the **Scrollback** scrolls under.
+  // and lane, never a height that depends on how long the name is, because a
+  // header that grows with its content reflows the sticky strip the
+  // **Scrollback** scrolls under. It does have a second height, deliberately:
+  // condensed, it is row one alone (board.html: `.fhead.hid`). That one is
+  // driven by the scroll rather than by the data, it is the same for every Run,
+  // and it is what the flicker guards in syncChrome pay for.
+  //
+  // Row one is a node of its own because it holds TWO things now: the session
+  // title used to be a tinted band under the header (`.about`) and trails the
+  // Workspace here instead, so the resting header is one band rather than two
+  // and the condensed state drops a real row. `.fdir` keeps its own contract —
+  // it is handed the Workspace and nothing else, which is what lets
+  // elideWorkspace measure it — and `.fabout` is the item that gives width back
+  // first (board.html: .frow1).
   const head = el("div", "fhead");
+  const row1 = el("div", "frow1");
   const dir = el("span", "fdir");
-  head.append(dir);
+  row1.append(dir);
+  if (f.aiTitle) row1.append(el("span", "fabout", f.aiTitle));
+  head.append(row1);
   head.append(el("span", "fbadge", LANE_LABEL[f.lane] || f.lane));
   head.append(el("span", "grow"));
   // Split, because this strip is now four things wide on a 390px phone and the
@@ -1697,13 +1714,6 @@ function focusCard(f) {
   plus.addEventListener("click", () => setIntake(!intakeSheetOpen));
   head.append(plus);
   card.append(head);
-
-  if (f.aiTitle) {
-    const about = el("div", "about");
-    about.append(el("span", "albl", "session"));
-    about.append(document.createTextNode(f.aiTitle));
-    card.append(about);
-  }
 
   // The **Scrollback**: the Session's recent entries, oldest first, in place of
   // the single last assistant message (ADR 0014). What you said, what it did and
@@ -2289,11 +2299,33 @@ function replyEngaged() {
 // is one bar at this edge and one chrome state covering it.
 const CHROME_SLACK = 140;   // px the end of the read must sit below the fold
                             // before there is any history to be up in
-const CHROME_STEP = 24;     // px of travel one way before it counts as a move
+// ASYMMETRIC, AND THAT IS THE THIRD FLICKER GUARD. `CHROME_STEP = 24` in both
+// directions was a deadzone: a jitter of 25px round-tripped the bars forever,
+// which cost nothing while the hidden header still reserved its box and costs a
+// visible judder now that it collapses (board.html: `.fhead.hid`). Showing must
+// out-travel hiding, so the pair is hysteresis rather than a bigger deadzone —
+// no oscillation can walk back and forth across one line. Off the prototype:
+// 28px of travel up into history hides, 64px back down shows.
+const CHROME_HIDE_STEP = 28;
+const CHROME_SHOW_STEP = 64;
+// The ceiling on the settle window below, and a fuse rather than a timer: the
+// window normally closes on the post-layout frame, and this is only what closes
+// it if the frames stop coming (a backgrounded tab), because a settle window
+// that never closes is a chrome that never moves again.
+const CHROME_SETTLE_MS = 220;
 
 let chromeHid = false;
 let chromeAnchor = 0;       // the scroll position the current run of travel began
                             // at, so the step is consecutive travel, not drift
+let chromeSettling = false; // a toggle is in flight; the scroll we are seeing may
+let chromeSettleUntil = 0;  // be our own layout change rather than a finger
+let chromeSettleSeq = 0;    // ...and which toggle it belongs to
+// The state actually ON the nodes, so the settle window opens for a TOGGLE and
+// never for a redraw. applyChrome's callers all re-apply unconditionally — a
+// rebuild re-paints the state it already had, an open Intake overrides it — and
+// re-baselining the travel anchor on each of those would quietly eat a slow drag
+// that spans a poll.
+let chromeApplied = null;
 
 // Is the end of the read below the fold? The card's own chrome is sticky and so
 // contributes nothing here: this measures the turns, the **Ask** and the pending
@@ -2332,6 +2364,10 @@ function applyChrome() {
   setHid(card && card.querySelector(".fhead"), hid);
   setHid(card && card.querySelector(".respond"), hid);
   setHid(hintEl, hid);   // the swipe hint shares this edge; so does it
+  // The header CONDENSES rather than leaving (board.html: `.fhead.hid`), so this
+  // line just changed the page's layout — whoever asked for it, a tap on the ＋
+  // as much as a scroll.
+  if (hid !== chromeApplied) { chromeApplied = hid; settleChrome(); }
 }
 
 function setChrome(hid, y) {
@@ -2339,6 +2375,42 @@ function setChrome(hid, y) {
   if (hid === chromeHid) return;
   chromeHid = hid;
   applyChrome();
+}
+
+// THE SETTLE WINDOW — the second of the three guards the collapse needs, and the
+// only one that is code. A toggle now resizes the header, the document gets
+// shorter or longer above the fold, and the scroll events that arrive next may
+// be the browser's own compensation rather than a finger. Taking travel from
+// those is how a header drives the handler that collapsed it. So: hold the line
+// until the collapse has finished moving things, then take the POST-layout
+// position as the new reference — never the pre-layout one.
+//
+// The frame is the signal and the clock is only the fuse. Two frames is honest
+// here precisely because the condense animates nothing that costs layout
+// (board.html: `.fhead`'s transition is colour and nothing else), so layout has
+// genuinely stopped by then; the prototype needed a 220ms clock because it was
+// still easing a property that reflowed. `nextFrame` falls back to a timeout
+// where there is no rAF, which is also what makes this drivable in a test.
+function settleChrome() {
+  const seq = ++chromeSettleSeq;
+  chromeSettling = true;
+  chromeSettleUntil = Date.now() + CHROME_SETTLE_MS;
+  nextFrame(() => nextFrame(() => {
+    // Stale if the fuse blew first, or if another toggle has opened a window of
+    // its own since. Either way this frame is not the one that says where the
+    // reader is, and re-baselining from it would eat real travel.
+    if (seq !== chromeSettleSeq || !chromeSettling) return;
+    chromeAnchor = Math.max(0, window.scrollY || 0);
+    chromeSettling = false;
+  }));
+}
+
+// Not a pure question: an expired window is a blown fuse, and blowing it is what
+// stops a chrome that never toggles again when the frames stop coming.
+function chromeSettled() {
+  if (chromeSettling && Date.now() < chromeSettleUntil) return false;
+  chromeSettling = false;
+  return true;
 }
 
 function syncChrome() {
@@ -2351,8 +2423,16 @@ function syncChrome() {
   // "returns near the bottom" half, and it covers a Focus short enough never to
   // scroll at all.
   if (!readingUp()) { setChrome(false, y); return; }
+  // AFTER the rule above, not before it, and the ordering is load-bearing. The
+  // settle window rejects a *travel* reading, and "the end of the read is on
+  // screen" is a position: it is idempotent, it can only ever show the chrome,
+  // so it cannot oscillate against itself. It also cannot be tripped BY the
+  // collapse — condensing frees ~50px and CHROME_SLACK is 140, so no toggle can
+  // move the card's bottom across that line on its own.
+  if (!chromeSettled()) { chromeAnchor = y; return; }
   const d = y - chromeAnchor;
-  if (chromeHid ? d > CHROME_STEP : d < -CHROME_STEP) setChrome(!chromeHid, y);
+  const step = chromeHid ? CHROME_SHOW_STEP : CHROME_HIDE_STEP;
+  if (chromeHid ? d > step : d < -step) setChrome(!chromeHid, y);
   else if (chromeHid ? d < 0 : d > 0) chromeAnchor = y;   // still going the way
                                                           // this state expects
 }

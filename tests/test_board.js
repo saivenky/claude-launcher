@@ -1389,19 +1389,27 @@ const W = "wwwwwwww-3333-3333-3333-333333333333";
   // hands it back on travel down — or outright, at the end of the read. A
   // **Scrollback** is oldest-first, so "not near the bottom" alone would hide it
   // for the whole of a first read; travel is what the client actually watches.
-  const scrollTo = (y) => { win.scrollY = y; win.dispatch("scroll"); };
-  const readUp = () => { scrollTo(1600); scrollTo(1200); };
-  const readDown = () => { scrollTo(1200); scrollTo(1600); };
+  // EVERY SCROLL STEP SETTLES BEFORE THE NEXT ONE, and that is not test hygiene
+  // — it is the behaviour. The header CONDENSES rather than leaving (board.html:
+  // `.fhead.hid`), so a toggle changes layout, and board.js::syncChrome answers
+  // the very next scroll event by re-baselining instead of reading travel from
+  // it: that event may be the browser correcting scrollY for the collapse rather
+  // than a finger. A real drag delivers ~60 events a second, so it loses one
+  // frame; a test that fires two events in the same tick loses the second
+  // outright unless it lets the post-layout frame run.
+  const scrollTo = async (y) => { win.scrollY = y; win.dispatch("scroll"); await settle(); };
+  const readUp = async () => { await scrollTo(1600); await scrollTo(1200); };
+  const readDown = async () => { await scrollTo(1200); await scrollTo(1600); };
 
   ok("chrome: at the live end of the scrollback it is all up",
      !hid(fhead()) && !hid(respond()) && !hid(hint()));
 
   layout.cardBottom = 2400;    // the end of the read is far below an 800px fold
-  readDown();
+  await readDown();
   ok("chrome: reading DOWN a long run-up keeps it up — that is the way to the answer",
      !hid(fhead()) && !hid(respond()) && !hid(hint()));
 
-  readUp();
+  await readUp();
   ok("chrome: scrolling up into history slides the Focus's header away", hid(fhead()));
   ok("chrome: and the composer with it", hid(respond()));
   ok("chrome: the intake dock rides the same state — the bottom edge is one thing",
@@ -1410,30 +1418,86 @@ const W = "wwwwwwww-3333-3333-3333-333333333333";
      !!ti() && ti() === respond().querySelector(".ti"));
 
   layout.cardBottom = 700;     // the end of the read is back on screen
-  scrollTo(1190);              // a nudge further UP: the end of the read wins anyway
+  await scrollTo(1190);              // a nudge further UP: the end of the read wins anyway
   ok("chrome: returning near the bottom brings all three back",
      !hid(fhead()) && !hid(respond()) && !hid(hint()));
 
   // The escape hatch, and its limit: a tap is a nudge, not a latch.
   layout.cardBottom = 2400;
-  readUp();
+  await readUp();
   ok("escape hatch: hidden to begin with", hid(respond()));
   doc.dispatch("click");
   ok("escape hatch: interacting with the page restores the chrome without a scroll",
      !hid(fhead()) && !hid(respond()) && !hid(hint()));
-  scrollTo(win.scrollY - 200);
+  // The tap expanded the header, so it settles like any other toggle before the
+  // next scroll is allowed to mean anything — see scrollTo above.
+  await settle();
+  await scrollTo(win.scrollY - 200);
   ok("escape hatch: and another step back into history takes it away again",
      hid(respond()));
 
   // A scroll may no more snatch the keyboard away than a poll may.
   doc.dispatch("click");
   ti().focus();
-  readUp();
+  await readUp();
   ok("chrome: an active reply keeps its box, however far up the read you are",
      !hid(respond()));
   ti().blur();
-  readUp();
+  await readUp();
   ok("chrome: letting go of the box hands the pixels back to the read", hid(respond()));
+
+  // --- the header condenses, and what that costs to get right ---------------
+  // Hidden is not gone. `.fhead` is `position:sticky` and sticky is in flow, so
+  // the transform that used to hide it stranded an ~81px blank band; it
+  // collapses to the **Workspace** alone instead (board.html: `.fhead.hid`).
+  // Nothing is unbuilt to do it — the CSS drops the rest — and that is what lets
+  // the escape hatch hand the whole strip back in one class change.
+  ok("condense: the hidden header still says which Run you are in",
+     hid(fhead()) && fhead().querySelector(".fdir").textContent === "scroll",
+     fhead().className + " || " + (fhead().querySelector(".fdir") || {}).textContent);
+  ok("condense: and it still HOLDS everything it stops drawing, so nothing is rebuilt to show it",
+     [".fbadge", ".fmeta", ".fabout", ".iplus"].every((c) => !!fhead().querySelector(c)),
+     fhead().children.map((c) => c.className).join(" | "));
+  // The session title is chrome on row one now, not a band under the header —
+  // so what condense drops is a genuine second row.
+  ok("condense: the session title rides the Workspace's own row, and no band is left",
+     fhead().querySelector(".fabout").textContent === "about scroll" &&
+     fhead().children[0] === fhead().querySelector(".frow1") &&
+     fhead().querySelector(".frow1").children.map((c) => c.className).join(" ") === "fdir fabout" &&
+     !card().querySelector(".about"),
+     fhead().querySelector(".frow1").children.map((c) => c.className).join(" | "));
+
+  // HYSTERESIS, NOT A BIGGER DEADZONE (board.js: CHROME_HIDE_STEP 28 /
+  // CHROME_SHOW_STEP 64). One symmetric threshold means a jitter just over it
+  // round-trips the bars forever — free while the hidden header still reserved
+  // its box, a visible judder now that it collapses. Showing has to out-travel
+  // hiding, so no wobble can cross both lines.
+  await scrollTo(2000);
+  ok("condense: travelling back down the read brings the full header back", !hid(fhead()));
+  await scrollTo(1960);
+  ok("condense: 40px up is past the hide step, so it condenses", hid(fhead()));
+  await scrollTo(2000);
+  ok("condense: the same 40px back down is NOT enough to expand it again", hid(fhead()));
+  await scrollTo(2030);
+  ok("condense: 70px is, so the way back is deliberate rather than a wobble", !hid(fhead()));
+
+  // THE SETTLE WINDOW. A toggle changes layout, and the scroll event that
+  // arrives next may be the browser compensating for it rather than a finger —
+  // indistinguishable, and the reason the prototype flickered. Both events here
+  // land in one tick, with no frame between them for layout to settle in, and
+  // the second is a 200px move: without the guard it would expand the header it
+  // just condensed.
+  win.scrollY = 1900; win.dispatch("scroll");
+  const condensedFirst = hid(fhead());
+  win.scrollY = 2100; win.dispatch("scroll");
+  ok("condense: a scroll in the same frame as a toggle is re-baselined, never read as travel",
+     condensedFirst && hid(fhead()), condensedFirst + " -> " + fhead().className);
+  await settle();
+  // And it is a window, not a latch: once layout has settled the next real
+  // travel decides as usual, from the post-collapse position.
+  await scrollTo(2300);
+  ok("condense: once layout has settled the next drag counts again", !hid(fhead()));
+  await readUp();
 
   // The state that must survive a poll, now with a third thing in it: a
   // half-typed reply, a reading position, AND a chrome state that still agrees
@@ -1476,7 +1540,7 @@ const W = "wwwwwwww-3333-3333-3333-333333333333";
   ok("intake: and the sheet is shut until you ask for it",
      !hasCls(isheet(), "open") && iscrim().hidden === true, isheet().className);
 
-  readUp();
+  await readUp();
   ok("intake: the ＋'s own strip clears the read while nothing is open", hid(fhead()));
   doc.dispatch("click");   // the escape hatch: chrome back, no scroll
   iplus().dispatch("click");
@@ -1484,7 +1548,7 @@ const W = "wwwwwwww-3333-3333-3333-333333333333";
      hasCls(isheet(), "open") && iscrim().hidden === false, isheet().className);
   ok("intake: and marks the ＋ while it is open",
      hasCls(iplus(), "hot") && iplus()["aria-expanded"] === "true", iplus().className);
-  readUp();
+  await readUp();
   ok("intake: an Intake you have opened is never slid out from under you — the ＋ is in there",
      !hid(fhead()) && !hid(respond()) && !hid(hint()));
   iscrim().dispatch("click");
@@ -2161,15 +2225,50 @@ const W = "wwwwwwww-3333-3333-3333-333333333333";
     const m = new RegExp("^" + esc(sel) + "\\{([^}]*)\\}", "m").exec(HTML);
     return m ? m[1] : "(no rule for " + sel + ")";
   };
-  const HIDS = [".fhead.hid", ".respond.hid", ".swipehint.hid"];
+  // `.hid` is one class and TWO rules, because the two bars sit at different
+  // edges. At the bottom edge hidden chrome must reserve nothing, and a
+  // transform delivers that. At the top it cannot: `.fhead` is `position:sticky`
+  // and sticky is IN FLOW, so the transform this list used to include moved the
+  // paint and kept every pixel of the box — a blank band where the header had
+  // been. The header condenses instead.
+  const DOCKED = [".respond.hid", ".swipehint.hid"];
 
   ok("no layout reserved: the chrome is sticky, so the turns scroll UNDER it",
      rule(".fhead").includes("position:sticky") && rule(".respond").includes("position:sticky"),
      rule(".fhead") + " || " + rule(".respond"));
-  ok("no layout reserved: hiding is a transform — never a display or height reflow",
-     HIDS.every((s) => /transform:translateY/.test(rule(s))) &&
-     !HIDS.some((s) => /display:none|height:0|max-height/.test(rule(s))),
-     HIDS.map(rule).join(" || "));
+  ok("no layout reserved: at the BOTTOM edge hiding is a transform, so the box goes with the paint",
+     DOCKED.every((s) => /transform:translateY/.test(rule(s))) &&
+     !DOCKED.some((s) => /display:none|height:0|max-height/.test(rule(s))),
+     DOCKED.map(rule).join(" || "));
+  // The header's rule, and the bug it replaces: a sticky element cannot be
+  // hidden by moving it, so this one is never hidden at all.
+  ok("condense: the sticky header never transforms away — that stranded its box",
+     !/transform/.test(rule(".fhead.hid")) && !/opacity/.test(rule(".fhead.hid")) &&
+     !/display:none/.test(rule(".fhead.hid")), rule(".fhead.hid"));
+  ok("condense: it gets smaller instead — less padding, and the Workspace at reading-dim",
+     /padding:5px 0/.test(rule(".fhead.hid")) && /color:var\(--fg3\)/.test(rule(".fhead.hid")) &&
+     /font-size/.test(rule(".fhead.hid .fdir")),
+     rule(".fhead.hid") + " || " + rule(".fhead.hid .fdir"));
+  // What condense KEEPS is the whole decision (ADR 0023): wherever a Run is
+  // named, the Workspace names it. Everything else on the strip is droppable and
+  // this is the list — badge, age, sessionId, title, queue pill, ＋ and the
+  // spacer that would otherwise hold row two open.
+  const DROPPED = [".fbadge", ".grow", ".fmeta", ".fsid", ".fabout", ".zbtn", ".iplus"];
+  const condensedOut = (/^([^{}]*\.fhead\.hid[^{}]*)\{display:none\}/m.exec(HTML) || ["", ""])[1];
+  ok("condense: everything but the Workspace goes, and the Workspace never does",
+     DROPPED.every((c) => condensedOut.includes(".fhead.hid " + c)) &&
+     !condensedOut.includes(".fdir"), condensedOut);
+  // The flicker, in the two places the stylesheet can speak to it. Animating a
+  // property that changes height reflows on every frame of the collapse, and
+  // scroll anchoring hands that reflow back to the handler that caused it as
+  // travel. See the spec: not bisected, so all three ship together.
+  ok("condense: nothing that changes height is animated — the box snaps, only the colour eases",
+     /transition:color/.test(rule(".fhead")) &&
+     !/transition:[^;]*(padding|height|font-size|transform)/.test(rule(".fhead")),
+     rule(".fhead"));
+  ok("condense: and scroll anchoring is off, so the collapse cannot be read back as a drag",
+     /overflow-anchor:none/.test(rule("html")) && /overflow-anchor:none/.test(rule("body")),
+     rule("html") + " || " + rule("body"));
   // ADR 0015's whole claim, in the one place that can prove it: the composer
   // stands on the viewport, not on a dock, and `--dockh` is not a term anywhere —
   // every offset that had it lost it rather than gained a zero.
@@ -2282,12 +2381,18 @@ const W = "wwwwwwww-3333-3333-3333-333333333333";
   ok("bleed: the launching placeholder wears what the Focus wears, so nothing flickers",
      !/background:/.test(rule(".startcard")) && !/border-radius/.test(rule(".startcard")) &&
      /border-top:2px/.test(rule(".startcard")), rule(".startcard"));
-  // The bands survive the box: they are what separates these from prose now.
-  ok("bleed: the Ask and the about-line are bands to the edge, text still on the column",
+  // The **Ask** is still a band to the edge: it is the one block that has to
+  // separate itself from prose. The session title is NOT one any more — it moved
+  // onto the header's first row beside the Workspace, so the resting header is
+  // one band rather than two and condense drops a real row instead of a stripe
+  // that was doing separator duty. Nothing named `.about` is left.
+  ok("bleed: the Ask is a band to the edge, text still on the column",
      rule(".ask").includes("margin:0 calc(-1 * var(--gut))") &&
-     rule(".ask").includes("background:var(--panel2)") &&
-     rule(".about").includes("margin:0 calc(-1 * var(--gut))"),
-     rule(".ask") + " || " + rule(".about"));
+     rule(".ask").includes("background:var(--panel2)"), rule(".ask"));
+  ok("bleed: and the session title is inline chrome now, not a second stripe under it",
+     rule(".about") === "(no rule for .about)" && rule(".albl") === "(no rule for .albl)" &&
+     rule(".fabout").includes("var(--face)") && !/margin|background/.test(rule(".fabout")),
+     rule(".fabout"));
   // The gutter is ONE token or it is not a gutter. `.zones` spelled 14px in its
   // own hand and agreed with --gut only by luck; ADR 0024 moved the number and
   // that duplicate would have drifted silently.
