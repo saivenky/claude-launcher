@@ -204,7 +204,10 @@ that fallback is not a nicety: a **Board** whose Runs are all merely **working**
 has no urgent head, and a Focus of *none* takes the header, the queue's way in
 and the swipe with it — live Runs and no route to any of them (ADR 0023). An
 empty Board means nothing is live, never that nothing is urgent. Its header names
-the **Workspace** first and alone, on a row of its own. It stays yours until you move it or it resolves. Urgency orders
+the **Workspace** first and alone, on a row of its own (ADR 0023), and that row is
+what survives when the header yields to the read: the header never leaves, it
+gets smaller, and everything in it but the name is what gives way (ADR 0025).
+It stays yours until you move it or it resolves. Urgency orders
 the queue, never the Focus — a newly-**Blocked** Run joins the queue; it does
 not take the Focus from you.
 _Avoid_: card (it is not drawn as one — a card marks one of many, and a Focus is
@@ -443,6 +446,9 @@ _Avoid_: access, availability
   **Ask** — the **Workspace** is what names it, and it truncates last. It is
   answering a different question from everything beside it (*where am I*, not
   *what is happening*), so nothing else on the surface can stand in for it
+- The **Focus**'s header gives the read everything it can spare and never the
+  **Workspace**, so the answer to *where am I* is on screen at the moment you
+  answer an **Ask** — deep in a **Scrollback**, where nothing else is (ADR 0025)
 - A **Board** holds exactly one **Focus**; every other actionable **Run**
   queues behind it by urgency. A **Blocked** Run outranks the queue, not the
   Focus
