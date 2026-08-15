@@ -1,6 +1,6 @@
 # 01 — Condense the Focus header instead of hiding it
 
-Status: ready-for-agent
+**Status:** landed — 2947c8c
 
 Spec: `.scratch/focus-header-condense/spec.md`
 
