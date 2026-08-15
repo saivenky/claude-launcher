@@ -1162,8 +1162,37 @@ function workRow(t) {
 // IS a Fold and that it is skimmable. Measured at exactly 250px on all four
 // fixture Sessions, with 535-575px of newest prose below it.
 const SEAM_PEEK = 250;   // px down the viewport the seam parks at
-const HEAD_PAD = 52;     // the sticky .fhead plus a hair — where a scroll parks
-                         // a node when there is no fold to peek at
+// `HEAD_PAD` used to be a literal here (52), a hand copy of the sticky
+// header's height. It was already wrong — `.fhead` measures ~81px at
+// `--fs:1` and ~88px at the default `--fs`, so every landing that used it was
+// ~30px short — and slice 01 (board.html: `.fhead.hid`) makes a literal
+// untenable rather than merely wrong: the header now has TWO heights, full
+// and condensed (~31px), and which one applies depends on the chrome state
+// AT THE MOMENT OF THE SCROLL, not at the moment the card was built. So this
+// is a function, not a constant: it reads the header that is actually on
+// screen right now and adds a small hair of air, so the parked node does not
+// sit flush against the header's bottom edge.
+//
+// No `.fhead` is not a defect to guard defensively against — it is the
+// documented shape of an empty Board (ADR 0015; see the comments at board.js
+// :95 and :150): no Focus means no header. `headPad` falls back to the hair
+// alone rather than the old literal, because there is nothing left to park
+// clear of — and in practice this path is never reached with no Focus, since
+// there is then no seam to scroll to either.
+const HEAD_HAIR = 8;     // px of air below the measured header
+function headPad() {
+  const fhead = focusWrap.querySelector(".fhead");
+  const h = (fhead && fhead.getBoundingClientRect) ? fhead.getBoundingClientRect().height : 0;
+  return (h || 0) + HEAD_HAIR;
+}
+// The landing's pad is one of two shapes, never a third: SEAM_PEEK, the
+// design constant that buys the reader a peek at the fold, or the measured
+// header, parked flush when there is no fold to peek at. `peek` is a
+// boolean rather than a number so the choice can be made once, at BUILD time
+// (scrollbackEl knows whether there is a fold), and resolved to a pixel
+// value later, at SCROLL time (landOn's frame, goNewest's click) — the only
+// moments `.fhead`'s live height can be trusted.
+const padFor = (peek) => peek ? SEAM_PEEK : headPad();
 const PARKED = 40;       // px of drift still counted as "where the landing left
                          // you", i.e. still reading the end
 const FLOOR_GAP = 10;    // px of air between the **Ask** and the composer's top
@@ -1218,7 +1247,11 @@ function scrollToNode(node, pad) {
 // The landing that is actually on screen, so `↓ newest` can replay it rather
 // than re-derive it — "exactly where you landed" has to include the pad the
 // landing chose and the floor it cleared, or on a **Blocked** Focus the button
-// would put the reader somewhere the landing never did.
+// would put the reader somewhere the landing never did. `peek` (not a pixel
+// value) is what it remembers: the header's own height may have changed since
+// the landing fired — the chrome can condense between then and a `↓ newest`
+// tap — and replaying the SHAPE of the choice rather than a stale number is
+// what keeps this parking against whatever header is on screen right now.
 let liveLanding = null;
 
 // `↓ newest`: back to exactly where the landing put you, and the one thing that
@@ -1226,7 +1259,7 @@ let liveLanding = null;
 // next entry may follow you down again.
 function goNewest(seam) {
   const l = (liveLanding && liveLanding.seam === seam) ? liveLanding : null;
-  scrollToNode(seam, l ? l.pad : SEAM_PEEK);
+  scrollToNode(seam, l ? padFor(l.peek) : SEAM_PEEK);
   if (l) clearFloor(seam, l.top, l.bot);
   landHeld = false;
   landedY = Math.max(0, window.scrollY || 0);
@@ -1259,9 +1292,12 @@ function goNewest(seam) {
 // see that before you type over it — and it sits below the options anyway.)
 //
 // What gives way is the PEEK, and only the peek: the extra is capped at
-// `seam − HEAD_PAD`, so the seam never rises past the header and the newest prose
-// — the reply the Ask is asking about — is never scrolled off the top to make
-// room for it.
+// `seam − headPad()`, so the seam never rises past the header and the newest
+// prose — the reply the Ask is asking about — is never scrolled off the top
+// to make room for it. Measured here, in this same scroll-time frame, rather
+// than carried in from wherever the landing chose its own pad, because this
+// cap has to answer to whichever header height — full or condensed — is
+// actually on screen the instant the floor is cleared.
 function clearFloor(seam, top, bottom) {
   if (!top || !top.getBoundingClientRect) return;
   const bar = focusWrap.querySelector(".respond");
@@ -1276,7 +1312,7 @@ function clearFloor(seam, top, bottom) {
   const limit = floor - FLOOR_GAP;
   const over = (bottom || top).getBoundingClientRect().bottom - limit;
   if (over <= 0) return;
-  const room = seam.getBoundingClientRect().top - HEAD_PAD;
+  const room = seam.getBoundingClientRect().top - headPad();
   const extra = Math.min(over, room);
   if (extra > 0 && window.scrollBy) window.scrollBy(0, extra);
 }
@@ -1300,15 +1336,22 @@ function nextFrame(fn) {
 // deafened copy of it instead. renderFocus grabs the reader's position BEFORE it
 // empties anything (grab) and restores it, so by this frame the page is where the
 // reader actually left it.
-function landOn(seam, sig, pad, floorTop, floorBot) {
-  liveLanding = {seam: seam, pad: pad, top: floorTop, bot: floorBot};
+// `peek` is the boolean scrollbackEl chose at build time (is there a fold to
+// peek at?), not a pixel value — the pixel value is resolved below, inside
+// the frame, which is the only place `.fhead`'s live height (full or
+// condensed) can be trusted. Resolving it earlier, back where `peek` was
+// chosen, would measure a header that has not necessarily settled into the
+// card yet, and would go stale the instant the chrome toggled between then
+// and this frame running.
+function landOn(seam, sig, peek, floorTop, floorBot) {
+  liveLanding = {seam: seam, peek: peek, top: floorTop, bot: floorBot};
   if (sig === landedSig) return;   // this scrollback has had its landing
   const first = landedSig === null;
   landedSig = sig;
   nextFrame(() => {
     if (seam !== liveSeam) return;   // a poll rebuilt the card under this frame
     if (!first && (landHeld || Math.abs((window.scrollY || 0) - landedY) > PARKED)) return;
-    scrollToNode(seam, pad);
+    scrollToNode(seam, padFor(peek));
     clearFloor(seam, floorTop, floorBot);
     landedY = Math.max(0, window.scrollY || 0);
     // A scroll THIS FILE performed is not the reader travelling, so the
@@ -1463,8 +1506,16 @@ function scrollbackEl(entries) {
   // means there is no peek to buy, so the seam goes under the header instead of
   // 250px down and the whole read is on screen. (And no peek means no room for
   // the Ask's floor to spend either; clearFloor caps itself on exactly that.)
+  //
+  // `peek` records the CHOICE, not a pixel value — `.fhead` exists by now
+  // (focusCard builds it before calling this), but the CARD it lives in is
+  // not yet in `focusWrap` (that happens after focusCard returns, in
+  // renderFocus), so `headPad`'s `focusWrap.querySelector` would find nothing
+  // if it ran here. And even once it is in the document, the chrome can
+  // condense between now and the frame that actually scrolls. landOn resolves
+  // `peek` at scroll time, against whatever header is on screen then.
   armedLanding = {seam: seam, sig: entriesSig(entries),
-                  pad: (past.length || runup.length) ? SEAM_PEEK : HEAD_PAD};
+                  peek: !!(past.length || runup.length)};
   return sb;
 }
 
@@ -1890,7 +1941,7 @@ function focusCard(f) {
   // its floor is the **Ask** (or, when there is unsent text you must see before
   // you type over it, that warning under it). Nothing on an unblocked Focus is
   // below the read, so there is no floor there and the seam's 250px stands.
-  if (land) landOn(land.seam, land.sig, land.pad, askBox, warnBox || floorBot || askBox);
+  if (land) landOn(land.seam, land.sig, land.peek, askBox, warnBox || floorBot || askBox);
   return card;
 }
 

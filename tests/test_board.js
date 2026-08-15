@@ -45,10 +45,24 @@ const HTML = fs.readFileSync(path.join(ROOT, "web/board.html"), "utf8");
 // runs hundreds of px past its own question. What the landing must clear is
 // therefore the FIRST option, not the block's bottom — this is what lets a test
 // tell those two numbers apart.
+// `fheadHeight` is the sixth, and new with the header-condense port
+// (board.js::headPad): the landing no longer copies the sticky header's
+// height by hand, it measures `.fhead` at scroll time. Defaulting this to 0
+// is the honest stub answer — no CSS runs here, so there is no real box to
+// report — and it is also the case every OTHER landing test below wants: a
+// pad of just the hair, so a test can move this one number to prove the pad
+// tracks it rather than a literal.
 const layout = {cardBottom: 0, barTop: 800, barHeight: 0, seamTop: 0,
                 askTop: 0, askBottom: 0, optTop: 0, optBottom: 0,
-                pendBottom: 0, hintTop: 1e6};
+                pendBottom: 0, hintTop: 1e6, fheadHeight: 0};
 const rect = (b, t) => ({top: t || 0, left: 0, right: 0, width: 0, bottom: b, height: b});
+// Mirrors board.js::HEAD_HAIR — the small margin `headPad` adds on top of
+// whatever it measures `.fhead` at. The stub's `.fhead` has no real box (no
+// CSS runs here), so `layout.fheadHeight` starts at 0 and this is the whole
+// of what a landing "under the header" parks against by default; a test that
+// moves `fheadHeight` proves the pad follows the measurement.
+const HEAD_HAIR = 8;
+const headPadStub = () => layout.fheadHeight + HEAD_HAIR;
 
 // The composer's own metrics. The reply box is a textarea whose height is
 // MEASURED rather than declared (board.js::growComposer — `field-sizing:content`
@@ -123,6 +137,10 @@ class El {
               bottom: layout.barTop + layout.barHeight, height: layout.barHeight};
     }
     if (cls.includes(" swipehint ")) return rect(layout.hintTop, layout.hintTop);
+    // board.js::headPad reads this at scroll time — full header or condensed,
+    // whichever `.fhead` reports right now. `fheadHeight` defaults to 0, the
+    // honest answer for a stub that runs no CSS.
+    if (cls.includes(" fhead ")) return rect(layout.fheadHeight, 0);
     if (cls.includes(" ask ")) {
       return {top: layout.askTop, left: 0, right: 0, width: 0,
               bottom: layout.askBottom, height: layout.askBottom - layout.askTop};
@@ -942,7 +960,7 @@ const W = "wwwwwwww-3333-3333-3333-333333333333";
   // place to keep and lands unconditionally.
   sandbox.setPinned(T2); await poll();
   ok("landing: switching Focus lands the new Session whatever the old one left",
-     win.scrollY === 200 + layout.seamTop - 52, String(win.scrollY));
+     win.scrollY === 200 + layout.seamTop - headPadStub(), String(win.scrollY));
   // Nothing above the seam at all — one Exchange, still being answered — means
   // there is no peek to buy, so it parks under the header instead.
   ok("landing: with nothing folded above it the seam goes under the header",
@@ -1059,7 +1077,7 @@ const W = "wwwwwwww-3333-3333-3333-333333333333";
   win.scrollY = 0; sandbox.setPinned(T2); await poll();
   win.scrollY = 0; sandbox.setPinned(T); await poll();
   ok("landing: and the peek is all it may spend — the newest prose is never lost",
-     win.scrollY === parked() + (layout.seamTop - 52), String(win.scrollY));
+     win.scrollY === parked() + (layout.seamTop - headPadStub()), String(win.scrollY));
   layout.askBottom = 900;
 
   // The swipe hint is a FIXED, opaque strip standing on the composer until the
@@ -1125,7 +1143,25 @@ const W = "wwwwwwww-3333-3333-3333-333333333333";
      findAll(sbEl(), "live")[0].textContent.includes("two entries"),
      findAll(sbEl(), "live").map((l) => l.textContent).join("|"));
   ok("tiny: and with no peek to buy it parks under the header, not 250px down",
-     win.scrollY === layout.seamTop - 52, String(win.scrollY));
+     win.scrollY === layout.seamTop - headPadStub(), String(win.scrollY));
+
+  // The pad follows the header's live height rather than a literal: give the
+  // stub's `.fhead` a real box — as it would be at a condensed height, say —
+  // and the exact same "no peek" landing must park against IT, not against
+  // the hair alone. This is board.js::headPad's whole reason to exist.
+  //
+  // A landing fires once per scrollback, so a fresh, unconditional landing —
+  // the kind a Focus you have just swiped to gets — is what proves the point
+  // without also proving something about the "still parked" arithmetic
+  // (which the cumulative-landing test above already owns).
+  layout.fheadHeight = 31;   // roughly the condensed header's own height
+  world = [S(tiny, "yourmove", 1, "tiny"), S(T2, "yourmove", 1, "other")];
+  win.scrollY = 0; sandbox.setPinned(T2); await poll();
+  win.scrollY = 0; sandbox.setPinned(tiny); await poll();
+  ok("tiny: the pad tracks the measured header, not a hand-copied number",
+     win.scrollY === layout.seamTop - headPadStub(), String(win.scrollY));
+  layout.fheadHeight = 0;
+  world = [S(tiny, "yourmove", 1, "tiny")];
 
   // One entry, nothing back yet: an Exchange with a prompt and no reply. Still
   // the read, never a Record — folding the thing you just sent behind a summary
@@ -2209,9 +2245,9 @@ const W = "wwwwwwww-3333-3333-3333-333333333333";
   // spent, and the last three options still under the bar. A worse trade than a
   // flick, and it costs you the newest prose the Ask is asking about.
   ok("landing: not the whole option list — that would spend the entire peek and still fall short",
-     layout.askBottom - (layout.barTop - 10) > layout.seamTop - 52 &&
-     win.scrollY !== parked() + (layout.seamTop - 52),
-     String(win.scrollY) + " vs capped " + (parked() + layout.seamTop - 52));
+     layout.askBottom - (layout.barTop - 10) > layout.seamTop - headPadStub() &&
+     win.scrollY !== parked() + (layout.seamTop - headPadStub()),
+     String(win.scrollY) + " vs capped " + (parked() + layout.seamTop - headPadStub()));
   layout.barTop = 800; layout.barHeight = 0;
   layout.askTop = 0; layout.askBottom = 0; layout.optTop = 0; layout.optBottom = 0;
   askSet = {};
