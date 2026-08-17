@@ -1,6 +1,6 @@
 # 02 — Nickname every row, and set one from any of them
 
-**Status:** ready-for-agent
+**Status:** landed — 8d489e5
 
 Spec: `.scratch/session-nickname/spec.md` · ADR 0026
 
