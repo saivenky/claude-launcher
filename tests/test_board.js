@@ -249,6 +249,7 @@ const fetched = [];      // every URL board.js asked for
 const respondLog = [];
 const respondReplies = [];   // [status, body] per POST, in order; empty = plain 200
 const transferLog = [];  // every body posted to api/transfer
+const nickLog = [];      // every body posted to api/nickname — token-free by design
 let transferReply = {status: 200, body: {ok: true, runId: "r-transferred"}};
 // GET /api/recoverable: the **Resumable Sessions**, newest-first, with the
 // **recovery set** flagged (ADR 0013). Steerable, because the **Recover** row's
@@ -269,9 +270,13 @@ function fakeBoard(focusSid) {
   let focus = focusSid ? world.find((s) => s.sessionId === focusSid) : null;
   const pinned = !!focus;
   if (!focus) focus = order[0] || null;
+  // `nickname` rides BESIDE `one`, never substituted into it, and its absence is
+  // `null` and never `""` — one representation for "no Nickname", so the client
+  // has one truthiness check per surface (server.py::_nickname, ADR 0026).
   const strip = (s) => ({runId: s.runId, sessionId: s.sessionId, workspace: s.workspace,
                          dir: "/p/" + s.workspace,
-                         status: "", bridge: "", updatedAt: s.updatedAt, lane: s.lane, pri: s.pri, one: s.one});
+                         status: "", bridge: "", updatedAt: s.updatedAt, lane: s.lane, pri: s.pri,
+                         one: s.one, nickname: s.nickname || null});
   // The **Ask** is a property of being **Blocked** and of nothing else: server.py
   // blanks it off the question/approval lanes (ADR 0014). Mirrored here, or the
   // "no ask on an idle Focus" test would only be testing the fake.
@@ -320,6 +325,16 @@ function fakeFetch(url, opts) {
   if (url === "api/transfer") {
     transferLog.push(JSON.parse(opts.body));
     return res(transferReply.status, transferReply.body);
+  }
+  // The store the real server keeps, in one line: keyed by sessionId, empty
+  // clears, and the next poll shows it. Applied to `world` rather than merely
+  // recorded, so the tests can assert the round trip and not just the request.
+  if (url === "api/nickname") {
+    const b = JSON.parse(opts.body);
+    nickLog.push(b);
+    const s = world.find((w) => w.sessionId === b.sessionId);
+    if (s) s.nickname = b.nickname || null;
+    return res(200, {ok: true});
   }
   return res(200, {ok: true});
 }
@@ -1517,6 +1532,101 @@ const W = "wwwwwwww-3333-3333-3333-333333333333";
   await scrollTo(2030);
   ok("condense: 70px is, so the way back is deliberate rather than a wobble", !hid(fhead()));
 
+  // --- naming the Focus (ADR 0026) ------------------------------------------
+  // The **Workspace** answers *where am I* and stops answering the moment you run
+  // three Sessions in one repo. A **Nickname** is the second level — *which of
+  // these* — typed by you, on the Session, and it takes the slot the derived
+  // label would have taken.
+  const frow1 = () => fhead() && fhead().querySelector(".frow1");
+  const nickIn = () => fhead() && fhead().querySelector(".fnickin");
+  const nickSpan = () => fhead() && fhead().querySelector(".fnick");
+  const kids = (n) => n.children.map((c) => c.className).join(" ");
+
+  ok("nickname: an unnamed Session's header is exactly as it was — aiTitle keeps the slot",
+     !nickSpan() && !!fhead().querySelector(".fabout"), kids(frow1()));
+
+  frow1().dispatch("click");
+  await settle();
+  ok("nickname: tapping the Workspace row turns it into a field, in place",
+     !!nickIn() && nickIn().tag === "input", kids(frow1()));
+  ok("nickname: empty when there is no name yet, and capped where the server caps it",
+     nickIn().value === "" && nickIn().maxLength === 24,
+     JSON.stringify(nickIn().value) + " / " + nickIn().maxLength);
+
+  // The card is rebuilt on every poll of its own data, and this client polls
+  // every few seconds — a rebuild mid-word would take the keyboard away.
+  const field = nickIn();
+  sbOf[T] = SB().concat([{role: "assistant", html: "<p>a turn arrived while you typed</p>"}]);
+  await poll();
+  ok("nickname: a poll may not take the field away mid-word", nickIn() === field);
+
+  nickIn().value = "the auth refactor";
+  nickIn().dispatch("keydown", {key: "Escape"});
+  await settle();
+  ok("nickname: Escape closes it and writes nothing",
+     !nickIn() && !nickLog.length && !nickSpan(), JSON.stringify(nickLog));
+
+  frow1().dispatch("click");
+  await settle();
+  nickIn().value = "the auth refactor";
+  nickIn().dispatch("keydown", {key: "Enter"});
+  await settle();
+  await poll();
+  ok("nickname: Enter posts it to /api/nickname, keyed by Session",
+     nickLog.length === 1 && nickLog[0].sessionId === T &&
+     nickLog[0].nickname === "the auth refactor", JSON.stringify(nickLog));
+  // Ungated, and this is the assertable half of that: ADR 0007's token guards
+  // Respond because Respond can approve a tool call. Naming a row cannot.
+  ok("nickname: with no token — it rides the same helper priority and snooze do",
+     !("token" in nickLog[0]), JSON.stringify(nickLog[0]));
+  ok("nickname: and from then on that is what the header calls the Session",
+     !!nickSpan() && nickSpan().textContent === "the auth refactor" &&
+     kids(frow1()) === "fdir fnick", kids(frow1()));
+  ok("nickname: beside the Workspace, which never yields its place",
+     frow1().querySelector(".fdir").textContent === "scroll");
+  ok("nickname: it supersedes the derived label — aiTitle no longer has a slot",
+     !fhead().querySelector(".fabout"), kids(frow1()));
+
+  // The state ADR 0025 exists to protect: scrolled deep into a Scrollback with an
+  // Ask in front of you. A Nickname in the `.about` band would vanish exactly
+  // there, which is why it is on row one.
+  await scrollTo(1990);
+  ok("nickname: it survives the condense — both levels of where-am-I stay on screen",
+     hid(fhead()) && !!nickSpan() && nickSpan().textContent === "the auth refactor" &&
+     fhead().querySelector(".fdir").textContent === "scroll", kids(frow1()));
+
+  await scrollTo(2100);
+  frow1().dispatch("click");
+  await settle();
+  ok("nickname: re-opening pre-fills with the name you already have — renaming is the common case",
+     nickIn().value === "the auth refactor", JSON.stringify(nickIn().value));
+  nickIn().value = "";
+  nickIn().dispatch("keydown", {key: "Enter"});
+  await settle();
+  await poll();
+  ok("nickname: an empty submit IS the delete — no second control for the null case",
+     nickLog[nickLog.length - 1].nickname === "" && !nickSpan() &&
+     !!fhead().querySelector(".fabout"), kids(frow1()));
+
+  // The elide rules, driven straight. The stub runs no CSS, so a test has to BE
+  // the thing that says "this is clipped" — which is exactly the contract these
+  // functions have with the browser: they never estimate, they ask.
+  const measured = (max) => {
+    const n = new El("span");
+    n.clientWidth = 100;
+    Object.defineProperty(n, "scrollWidth",
+                          {get: () => (n.textContent.length <= max ? 100 : 200)});
+    return n;
+  };
+  const nk = measured(9);
+  sandbox.elideNickname(nk, "auth refactor pass two");
+  ok("elide: a Nickname loses its TAIL — you type the discriminator first",
+     nk.textContent === "auth ref…", nk.textContent);
+  const ws = measured(15);
+  sandbox.elideWorkspace(ws, "claude-launcher-session-nickname");
+  ok("elide: and the Workspace's own rule is untouched — repo-biased, the slug kept",
+     ws.textContent === "claude-lau…name", ws.textContent);
+
   // THE SETTLE WINDOW. A toggle changes layout, and the scroll event that
   // arrives next may be the browser compensating for it rather than a finger —
   // indistinguishable, and the reason the prototype flickered. Both events here
@@ -2294,6 +2404,21 @@ const W = "wwwwwwww-3333-3333-3333-333333333333";
   ok("condense: everything but the Workspace goes, and the Workspace never does",
      DROPPED.every((c) => condensedOut.includes(".fhead.hid " + c)) &&
      !condensedOut.includes(".fdir"), condensedOut);
+  // …and the **Nickname** goes with the Workspace, not with the list above. It
+  // is the second level of *where am I* (ADR 0026), and the condensed header is
+  // the one place both levels have to survive.
+  ok("condense: the Nickname condenses beside the Workspace and is never dropped",
+     !condensedOut.includes(".fnick") && /font-size/.test(rule(".fhead.hid .fnick")),
+     condensedOut + " || " + rule(".fhead.hid .fnick"));
+  // ADR 0023's bug was one item on row one with no floor, paying every shortfall
+  // in full. Two items now, and giving the new one no floor would reproduce that
+  // inversion one level down — at 390px the Nickname would be what vanishes.
+  ok("row one: BOTH items are floored, so neither can render as zero characters",
+     /min-width:\d+ch/.test(rule(".fdir")) && /min-width:\d+ch/.test(rule(".fnick")) &&
+     !/min-width:0/.test(rule(".fdir")), rule(".fdir") + " || " + rule(".fnick"));
+  ok("row one: and the Nickname is the one that yields first, the Workspace last",
+     /flex:0 4 auto/.test(rule(".fnick")) && /flex:0 1 auto/.test(rule(".fdir")),
+     rule(".fnick"));
   // The flicker, in the two places the stylesheet can speak to it. Animating a
   // property that changes height reflows on every frame of the collapse, and
   // scroll anchoring hands that reflow back to the handler that caused it as

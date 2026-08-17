@@ -3034,6 +3034,214 @@ class BoardPayloadTests(unittest.TestCase):
         self.assertNotEqual(body_up, body_down)
 
 
+class NicknameStoreTests(unittest.TestCase):
+    """The **Nickname**: a short name you typed, on the **Session**, kept beside
+    `priority` and `snooze` in `.board-state.json` (ADR 0026). Keyed by
+    `sessionId`, which is the one id no lifecycle verb changes — so surviving
+    close, **Resume**, **Recover**, **Transfer** and a restart is one property of
+    the key, tested once here rather than once per verb."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.state = os.path.join(self.tmp, "projects")   # stand-in ~/.claude/projects
+        self._saved = (server._STATE_FILE, server._PROJECTS_STATE,
+                       dict(server._NICKNAME), dict(server._PRIORITY))
+        server._STATE_FILE = os.path.join(self.tmp, "board-state.json")
+        server._PROJECTS_STATE = self.state
+        server._NICKNAME.clear()
+
+    def tearDown(self):
+        (server._STATE_FILE, server._PROJECTS_STATE, nicks, pris) = self._saved
+        server._NICKNAME.clear()
+        server._NICKNAME.update(nicks)
+        server._PRIORITY.clear()
+        server._PRIORITY.update(pris)
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _transcript(self, sid, cwd="/nowhere"):
+        d = os.path.join(self.state, "proj")
+        os.makedirs(d, exist_ok=True)
+        p = os.path.join(d, sid + ".jsonl")
+        with open(p, "w") as fh:
+            fh.write(json.dumps({"type": "user", "cwd": cwd,
+                                 "message": {"content": [{"type": "text", "text": "hi"}]}}) + "\n")
+        return p
+
+    def test_a_name_you_typed_comes_back(self):
+        self.assertTrue(server.set_nickname(_GOOD, "the auth refactor"))
+        self.assertEqual(server._nickname(_GOOD), "the auth refactor")
+
+    def test_no_nickname_is_none_and_never_an_empty_string(self):
+        # One representation for "no Nickname", so every render site is one
+        # truthiness check instead of a per-surface argument about which empty
+        # means which (ADR 0026).
+        self.assertIsNone(server._nickname(_GOOD))
+        server.set_nickname(_GOOD, "x")
+        server.set_nickname(_GOOD, "")
+        self.assertIsNone(server._nickname(_GOOD))
+        self.assertNotIn(_GOOD, server._NICKNAME)
+
+    def test_an_empty_submit_is_the_delete(self):
+        server.set_nickname(_GOOD, "wrong name")
+        self.assertTrue(server.set_nickname(_GOOD, ""))
+        self.assertIsNone(server._nickname(_GOOD))
+
+    def test_the_cap_is_enforced_here_and_not_only_in_the_field(self):
+        # The field is one client; this store outlives it. 24 is roughly what the
+        # Focus header's first row can render beside a Workspace, so a name that
+        # got past it would be one whose distinguishing half is never shown.
+        self.assertFalse(server.set_nickname(_GOOD, "x" * (server.NICKNAME_MAX + 1)))
+        self.assertIsNone(server._nickname(_GOOD))
+        self.assertTrue(server.set_nickname(_GOOD, "x" * server.NICKNAME_MAX))
+
+    def test_a_bad_session_id_is_refused(self):
+        self.assertFalse(server.set_nickname("not-a-session", "name"))
+        self.assertEqual(server._NICKNAME, {})
+
+    def test_it_survives_a_restart(self):
+        self._transcript(_GOOD)
+        server.set_nickname(_GOOD, "the flaky test")
+        server._NICKNAME.clear()          # as a fresh process starts
+        server._load_state()
+        self.assertEqual(server._nickname(_GOOD), "the flaky test")
+
+    def test_load_drops_a_name_whose_transcript_is_gone(self):
+        # The one condition under which deleting cannot lose anything: a Session
+        # with no transcript cannot be resumed by anything. At load only — never
+        # on save, and never in the path of a tap (ADR 0026).
+        self._transcript(_GOOD)
+        server.set_nickname(_GOOD, "kept")
+        server.set_nickname(_UNKNOWN, "orphan")   # no transcript on disk
+        server._NICKNAME.clear()
+        server._load_state()
+        self.assertEqual(server._nickname(_GOOD), "kept")
+        self.assertIsNone(server._nickname(_UNKNOWN))
+
+    def test_load_keeps_a_name_whose_cwd_is_merely_gone(self):
+        # A deleted working directory is not the prune condition: the Session is
+        # still resumable, so its Nickname is still wanted.
+        self._transcript(_GONE, cwd=os.path.join(self.tmp, "deleted-worktree"))
+        server.set_nickname(_GONE, "the dead worktree")
+        server._NICKNAME.clear()
+        server._load_state()
+        self.assertEqual(server._nickname(_GONE), "the dead worktree")
+
+    def test_the_prune_does_not_touch_priority(self):
+        # Priority entries have outlived their transcripts forever and this
+        # change is not the place to start collecting them: pruning a name is
+        # safe because a nameless Session reads correctly, and that argument does
+        # not transfer.
+        server._PRIORITY.clear()
+        server.set_priority(_UNKNOWN, 0)
+        server._load_state()
+        self.assertEqual(server._pri(_UNKNOWN), 0)
+
+
+class NicknameBoardTests(unittest.TestCase):
+    """`nickname` rides the item BESIDE `one`, never substituted into it — the
+    fallback is a rendering decision and lives in one place in board.js."""
+
+    def setUp(self):
+        self._saved = (server.cached_runs, server.cached_foreign_runs,
+                       server._tmux_server_down, dict(server._NICKNAME))
+        server._tmux_server_down = lambda: False
+        server.cached_foreign_runs = lambda: []
+        server.cached_runs = lambda: [{
+            "id": _RUN, "sessionId": _GOOD, "title": "x", "dir": "~/projects/x",
+            "status": "busy", "bridge": "", "updatedAt": 5000, "snippet": "last thing said",
+        }]
+        server._NICKNAME.clear()
+
+    def tearDown(self):
+        (server.cached_runs, server.cached_foreign_runs,
+         server._tmux_server_down, nicks) = self._saved
+        server._NICKNAME.clear()
+        server._NICKNAME.update(nicks)
+
+    def test_an_unnamed_session_ships_none_not_an_empty_string(self):
+        focus = server._board()["focus"]
+        self.assertIn("nickname", focus)
+        self.assertIsNone(focus["nickname"])
+
+    def test_a_named_session_ships_the_name_and_keeps_one(self):
+        server._NICKNAME[_GOOD] = "the auth refactor"
+        focus = server._board()["focus"]
+        self.assertEqual(focus["nickname"], "the auth refactor")
+        self.assertEqual(focus["one"], "last thing said")
+
+    def test_naming_a_session_moves_the_etag(self):
+        # Otherwise the phone that just typed the name would be handed a 304 and
+        # show the old header until something unrelated churned.
+        _, before = server._board_payload()
+        server._NICKNAME[_GOOD] = "named"
+        _, after = server._board_payload()
+        self.assertNotEqual(before, after)
+
+
+class NicknameApiTests(_HttpCase):
+    """`/api/nickname` is ungated — same-origin + JSON, no token, beside
+    `priority` and `snooze`. ADR 0007's token guards **Respond** *because
+    Respond can approve tool calls*; a Nickname's blast radius is a wrong word
+    you retype (ADR 0026)."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.httpd = ThreadingHTTPServer(("127.0.0.1", 0), server.Handler)
+        cls.port = cls.httpd.server_address[1]
+        cls.thread = threading.Thread(target=cls.httpd.serve_forever, daemon=True)
+        cls.thread.start()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.httpd.shutdown()
+        cls.thread.join(timeout=2)
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self._saved = (server._STATE_FILE, dict(server._NICKNAME))
+        server._STATE_FILE = os.path.join(self.tmp, "board-state.json")
+        server._NICKNAME.clear()
+
+    def tearDown(self):
+        server._STATE_FILE, nicks = self._saved
+        server._NICKNAME.clear()
+        server._NICKNAME.update(nicks)
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_no_token_needed(self):
+        status, body = self._post("/api/nickname", {"sessionId": _GOOD, "nickname": "auth"})
+        self.assertEqual(status, 200)
+        self.assertTrue(body["ok"])
+        self.assertEqual(server._nickname(_GOOD), "auth")
+
+    def test_empty_clears_it(self):
+        self._post("/api/nickname", {"sessionId": _GOOD, "nickname": "auth"})
+        status, _ = self._post("/api/nickname", {"sessionId": _GOOD, "nickname": ""})
+        self.assertEqual(status, 200)
+        self.assertIsNone(server._nickname(_GOOD))
+
+    def test_a_name_past_the_cap_is_refused(self):
+        status, body = self._post(
+            "/api/nickname", {"sessionId": _GOOD, "nickname": "x" * (server.NICKNAME_MAX + 1)})
+        self.assertEqual(status, 400)
+        self.assertIn(str(server.NICKNAME_MAX), body["message"])
+        self.assertIsNone(server._nickname(_GOOD))
+
+    def test_a_bad_session_id_is_refused(self):
+        status, _ = self._post("/api/nickname", {"sessionId": "nope", "nickname": "auth"})
+        self.assertEqual(status, 400)
+
+    def test_it_is_still_a_same_origin_json_post(self):
+        # Ungated is not unguarded: the CSRF posture is the same as every other
+        # mutation's.
+        status, _ = self._post("/api/nickname", {"sessionId": _GOOD, "nickname": "x"},
+                               origin=False)
+        self.assertEqual(status, 403)
+        status, _ = self._post("/api/nickname", {"sessionId": _GOOD, "nickname": "x"},
+                               ctype="text/plain")
+        self.assertEqual(status, 415)
+
+
 class ForeignBoardTests(unittest.TestCase):
     """A **Foreign Run** reaches the Board on its own key — visible, never
     drivable (ADR 0012). The triage lanes stay Managed-only, so nothing here can

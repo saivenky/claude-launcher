@@ -1538,12 +1538,22 @@ _BOARD_DORMANT_MS = 36 * 3600 * 1000     # idle longer than this parks as Dorman
 _TAIL_WINDOW = 262144
 
 # Per-session state you set from the Board — priority reorders the rotation and
-# stretches the Dormant clock; snooze hides a Session until its wake time. Both
-# are keyed by sessionId and persisted to disk so they survive a restart. These
-# are benign (they reorder a view, they cannot drive a Run), so they ride the
+# stretches the Dormant clock; snooze hides a Session until its wake time; a
+# Nickname is the short name you typed for a Session. All three are keyed by
+# sessionId and persisted to disk so they survive a restart. These are benign
+# (they reorder a view or relabel one, they cannot drive a Run), so they ride the
 # same-origin + JSON CSRF defense but are NOT token-gated like Respond.
+#
+# `sessionId` is the key and not `runId` because it is the one id nothing in the
+# lifecycle changes: close, Resume, Recover and Transfer all carry it forward, so
+# a Nickname survives every one of them without a line of code per verb (ADR 0026).
 _PRIORITY: dict[str, int] = {}           # sessionId -> 0 high / 1 normal / 2 low
 _SNOOZE: dict[str, float] = {}           # sessionId -> wake epoch ms
+_NICKNAME: dict[str, str] = {}           # sessionId -> the name you typed
+# Roughly what the Focus header's first row can render beside a Workspace. The
+# cap exists so you cannot author a name whose distinguishing half is never
+# shown — the failure ADR 0023 had to fix, self-inflicted (ADR 0026).
+NICKNAME_MAX = 24
 _STATE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".board-state.json")
 _STATE_LOCK = threading.Lock()
 
@@ -1553,7 +1563,7 @@ def _pri(session_id: str) -> int:
 
 
 def _load_state() -> None:
-    global _PRIORITY, _SNOOZE
+    global _PRIORITY, _SNOOZE, _NICKNAME
     try:
         with open(_STATE_FILE) as fh:
             d = json.load(fh)
@@ -1562,6 +1572,19 @@ def _load_state() -> None:
     _PRIORITY = {k: int(v) for k, v in (d.get("priority") or {}).items() if int(v) in (0, 1, 2)}
     now = time.time() * 1000
     _SNOOZE = {k: float(v) for k, v in (d.get("snooze") or {}).items() if float(v) > now}
+    # Pruned HERE and nowhere else. A snooze prunes itself by expiring; a
+    # Nickname has no expiry, and this file has never had a GC — priority
+    # entries outlive their transcripts forever. A missing transcript is the one
+    # condition under which dropping cannot lose anything, because a Session
+    # with no transcript cannot be resumed by anything. A missing *cwd* is not
+    # that condition and is deliberately not checked: the Session is still
+    # resumable, so its Nickname is still wanted. At load only — once per server
+    # start, a glob per entry, never in the path of a tap (ADR 0026).
+    _NICKNAME = {k: v.strip()[:NICKNAME_MAX] for k, v in (d.get("nickname") or {}).items()
+                 # `_PROJECTS_STATE` passed rather than defaulted: the default is
+                 # bound at def time, and this is the one caller that has to read
+                 # whatever the transcript root is NOW.
+                 if isinstance(v, str) and v.strip() and _transcript_path(k, _PROJECTS_STATE)}
 
 
 def _save_state() -> None:
@@ -1569,7 +1592,7 @@ def _save_state() -> None:
         try:
             tmp = _STATE_FILE + ".tmp"
             with open(tmp, "w") as fh:
-                json.dump({"priority": _PRIORITY, "snooze": _SNOOZE}, fh)
+                json.dump({"priority": _PRIORITY, "snooze": _SNOOZE, "nickname": _NICKNAME}, fh)
             os.replace(tmp, _STATE_FILE)   # atomic, never a half-written file
         except OSError as exc:
             sys.stderr.write(f"board state save failed: {exc}\n")
@@ -1582,6 +1605,28 @@ def set_priority(session_id: str, level: int) -> bool:
         _PRIORITY.pop(session_id, None)   # normal is the default; don't store it
     else:
         _PRIORITY[session_id] = level
+    _save_state()
+    return True
+
+
+def _nickname(session_id: str) -> str | None:
+    """The Session's Nickname, or None. Never "" — "no Nickname" has exactly one
+    representation on the wire, so every render site is one truthiness check
+    rather than a per-surface argument about which empty means which (ADR 0026)."""
+    return _NICKNAME.get(session_id) or None
+
+
+def set_nickname(session_id: str, name: str) -> bool:
+    """Set or clear a Session's Nickname. Empty clears — an empty submit is the
+    delete affordance, so there is no second control for the null case of a name
+    you already have. The cap is enforced here and not only in the field: the
+    field is one client and this store outlives it."""
+    if not _UUID_RE.match(session_id) or len(name) > NICKNAME_MAX:
+        return False
+    if name:
+        _NICKNAME[session_id] = name
+    else:
+        _NICKNAME.pop(session_id, None)
     _save_state()
     return True
 
@@ -2924,7 +2969,13 @@ def _board(focus_sid: str = "") -> dict:
         items.append({"runId": r.get("id"), "sessionId": sid, "workspace": _workspace(r.get("dir")),
                       "dir": r.get("dir", ""), "status": r.get("status", ""), "bridge": r.get("bridge", ""),
                       "attach": r.get("attach", ""),
-                      "updatedAt": r.get("updatedAt"), "lane": lane, "pri": _pri(sid), "one": one})
+                      "updatedAt": r.get("updatedAt"), "lane": lane, "pri": _pri(sid), "one": one,
+                      # Beside `one`, never substituted into it. The fallback —
+                      # nickname, then the derived label — is a rendering
+                      # decision, and putting it here would spread it across
+                      # every surface's server-side twin instead of leaving it
+                      # in one place in board.js (ADR 0026).
+                      "nickname": _nickname(sid)})
 
     blocked = [it for it in items if it["lane"] in ("question", "approval")]
     working = [it for it in items if it["lane"] == "working"]
@@ -3142,7 +3193,7 @@ _WEB_FILES = {"board.html": "text/html; charset=utf-8",
 
 MAX_BODY_BYTES = 4096
 _API_POSTS = ("/api/launch", "/api/resume", "/api/recover", "/api/close", "/api/transfer",
-              "/api/respond", "/api/clear", "/api/priority", "/api/snooze")
+              "/api/respond", "/api/clear", "/api/priority", "/api/snooze", "/api/nickname")
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -3302,6 +3353,8 @@ class Handler(BaseHTTPRequestHandler):
             self._handle_priority(body)
         elif path == "/api/snooze":
             self._handle_snooze(body)
+        elif path == "/api/nickname":
+            self._handle_nickname(body)
         else:
             self._handle_launch(body)
 
@@ -3435,6 +3488,20 @@ class Handler(BaseHTTPRequestHandler):
             self._fail(400, "minutes must be a number in [0, 525600]")
             return
         if not set_snooze(self._str(body, "sessionId"), minutes):
+            self._fail(400, "bad sessionId")
+            return
+        self._json(200, {"ok": True})
+
+    # Ungated on purpose, beside priority and snooze rather than behind Respond's
+    # token. ADR 0007's rule is narrow and reasoned: the token guards Respond
+    # BECAUSE Respond can approve a tool call. A Nickname's whole blast radius is
+    # a wrong word you retype (ADR 0026).
+    def _handle_nickname(self, body: dict) -> None:
+        name = self._str(body, "nickname")
+        if len(name) > NICKNAME_MAX:
+            self._fail(400, f"nickname must be at most {NICKNAME_MAX} characters")
+            return
+        if not set_nickname(self._str(body, "sessionId"), name):
             self._fail(400, "bad sessionId")
             return
         self._json(200, {"ok": True})

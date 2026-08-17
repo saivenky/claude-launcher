@@ -197,8 +197,15 @@ escape hatch hands straight back the moment you tap the page (`.zbtn`,
 two's empty space open. `display:none` is safe on all six BECAUSE the header
 keeps its box either way: the thing the old rule got wrong is the thing that
 makes this cheap. */
+/* The **Nickname** condenses WITH the Workspace and is never dropped beside it
+(ADR 0026). Both levels of *where am I* survive, at the condensed scale: the
+state this header exists to protect is scrolled deep into a **Scrollback** with
+an **Ask** in front of you, and that is precisely when "which of the three
+`claude-launcher`s is this" is the question. It rides `.frow1` rather than the
+`.about` band for exactly this reason — the band is in the list below. */
 .fhead.hid{padding:5px 0;color:var(--fg3)}
 .fhead.hid .fdir{font-size:0.75rem}
+.fhead.hid .fnick{font-size:0.75rem}
 .fhead.hid .fbadge,.fhead.hid .grow,.fhead.hid .fmeta,.fhead.hid .fsid,
 .fhead.hid .fabout,.fhead.hid .zbtn,.fhead.hid .iplus{display:none}
 /* ROW ONE IS A ROW OF ITS OWN NOW, because it holds two things (ADR 0023 gave
@@ -214,7 +221,34 @@ anything to give back. A long title is ellipsised to nothing before the
 Workspace loses a character; a Workspace too long for the whole line, and only
 then, shrinks — at which point elideWorkspace measures the clip and rewrites it
 `head…tail` (board.js). The CSS ellipsis stays as the last resort behind that. */
-.fdir{flex:0 1 auto;font-weight:600;font-size:0.875rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
+/* TWO FLOORED ITEMS, AND THAT IS THE POINT (ADR 0026). ADR 0023's bug was one
+item on this row with no floor: every shortfall was paid out of it in full, by
+construction, until `claude-launcher` reached a phone as `claude-lau…`. Giving
+the **Nickname** no floor reproduces that inversion one level down — at 390px
+the Nickname is what vanishes, and the row silently reverts to looking like
+every other row in the repo with nothing saying so. So both carry a `min-width`
+in `ch`, which is a floor measured in the one unit that means characters, and
+the ORDER of yielding is the shrink factor: the Nickname gives width back four
+times as fast as the Workspace, down to its floor, and only then does the
+Workspace start to yield. Neither can reach zero. Past both floors the row
+overflows rather than erasing a name, and elideWorkspace/elideNickname measure
+the clip and rewrite the string by its own rule (board.js). */
+.fdir{flex:0 1 auto;font-weight:600;font-size:0.875rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:8ch}
+/* Beside the Workspace and dimmer than it: the Workspace is the identity and
+the Nickname qualifies it, so it may not read as the louder of the two. `--m`
+rather than `--dim` because a Nickname is the one string in this chrome that
+nothing but you writes — the same accent the lane badge uses for a signal you
+authored. It wears the reading face for the same reason `.fabout` does: it is a
+phrase, not a machine id (ADR 0018). */
+.fnick{flex:0 4 auto;min-width:6ch;color:var(--m);font-family:var(--face);
+font-size:0.8125rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+/* The edit is row one, in place — no sheet over the read you are consulting in
+order to decide what to call it, and no prefix on the reply box (ADR 0026). It
+takes the width `.fabout` would have taken, so the header's box does not change
+when the field swaps in and the sticky strip does not reflow mid-tap. */
+.fnickin{flex:1 1 0;min-width:0;font-family:var(--face);font-size:0.875rem;
+color:var(--fg);background:var(--panel);border:1px solid var(--accent);
+border-radius:5px;padding:2px 7px}
 .fbadge{font-size:0.625rem;text-transform:uppercase;letter-spacing:.7px;color:var(--m);
 border:1px solid var(--line);border-radius:4px;padding:1px 6px}
 .bq .fbadge{color:var(--q)} .bp .fbadge{color:var(--p)}

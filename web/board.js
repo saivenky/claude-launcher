@@ -198,11 +198,12 @@ function el(tag, cls, txt) {
   return e;
 }
 
-// --- eliding: two functions, because a name and a path are not the same thing --
-// One function branching on "/" would be one function with two contracts, and
-// neither caller is ever ambiguous about which it holds: `.fdir` is handed a
-// **Workspace** (already a basename, server-side) and `.recovdir` is handed a
-// path. So they are named for what they take.
+// --- eliding: three functions, because a Workspace, a Nickname and a path are
+// not the same kind of string ------------------------------------------------
+// One function branching on its input would be one function with three
+// contracts, and no caller is ever ambiguous about which it holds: `.fdir` is
+// handed a **Workspace** (already a basename, server-side), `.fnick` a
+// **Nickname**, and `.recovdir` a path. So they are named for what they take.
 //
 // Both measure, they do not estimate: `scrollWidth > clientWidth` is the browser
 // telling you it clipped, at the real font, after layout. Call them from a
@@ -235,6 +236,23 @@ function elideWorkspace(node, name) {
   }
   // Narrower than `head…t`: nothing sensible is left, so stop rather than emit
   // a string that is more ellipsis than name.
+}
+
+// The **Nickname**, tail-biased: keep the head, drop the end. A third rule and
+// not a branch inside either of the other two, because it is a different kind of
+// string — a Workspace is repo-plus-slug, where the slug is the whole point and
+// so the tail must survive; a path is a list of segments; a Nickname is a phrase
+// you type discriminator-first ("auth refactor", "flaky test"), so its first
+// words are the ones doing the telling-apart. One function branching on its
+// input would be one function with three contracts (ADR 0026).
+const NICK_HEAD_MIN = 4;   // below this it is initials, not a name — stop instead
+function elideNickname(node, name) {
+  node.textContent = name || "";
+  if (!name || !clipped(node)) return;
+  for (let head = name.length - 1; head >= NICK_HEAD_MIN; head--) {
+    node.textContent = name.slice(0, head) + "…";
+    if (!clipped(node)) return;
+  }
 }
 
 // A path, by whole segments. A path is a LIST, not a string: eliding mid-segment
@@ -1686,6 +1704,58 @@ function askEl(f) {
   return {box: box, floor: floor};
 }
 
+// --- naming the Focus (ADR 0026) -------------------------------------------
+// The Nickname is edited in place, on row one of the header, and this is the
+// whole of that state: which Session is being named, and nothing else. The
+// field's text lives in the field — it is built once per edit and renderFocus
+// keeps its hands off the card while it is up (see the guard there), so there
+// is no draft to shadow and no caret to carry.
+let nickEdit = null;      // the sessionId being named, or null
+const NICK_MAX = 24;      // server.py::NICKNAME_MAX — the cap is enforced both ends
+
+const nickEditing = (f) => !!f && nickEdit === f.sessionId;
+
+function openNick(f) {
+  nickEdit = f.sessionId;
+  redrawFocus();
+}
+
+// Cancel: Escape, or a tap anywhere else. Both leave the Nickname exactly as it
+// was — the only thing that writes is Enter, so nothing you were part-way
+// through typing can be committed by looking away.
+function closeNick() {
+  if (nickEdit === null) return;
+  nickEdit = null;
+  redrawFocus();
+}
+
+function commitNick(f, raw) {
+  const name = (raw || "").trim().slice(0, NICK_MAX);
+  closeNick();
+  // Empty IS the delete. A separate clear control would be a second affordance
+  // for the null case of a name you already have (ADR 0026).
+  postState("api/nickname", {sessionId: f.sessionId, nickname: name},
+            name ? "nicknamed " + name : "nickname cleared");
+}
+
+function nickFieldEl(f) {
+  const inp = el("input", "fnickin");
+  inp.type = "text";
+  inp.value = f.nickname || "";   // pre-filled: renaming is the common second use
+  inp.maxLength = NICK_MAX;
+  inp.placeholder = "nickname";
+  inp.setAttribute("aria-label", "nickname for this session");
+  inp.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") { if (e.preventDefault) e.preventDefault(); commitNick(f, inp.value); }
+    else if (e.key === "Escape") { if (e.preventDefault) e.preventDefault(); closeNick(); }
+  });
+  inp.addEventListener("blur", closeNick);
+  // After the card is in the document and after restore() has had its say about
+  // the keyboard, or the focus lands on a node with no layout and the caret with it.
+  nextFrame(() => { inp.focus(); if (inp.setSelectionRange) inp.setSelectionRange(inp.value.length, inp.value.length); });
+  return inp;
+}
+
 function focusCard(f) {
   const cls = f.lane === "question" ? "focus bq" : f.lane === "approval" ? "focus bp" : "focus";
   const card = el("div", cls);
@@ -1714,7 +1784,29 @@ function focusCard(f) {
   const row1 = el("div", "frow1");
   const dir = el("span", "fdir");
   row1.append(dir);
-  if (f.aiTitle) row1.append(el("span", "fabout", f.aiTitle));
+  let nick = null;
+  if (nickEditing(f)) {
+    // Row one IS the field while you are naming this Session — no sheet over the
+    // thing you are reading in order to decide what to call it, and no prefix on
+    // the reply box, where one Enter would put a typo in front of the model
+    // (ADR 0026). The header is `position:sticky` at a fixed height, so swapping
+    // a field in here costs no layout.
+    row1.append(nickFieldEl(f));
+  } else {
+    // The Nickname takes the slot `aiTitle` would have taken rather than sitting
+    // beside it: both answer "which Session is this", and a typed answer beats a
+    // derived one (ADR 0026). Row one has width for the Workspace and one of
+    // them. `.fnick` is on THIS row and never in the `.about` band, because the
+    // condensed header keeps row one and drops the band — and deep in a
+    // Scrollback with an Ask in front of you is exactly when you need it.
+    if (f.nickname) nick = el("span", "fnick", f.nickname);
+    if (nick) row1.append(nick);
+    else if (f.aiTitle) row1.append(el("span", "fabout", f.aiTitle));
+    // The primary way in (the other is a long-press on any row, for the Foreign
+    // Sessions that never take the Focus). The whole row, not a pencil: this
+    // strip is thumb-sized already and an icon would cost width the name spends.
+    row1.addEventListener("click", () => openNick(f));
+  }
   head.append(row1);
   head.append(el("span", "fbadge", LANE_LABEL[f.lane] || f.lane));
   head.append(el("span", "grow"));
@@ -1735,6 +1827,12 @@ function focusCard(f) {
   // compared against. A Run with no cwd has no Workspace and gets `—`: the pane
   // title that used to fall in here read as a repo name without being one.
   nextFrame(() => elideWorkspace(dir, f.workspace));
+  // Measured after layout for the same reason, and by its own rule: the Nickname
+  // gives width back before the Workspace does, but it has a floor of its own
+  // (board.html: .fnick) so it can never be shortened to nothing. ADR 0023's bug
+  // was one item on this row with no floor paying every shortfall in full;
+  // giving the Nickname none would be the same inversion one level down.
+  if (nick) nextFrame(() => elideNickname(nick, f.nickname));
   // The queue's way in on a phone. It lives HERE, in the one strip that stays on
   // screen while you read, because the queue is a sheet at this width rather
   // than a stack under an unbounded **Scrollback** (board.html: .zones). CSS
@@ -2228,7 +2326,23 @@ function sigOf(f) {
   return JSON.stringify(rest);
 }
 
+// Rebuild the card against the payload already on screen. Only the Nickname's
+// inline edit needs this: opening and closing the field changes what row one is
+// made of without a byte of the payload moving, so the signature below would
+// (correctly) refuse the render. Clearing it is the honest way to say "this card
+// is stale for a reason the payload cannot see".
+function redrawFocus() {
+  focusSig = null;
+  renderFocus(boardData ? boardData.focus : null);
+}
+
 function renderFocus(f) {
+  // A Nickname edit holds the card the way an adopted Focus holds the queue: the
+  // field IS row one, so a poll that rebuilt the header would take the keyboard
+  // away mid-word — and this client polls every few seconds. `focusSig` is left
+  // stale deliberately; closeNick/commitNick clear it, so the first render after
+  // the edit is against the newest payload rather than the one it opened on.
+  if (nickEditing(f) && focusWrap.querySelector(".fnickin")) return;
   const sig = sigOf(f);
   if (sig === focusSig) return;   // nothing about the Focus moved — hands off it
   const old = focusWrap.querySelector(".focus");
