@@ -1,6 +1,6 @@
 # 03 — Nickname the Ask, the Recover picker, and the toast
 
-**Status:** ready-for-agent
+**Status:** landed — f438a31
 
 Spec: `.scratch/session-nickname/spec.md` · ADR 0026 · ADR 0023
 
