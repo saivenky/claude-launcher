@@ -696,6 +696,23 @@ keeps a pathological name from taking the whole row. */
 font-weight:600;font-size:0.78125rem;white-space:nowrap}
 .qws{overflow:hidden;text-overflow:ellipsis;min-width:0}
 .qone{color:var(--dim);font-size:0.75rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex:1 1 0;min-width:0}
+/* A **Nickname** takes the snippet's slot on a row and keeps the Workspace's
+place beside it (ADR 0026) — the same slot, deliberately not the same voice.
+`--m` is the accent this Board keeps for a signal you authored, and the reading
+face for the same reason `.fnick` wears it: it is a phrase, not a machine id
+(ADR 0018). Dim grey would make the one string on the row you chose the only
+one that looked derived. It keeps `.qone`'s shrink rule untouched, because the
+Workspace still outranks it — a Nickname that pushed the Workspace off the row
+would be answering *which of these three* by hiding *which three*. */
+.qone.nick,.fgone.nick{color:var(--m);font-family:var(--face)}
+/* While you are naming a row the body is a div rather than the tap-to-focus
+<button> (an input cannot live inside one), so it says so: there is nothing here
+to press. */
+.qnaming{cursor:default}
+.qbody .fnickin{font-size:0.75rem;padding:1px 6px}
+/* In the rail the row already wraps (`.rail .qbody`), and the label owns a line
+of its own down there — so does the field that replaces it. */
+.rail .fnickin{flex:0 0 100%;margin-top:2px}
 .flag{color:var(--accent)}
 .dim{opacity:.5}
 .note{color:var(--dim);font-size:0.6875rem;margin-top:22px;border-top:1px solid var(--line);padding-top:10px}
@@ -838,6 +855,11 @@ min-width:58px;flex:0 0 auto}
 .fgpath,.fgone{color:var(--dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .fgpath{font-size:0.6875rem;margin-top:3px}
 .fgone{font-size:0.75rem;margin-top:2px}
+/* `.frow` is a block, not a flex row, so the field takes the line the label had
+rather than the flex share `.fnickin` asks for on row one of the header. Held to
+this row's own smaller type: a Foreign Run is the quiet section, and a field
+that shouted would undo that (ADR 0012). */
+.frow .fnickin{display:block;width:100%;font-size:0.75rem;margin-top:2px;padding:2px 6px}
 /* The one thing a Foreign Run can be told to do. A labelled button, not a third
 .iconbtn glyph beside ↗ — the glyph row belongs to the queue, and borrowing it
 here would make these rows read as work waiting on you. Full row width so it is

@@ -3177,6 +3177,59 @@ class NicknameBoardTests(unittest.TestCase):
         _, after = server._board_payload()
         self.assertNotEqual(before, after)
 
+    def test_every_queue_row_carries_it_not_only_the_focus(self):
+        # The question *which of these three* is asked on the QUEUE. `aiTitle` is
+        # the field that stays Focus-only; this one may not, or the Nickname
+        # would answer the question everywhere except where it is asked.
+        server.cached_runs = lambda: [
+            {"id": _RUN, "sessionId": _GOOD, "title": "x", "dir": "~/projects/x",
+             "status": "busy", "bridge": "", "updatedAt": 5000, "snippet": "first"},
+            {"id": "cl-2", "sessionId": _LIVE, "title": "y", "dir": "~/projects/y",
+             "status": "waiting", "bridge": "", "updatedAt": 4000, "snippet": "second"},
+        ]
+        server._NICKNAME[_LIVE] = "the flaky test"
+        board = server._board(_GOOD)
+        rows = [it for g in ("upnext", "watching", "dormant", "snoozed") for it in board[g]]
+        self.assertEqual([it["sessionId"] for it in rows], [_LIVE])
+        self.assertEqual(rows[0]["nickname"], "the flaky test")
+        # Beside `one`, never substituted into it — including on a Blocked lane,
+        # where `one` is the **Ask**. Which of the two a row shows is board.js's
+        # decision, made once; the server keeps shipping both.
+        self.assertEqual(rows[0]["one"], "second")
+
+    def test_a_foreign_row_carries_it_too(self):
+        # A **Foreign Run** never takes the Focus, so the header's way in cannot
+        # reach one — the long-press on the row is the only route, and a row with
+        # no `nickname` could display a name it could never be given (ADR 0026).
+        server.cached_foreign_runs = lambda: [{
+            "id": "", "sessionId": _LIVE, "title": "byhand", "dir": "~/projects/mine",
+            "status": "waiting", "bridge": "", "updatedAt": 5000, "snippet": "at the Mac",
+        }]
+        server._NICKNAME[_LIVE] = "mid-migration"
+        row = server._board()["foreign"][0]
+        self.assertEqual(row["nickname"], "mid-migration")
+        self.assertEqual(row["one"], "at the Mac")
+
+    def test_an_unnamed_foreign_row_ships_none_not_an_empty_string(self):
+        server.cached_foreign_runs = lambda: [{
+            "id": "", "sessionId": _LIVE, "title": "byhand", "dir": "~/projects/mine",
+            "status": "waiting", "bridge": "", "updatedAt": 5000, "snippet": "at the Mac",
+        }]
+        row = server._board()["foreign"][0]
+        self.assertIn("nickname", row)
+        self.assertIsNone(row["nickname"])
+
+    def test_the_foreign_row_still_carries_no_triage_state(self):
+        # The Nickname is not the thin end of a wedge: it says what the Session is
+        # called, where `pri` and `snooze` order a queue these rows are not in.
+        server.cached_foreign_runs = lambda: [{
+            "id": "", "sessionId": _LIVE, "title": "byhand", "dir": "~/projects/mine",
+            "status": "waiting", "bridge": "", "updatedAt": 5000, "snippet": "at the Mac",
+        }]
+        row = server._board()["foreign"][0]
+        self.assertNotIn("pri", row)
+        self.assertNotIn("lane", row)
+
 
 class NicknameApiTests(_HttpCase):
     """`/api/nickname` is ungated — same-origin + JSON, no token, beside

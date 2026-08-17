@@ -3141,7 +3141,13 @@ def _foreign_items() -> list[dict]:
     likewise already whitelisted to `_STATUSES`.
 
     No `pri` and no snooze: both are triage state keyed by Session, and this
-    section is outside the triage surface entirely.
+    section is outside the triage surface entirely. The **Nickname** is here
+    anyway, and the difference is the point: triage state orders a queue these
+    rows are not in, where a Nickname only says what the Session is called. A
+    Foreign Run never takes the **Focus**, so a Board that shipped Nicknames
+    everywhere except here would leave the one Session you most want to tell
+    apart — someone else's terminal, in the repo you have three of — able to
+    display a name it could never be given (ADR 0026).
     """
     rows = [{"sessionId": r.get("sessionId", ""),
              # The **Workspace**, derived exactly as a Managed row's is — one
@@ -3151,7 +3157,11 @@ def _foreign_items() -> list[dict]:
              "status": r.get("status", ""),
              "bridge": r.get("bridge", ""),
              "updatedAt": r.get("updatedAt"),
-             "one": r.get("snippet", "")}
+             "one": r.get("snippet", ""),
+             # Beside `one` here too, for the reason it rides beside it on a
+             # Managed row: the fallback is a rendering decision and lives once,
+             # in board.js.
+             "nickname": _nickname(r.get("sessionId", ""))}
             for r in cached_foreign_runs()]
     rows.sort(key=lambda it: -(it["updatedAt"] or 0))
     return rows

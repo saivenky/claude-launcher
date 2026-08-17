@@ -293,7 +293,10 @@ function fakeBoard(focusSid) {
     upnext: order.filter((s) => s !== focus).map(strip),
     watching: world.filter((s) => s.lane === "working" && s !== focus).map(strip),
     snoozed: [], dormant: [],
-    foreign: foreignWorld.map((s) => Object.assign({}, s)),
+    // A Foreign Run carries a Nickname too, and its absence is `null` here for
+    // the same reason it is null on a queue row: one representation of "no
+    // Nickname" (server.py::_foreign_items, ADR 0026).
+    foreign: foreignWorld.map((s) => Object.assign({}, s, {nickname: s.nickname || null})),
     counts: {needYou: order.length, watching: 0, dormant: 0, snoozed: 0},
   };
 }
@@ -2030,6 +2033,212 @@ const W = "wwwwwwww-3333-3333-3333-333333333333";
   ok("zones: the Focus is spliced into the RAIL only; these stay the payload's own",
      findAll(zones(), "qrow").every((r) => !isNow(r)),
      findAll(zones(), "qrow").map((r) => r.className).join(" | "));
+
+  // --- Naming a row, by press and hold (ADR 0026) ---------------------------
+  // The header names the Run you are already looking at. The question *which of
+  // these three* is asked on the QUEUE, which is where the second level has to
+  // land — and on the **Foreign** rows above all, because a Foreign Run never
+  // takes the Focus and so the header can never reach one.
+  const rowFor = (ws) => findAll(zones(), "qrow").find((r) => r.textContent.includes(ws));
+  const oneOf = (row) => findAll(row, "qone")[0];
+  const fgRow = () => findAll(zones(), "frow")[0];
+  const rowField = () => zones().querySelector(".fnickin");
+
+  world.find((s) => s.sessionId === B).nickname = "the flaky test";
+  await poll();
+  ok("row: a named Session's row reads Workspace + Nickname, in the snippet's slot",
+     oneOf(rowFor("bravo")).textContent === "the flaky test" &&
+     rowFor("bravo").textContent.includes("bravo"), rowFor("bravo").textContent);
+  ok("row: and not both — this row has no width to spend saying one thing twice",
+     !rowFor("bravo").textContent.includes("one-bravo"), rowFor("bravo").textContent);
+  ok("row: a typed name does not wear the voice of the derived one it displaced",
+     hasCls(oneOf(rowFor("bravo")), "nick") && !hasCls(oneOf(rowFor("worker")), "nick"),
+     oneOf(rowFor("bravo")).className + " / " + oneOf(rowFor("worker")).className);
+  ok("row: and an unnamed row is exactly as it was",
+     oneOf(rowFor("worker")).textContent === "one-worker", oneOf(rowFor("worker")).textContent);
+
+  // The **Blocked** case, which looks like a regression and is not. server.py
+  // already swaps `one` for the **Ask** text on the question/approval lanes, and
+  // goes on doing it — the Nickname rides BESIDE `one`, so choosing between the
+  // two is the client's, once, in one place.
+  const K = "55555555-7777-7777-7777-777777777777";
+  world.push(Object.assign(S(K, "question", 1, "kilo"),
+                           {one: "May I run `rm -rf build`?"}));
+  await poll();
+  ok("blocked row: unnamed, it shows the Ask exactly as before",
+     oneOf(rowFor("kilo")).textContent === "May I run `rm -rf build`?",
+     oneOf(rowFor("kilo")).textContent);
+  world.find((s) => s.sessionId === K).nickname = "the release branch";
+  await poll();
+  ok("blocked row: named, the Nickname displaces the Ask text too",
+     oneOf(rowFor("kilo")).textContent === "the release branch" &&
+     !rowFor("kilo").textContent.includes("rm -rf"), rowFor("kilo").textContent);
+  ok("blocked row: and the lane badge is untouched — that is the part of an Ask that changes what you do",
+     findAll(rowFor("kilo"), "qbadge")[0].textContent === "question",
+     findAll(rowFor("kilo"), "qbadge")[0].textContent);
+  sandbox.setPinned(K);
+  await settle();
+  ok("blocked row: the full Ask survives on the Focus, which is where you answer it",
+     !!focusWrap().querySelector(".ask") &&
+     focusWrap().querySelector(".ask").textContent.includes("what now?"),
+     focusWrap().querySelector(".ask") && focusWrap().querySelector(".ask").textContent);
+  sandbox.setPinned(A);
+  await settle();
+
+  // THE GESTURE. A hold shares one pointer stream with the swipe and one target
+  // with the tap-to-focus, so most of what follows is about what it must NOT do.
+  const HOLD_MS = 500;   // board.js::HOLD_MS
+  const press = async (target, ms) => {
+    win.dispatch("pointerdown", {target, clientX: 200, clientY: 400});
+    await tick(ms);
+    win.dispatch("pointerup", {target, clientX: 200, clientY: 400});
+    await settle();
+  };
+
+  const shortBody = rowFor("worker").querySelector(".qbody");
+  await press(shortBody, 40);
+  shortBody.dispatch("click");   // the click a real tap leaves behind
+  await settle();
+  ok("hold: a short tap still pins the row — the gesture it shares is untouched",
+     shownSid() === W.slice(0, 8) && !rowField(), shownSid());
+  sandbox.setPinned(A);
+  await settle();
+
+  const heldBody = rowFor("worker").querySelector(".qbody");
+  await press(heldBody, HOLD_MS + 60);
+  ok("hold: pressing and holding a queue row opens the same inline field, on that row",
+     !!rowField() && rowField().tag === "input", zones().textContent);
+  ok("hold: on the row you held and on no other — one field, one Session",
+     findAll(zones(), "fnickin").length === 1 &&
+     rowFor("worker").querySelector(".fnickin") === rowField());
+  ok("hold: and holding does not pin — the Focus is where you left it",
+     shownSid() === A.slice(0, 8), shownSid());
+  heldBody.dispatch("click");   // ...and the click the browser sends after the hold
+  await settle();
+  ok("hold: nor does the click the hold leaves behind, which is not a tap either",
+     shownSid() === A.slice(0, 8) && !!rowField(), shownSid());
+
+  // The queue is redrawn wholesale on every poll, and this client polls every
+  // few seconds — the same rule the Focus card's field lives by.
+  const rf = rowField();
+  world.find((s) => s.sessionId === W).one = "a turn arrived while you typed";
+  await poll();
+  ok("hold: a poll may not take the row's field away mid-word", rowField() === rf);
+
+  let nk0 = nickLog.length;
+  rowField().value = "the long one";
+  rowField().dispatch("keydown", {key: "Enter"});
+  await settle();
+  ok("hold: Enter names that Session from the queue, without ever making it the Focus",
+     nickLog.length === nk0 + 1 && nickLog[nk0].sessionId === W &&
+     nickLog[nk0].nickname === "the long one" && shownSid() === A.slice(0, 8),
+     JSON.stringify(nickLog[nk0]) + " / " + shownSid());
+  world.find((s) => s.sessionId === W).nickname = "the long one";
+  await poll();
+  ok("hold: and from then on that is what the row calls it",
+     oneOf(rowFor("worker")).textContent === "the long one",
+     oneOf(rowFor("worker")).textContent);
+
+  // A hold is not a swipe. They read the same pointerdown/pointerup pair, so the
+  // drag is spent the moment the hold fires — otherwise letting go anywhere but
+  // where you started would rotate the Focus out from under the field.
+  const swiped = shownSid();
+  const dragBody = rowFor("bravo").querySelector(".qbody");
+  win.dispatch("pointerdown", {target: dragBody, clientX: 200, clientY: 400});
+  await tick(HOLD_MS + 60);
+  win.dispatch("pointerup", {target: dragBody, clientX: 0, clientY: 400});
+  await settle();
+  ok("hold: a hold released 200px away still does not rotate the Focus",
+     shownSid() === swiped && !!rowField(), shownSid());
+  rowField().dispatch("keydown", {key: "Escape"});
+  await settle();
+  ok("hold: Escape closes the row's field and writes nothing",
+     !rowField() && nickLog.length === nk0 + 1, JSON.stringify(nickLog.slice(nk0)));
+
+  // ...and a swipe is not a hold: past the slop the finger is scrolling the read
+  // or walking the ring, and either way it is no longer resting on a row.
+  const moveBody = rowFor("bravo").querySelector(".qbody");
+  win.dispatch("pointerdown", {target: moveBody, clientX: 200, clientY: 400});
+  win.dispatch("pointermove", {target: moveBody, clientX: 200, clientY: 470});
+  await tick(HOLD_MS + 60);
+  win.dispatch("pointerup", {target: moveBody, clientX: 200, clientY: 470});
+  await settle();
+  ok("hold: a finger that travelled disarms it — that drag belongs to the page",
+     !rowField(), zones().textContent);
+
+  // The flag a hold leaves behind belongs to the ROW, not to the page. Opening
+  // the field changes that row's height while the finger is still down, so the
+  // click on release can land on a row that slid into its place — and that row's
+  // tap has nothing to do with the hold.
+  const heldRow = rowFor("worker").querySelector(".qbody");
+  const otherRowBody = rowFor("kilo").querySelector(".qbody");
+  await press(heldRow, HOLD_MS + 60);
+  otherRowBody.dispatch("click");
+  await settle();
+  ok("hold: the click it suppresses is its own row's — another row's tap still pins",
+     shownSid() === K.slice(0, 8), shownSid());
+  rowField().dispatch("keydown", {key: "Escape"});
+  await settle();
+  sandbox.setPinned(A);
+  await settle();
+
+  // ...and an edit whose row is adopted as the Focus has lost the row it lived
+  // on: the page's zones draw every Managed Run EXCEPT the Focus. Holding the
+  // surface open there would keep a row the payload no longer has, in the queue,
+  // beside a card now showing the same Run.
+  await press(rowFor("bravo").querySelector(".qbody"), HOLD_MS + 60);
+  ok("hold: (given) the field is up on bravo's row", !!rowField());
+  sandbox.setPinned(B);
+  await settle();
+  await poll();
+  ok("hold: a row taken for the Focus takes its edit with it, leaving no stale row behind",
+     !rowField() && !rowFor("bravo"), zones().textContent);
+  sandbox.setPinned(A);
+  await settle();
+
+  // THE POINT OF THE WHOLE GESTURE. A Foreign Run never takes the Focus, so
+  // without this the one Session you most want to tell apart could display a
+  // Nickname and never receive one — and naming it must not cost a Transfer.
+  const xferBtn = findAll(fgRow(), "fgxfer")[0];
+  await press(xferBtn, HOLD_MS + 60);
+  ok("hold: a hold that landed on `transfer` names nothing — that button is a target of its own",
+     !fgRow().querySelector(".fnickin") && transferLog.length === 3,
+     JSON.stringify(transferLog.length));
+
+  nk0 = nickLog.length;
+  await press(fgRow(), HOLD_MS + 60);
+  ok("foreign: holding a Foreign row opens the field there too",
+     !!fgRow().querySelector(".fnickin"));
+  fgRow().querySelector(".fnickin").value = "mid-migration";
+  fgRow().querySelector(".fnickin").dispatch("keydown", {key: "Enter"});
+  await settle();
+  ok("foreign: a Foreign Session can be named without being Transferred first",
+     nickLog.length === nk0 + 1 && nickLog[nk0].sessionId === G &&
+     nickLog[nk0].nickname === "mid-migration" && transferLog.length === 3,
+     JSON.stringify(nickLog[nk0]));
+  foreignWorld[0].nickname = "mid-migration";
+  await poll();
+  ok("foreign: and the row reads it in the snippet's slot, by the one rule every row uses",
+     findAll(fgRow(), "fgone")[0].textContent === "mid-migration" &&
+     !fgRow().textContent.includes("started by hand"), fgRow().textContent);
+
+  // The rail draws rows too — including the Focus's own (`.now`), which is the
+  // one Session reachable from both surfaces at once. Holding it must not raise
+  // a second field in the header for the same name.
+  const railBody = railRows().find((r) => !isNow(r)).querySelector(".qbody");
+  await press(railBody, HOLD_MS + 60);
+  ok("rail: the same hold works there — the gesture is the row's, not the page's",
+     !!rail().querySelector(".fnickin"), rail().textContent);
+  rail().querySelector(".fnickin").dispatch("keydown", {key: "Escape"});
+  await settle();
+  const nowBody = nowRow().querySelector(".qbody");
+  await press(nowBody, HOLD_MS + 60);
+  ok("rail: holding the Focus's own row names it THERE — never two fields for one name",
+     !!rail().querySelector(".fnickin") && !fhead().querySelector(".fnickin"),
+     rail().textContent);
+  rail().querySelector(".fnickin").dispatch("keydown", {key: "Escape"});
+  await settle();
+  ok("rail: and closing it hands the surface back to the poll", !rail().querySelector(".fnickin"));
 
   // --- The Ask Set: what is asked, and what a tap is worth (ADR 0020) -------
   //

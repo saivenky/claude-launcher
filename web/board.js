@@ -1705,20 +1705,27 @@ function askEl(f) {
   return {box: box, floor: floor};
 }
 
-// --- naming the Focus (ADR 0026) -------------------------------------------
-// The Nickname is edited in place, on row one of the header, and this is the
-// whole of that state: which Session is being named, and nothing else. The
-// field's text lives in the field — it is built once per edit and renderFocus
-// keeps its hands off the card while it is up (see the guard there), so there
-// is no draft to shadow and no caret to carry.
-let nickEdit = null;      // the sessionId being named, or null
+// --- naming a Session (ADR 0026) -------------------------------------------
+// The Nickname is edited in place — on row one of the Focus header, or on the
+// row you held — and this is the whole of that state: which Session is being
+// named, and on which of the two surfaces. The field's text lives in the field:
+// it is built once per edit and the render for that surface keeps its hands off
+// while it is up (the guards in renderFocus and renderZones), so there is no
+// draft to shadow and no caret to carry.
+//
+// `at` is not redundant with `sid`. The rail draws the Focus as a row (`.now`),
+// so one Session can be reachable from both surfaces at once, and without it a
+// hold on that row would raise a second field in the header — two inputs for one
+// name, each fighting the other for the keyboard.
+let nickEdit = null;      // {sid, at: "focus"|"row"}, or null
 const NICK_MAX = 24;      // server.py::NICKNAME_MAX — the cap is enforced both ends
 
-const nickEditing = (f) => !!f && nickEdit === f.sessionId;
+const nickEditing = (f) => !!f && !!nickEdit && nickEdit.at === "focus" && nickEdit.sid === f.sessionId;
+const nickEditingRow = (it) => !!it && !!nickEdit && nickEdit.at === "row" && nickEdit.sid === it.sessionId;
 
-function openNick(f) {
-  nickEdit = f.sessionId;
-  redrawFocus();
+function openNick(f, at) {
+  nickEdit = {sid: f.sessionId, at: at || "focus"};
+  redrawNick(nickEdit.at);
 }
 
 // Cancel: Escape, or a tap anywhere else. Both leave the Nickname exactly as it
@@ -1726,8 +1733,18 @@ function openNick(f) {
 // through typing can be committed by looking away.
 function closeNick() {
   if (nickEdit === null) return;
+  const at = nickEdit.at;
   nickEdit = null;
-  redrawFocus();
+  redrawNick(at);
+}
+
+// Redraw the ONE surface the field was on. A row edit has no business rebuilding
+// the Focus card: that card carries a half-typed reply and a reading position
+// across a rebuild (renderFocus's grab/restore), which is cheap but is not free,
+// and nothing about naming a queued Run touched it.
+function redrawNick(at) {
+  if (at === "row") renderZones();
+  else redrawFocus();
 }
 
 function commitNick(f, raw) {
@@ -2044,6 +2061,22 @@ function focusCard(f) {
   return card;
 }
 
+// --- what a row is called ---------------------------------------------------
+// A row's chain is nickname → snippet, and it is written here once, for every
+// row surface there is (ADR 0026). The server keeps sending `one` unchanged,
+// including the swap it already does on a **Blocked** lane where `one` is the
+// **Ask** — so a named Blocked row shows the Nickname and not the Ask, and that
+// is the intended reading: the lane badge still says `question`/`approval`,
+// which is the part of an Ask that changes what you do, and the full Ask is on
+// the **Focus**, which is where you answer it. `aiTitle` is not in this chain;
+// it is Focus-only, and serving it per row would cost a transcript scan per Run
+// per poll to show a label that arrives fifty turns late.
+const rowLabel = (item) => item.nickname || item.one || "";
+// Same slot, different voice: `--m` is the accent this Board keeps for a signal
+// you authored, and a typed name rendered in the snippet's dim grey would be
+// the one string on the row you chose and the only one that looked derived.
+const rowLabelCls = (base, item) => item.nickname ? base + " nick" : base;
+
 // `compact` is the rail's row: 290px has no room for the ↗ ❯ × strip, and the
 // rail is for *getting to* a Run, not for acting on one from a distance — the
 // card and the page's own zones still carry every action.
@@ -2055,7 +2088,14 @@ function qrow(item, opts) {
   const o = opts || {};
   const row = el("div", "qrow " + (ROW_CLS[item.lane] || "lane-w") +
                         (pinned && item.sessionId === pinned ? " now" : ""));
-  const body = el("button", "qbody");
+  const naming = nickEditingRow(item);
+  // A <button> may not contain an input, so while you are naming it the body is
+  // a plain div — which is also the whole of the "a hold must not pin" problem
+  // solved structurally rather than remembered: for as long as the field is up
+  // there is no tap target on this row to pin with. The badge and the Workspace
+  // stay, because a field floating on an anonymous strip is a field on a row you
+  // can no longer identify; only the label's slot is spent.
+  const body = el(naming ? "div" : "button", naming ? "qbody qnaming" : "qbody");
   body.append(el("span", "qbadge", ROW_BADGE[item.lane] || ""));
   const dir = el("span", "qdir");
   if (item.pri === 0) { dir.append(el("span", "flag", "⚑ ")); }
@@ -2063,8 +2103,18 @@ function qrow(item, opts) {
   dir.append(ws);
   body.append(dir);
   nextFrame(() => elideWorkspace(ws, item.workspace));
-  body.append(el("span", "qone", item.one || ""));
-  body.addEventListener("click", () => setPinned(item.sessionId));
+  if (naming) {
+    body.append(nickFieldEl(item));
+  } else {
+    body.append(el("span", rowLabelCls("qone", item), rowLabel(item)));
+    body.addEventListener("click", () => {
+      // The click a long-press leaves behind is not a tap, and this is the one
+      // place that can tell: the gesture layer fired already, so it says so.
+      if (consumeHold(item.sessionId)) return;
+      setPinned(item.sessionId);
+    });
+    body._nickOf = item;   // press and hold this — see the gesture layer
+  }
   row.append(body);
   if (!o.compact) row.append(rowActions(item));
   return row;
@@ -2110,7 +2160,18 @@ function frow(item) {
     row.append(p);
     nextFrame(() => elidePath(p, item.dir));
   }
-  row.append(el("div", "fgone", item.one || ""));
+  // The point of the long-press, and the reason it exists at all: a Foreign Run
+  // never takes the **Focus**, so the header's way in cannot reach it. Without a
+  // hold here the one Session you most want to tell apart could display a
+  // Nickname and never receive one (ADR 0026). It is set on the Session, so it
+  // survives the **Transfer** that makes this a Managed Run — and does not
+  // require it.
+  if (nickEditingRow(item)) {
+    row.append(nickFieldEl(item));
+  } else {
+    row.append(el("div", rowLabelCls("fgone", item), rowLabel(item)));
+    row._nickOf = item;
+  }
   // Deliberately not a third .iconbtn beside ↗: that glyph row is the queue's,
   // and copying it here would make these read as rows demanding attention. A
   // labelled button in the section's own weight is discoverable — it is the only
@@ -2690,13 +2751,90 @@ function swipeFocus(dir) {
   setPinned(next);   // the ONE mechanism that moves the Focus. Never a second.
 }
 
+// --- press and hold: the other way in to a Nickname (ADR 0026) --------------
+// It lives HERE, in the swipe's own listeners, because it is the same pointer
+// stream: one pointerdown/pointerup pair, and one place deciding which of the
+// three things it was. A hold wired up separately would be a second reader of
+// the same gesture, each unable to see what the other concluded — which is how
+// you get a hold that also swipes, or a swipe the hold cancelled.
+//
+// 500ms. Below about 400ms it starts catching a slow deliberate tap — a thumb on
+// a phone held one-handed is not quick — and above about 600ms the row reads as
+// a dead target and gets tapped again. 500 is also what iOS and Android use for
+// their own press-and-hold, so the thumb arriving here is already calibrated to
+// it rather than to a number this Board invented.
+const HOLD_MS = 500;
+// A finger is never still. 10px of drift is the slop a resting thumb makes; past
+// that you are dragging, and a drag is the swipe's or the page's, not a hold's.
+// Well under SWIPE_MIN, so no gesture can ever be both.
+const HOLD_SLOP = 10;
+
+let holdT = null;
+let holdFired = null;    // the row a hold just fired for, whose next click is not a tap
+
+function cancelHold() { if (holdT) { clearTimeout(holdT); holdT = null; } }
+
+// The row a hold would name, or null. `.qbody` and `.frow` carry the item; the
+// walk stops at the first button or anchor either way, so a hold that landed on
+// ↗, ×, or `transfer` names nothing — those are targets in their own right, and
+// one of them opens a Transfer confirm.
+function nameableRow(node) {
+  const hit = node && node.closest && node.closest(".qbody,.frow,button,a");
+  return (hit && hit._nickOf) || null;
+}
+
+// Is this Session still drawn as a row? `withFocus` picks the list: the rail
+// splices the Focus in (`.now`), where the page's zones are the same ring
+// without it. A **Foreign Run** is on neither — it arrives on its own payload
+// key — so it is asked about separately.
+function rowListed(sid, withFocus) {
+  if (!boardData) return false;
+  return ringGroups(withFocus).some((g) => g.items.some((it) => it.sessionId === sid)) ||
+         (boardData.foreign || []).some((it) => it.sessionId === sid);
+}
+
+// Read once and cleared, and KEYED BY THE ROW that fired it. A bare boolean
+// would be consumed by whichever row's click arrived next, and opening the field
+// changes the row's height — in the rail and on a Foreign row it gains a line —
+// under a finger that is still down. The row that slid into the coordinates you
+// released at would then swallow a tap it had nothing to do with. The next
+// pointerdown clears it regardless, so a hold whose click never arrives — the
+// row was rebuilt out from under it — can never eat a real tap later either.
+function consumeHold(sid) {
+  if (holdFired === null || holdFired !== sid) return false;
+  holdFired = null;
+  return true;
+}
+
 let dragX = 0, dragY = 0, dragging = false;
 window.addEventListener("pointerdown", (e) => {
   dragging = !inChrome(e.target);
   dragX = e.clientX || 0;
   dragY = e.clientY || 0;
+  holdFired = null;
+  cancelHold();
+  const item = nameableRow(e.target);
+  if (!item) return;
+  holdT = setTimeout(() => {
+    holdT = null;
+    // Half a second is long enough for the row to go: a poll lands every few
+    // seconds and the Run may have closed, resolved, or been adopted as the
+    // Focus while the finger was down. `item` is the object the row was built
+    // from and would still answer for a Session the Board no longer lists, so
+    // ask the payload rather than the closure.
+    if (!rowListed(item.sessionId, true)) return;
+    holdFired = item.sessionId;
+    dragging = false;   // this pointer is spent: it may not also complete a swipe
+    openNick(item, "row");
+  }, HOLD_MS);
+});
+window.addEventListener("pointermove", (e) => {
+  if (!holdT) return;   // nothing armed — this is the page being scrolled
+  if (Math.abs((e.clientX || 0) - dragX) > HOLD_SLOP ||
+      Math.abs((e.clientY || 0) - dragY) > HOLD_SLOP) cancelHold();
 });
 window.addEventListener("pointerup", (e) => {
+  cancelHold();
   if (!dragging) return;
   dragging = false;
   const dx = (e.clientX || 0) - dragX, dy = (e.clientY || 0) - dragY;
@@ -2704,7 +2842,7 @@ window.addEventListener("pointerup", (e) => {
     swipeFocus(dx < 0 ? 1 : -1);
   }
 });
-window.addEventListener("pointercancel", () => { dragging = false; });
+window.addEventListener("pointercancel", () => { dragging = false; cancelHold(); });
 
 // The trackpad. Passive: this never preventDefaults, it only reads a flick that
 // the page has no horizontal axis to spend anyway.
@@ -2826,6 +2964,38 @@ function render(data) {
 
   renderFocus(f);
   syncBarHeight();   // the card just changed: --barh follows the composer's height
+  renderZones();
+  syncHint();
+}
+
+// The queue, the Foreign section and the rail — everything below the Focus card,
+// rebuilt wholesale from `boardData`, which is cheap because none of it holds
+// state you would miss. Split out of render() so a Nickname edit on a row can
+// redraw its own surface without a payload (redrawNick).
+function renderZones() {
+  if (!boardData) return;
+  // A row's Nickname edit holds this surface the way one holds the Focus card
+  // (renderFocus): the field IS the row, and this client polls every few
+  // seconds, so a rebuild here would take the keyboard away mid-word.
+  //
+  // It holds only while the row is still THERE, and that is not a formality: the
+  // page's zones draw every Managed Run EXCEPT the Focus, so a Session adopted
+  // as the Focus mid-edit (render's adopt, above) has no row left down here —
+  // holding on would keep a row the payload no longer has, in the queue, beside
+  // a card now showing the same Run. The rail draws the Focus as a row, so it
+  // asks the same question of its own list. If the row has gone, so has the
+  // edit: `nickEdit` is cleared rather than left to reopen a field on the next
+  // payload that happens to list that Session again.
+  //
+  // `null` is the third answer and the one that matters most — no field is up,
+  // which is the case when openNick calls this to BUILD one.
+  if (nickEdit && nickEdit.at === "row") {
+    const live = zonesWrap.querySelector(".fnickin") ? rowListed(nickEdit.sid, false)
+               : (railEl && railEl.querySelector(".fnickin")) ? rowListed(nickEdit.sid, true)
+               : null;
+    if (live === true) return;
+    if (live === false) nickEdit = null;
+  }
   zonesWrap.textContent = "";
   // Two boxes, because they answer to different rules at a wide width: the
   // queue steps aside for the rail (board.html) while the Foreign section —
@@ -2839,9 +3009,8 @@ function render(data) {
   // headings down and greyed, which was backwards — if you are reading this
   // list the Run did not resurface, and you came looking for it.
   for (const g of ringGroups(false)) zone(queues, g.label, g.items, g.items.length, g);
-  foreignZone(foreigns, data.foreign);
+  foreignZone(foreigns, boardData.foreign);
   renderRail();
-  syncHint();
 }
 
 // --- polling: chained setTimeout, ETag revalidate, paused when hidden -------
