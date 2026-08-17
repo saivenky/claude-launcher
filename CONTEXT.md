@@ -54,6 +54,29 @@ Workspaces), repo (same), dir / cwd / path (the Workspace is derived *from* the
 path and is not one), title (what the field was called while it held four
 different kinds of string)
 
+**Nickname**:
+A short name *you* typed for a **Session**, so two Sessions in one **Workspace**
+can be told apart. The Workspace is the first level of context — *where am I* —
+and it stops answering the moment you run three Sessions in one repo; the
+Nickname is the second — *which of these*. Optional, and its absence is a legal
+state with a defined fallback, so a Session without one is not broken. Human-
+authored by construction: derived labels already exist here — the `aiTitle` the
+transcript carries, the opening prompt, the last message — and each is a guess
+at what a Session is *about*, where a Nickname is a decision about what it is
+*called* (ADR 0026). On the **Session**, not the **Run**: it survives close,
+**Resume**, **Recover** and **Transfer**, all of which keep the `sessionId`, and
+a **Foreign Run**'s Session has one like any other, because a Session does not
+stop being yours because you started its Run in a terminal. Never unique — the
+Launcher cannot promise it across Sessions it does not control, and two rows
+reading the same word is a mistake you can see and retype. Wherever a Run is
+named, the Nickname takes the slot the guess would have taken, and the
+**Workspace** stays beside it: identity truncates last, and the Workspace is the
+identity (ADR 0023).
+_Avoid_: title (the word has meant the cwd basename, the pane title and the
+first user message here, and is being retired), label (the triage vocabulary),
+alias (implies you could **resume** by it — you cannot; a Session is addressed
+by its `sessionId`), name (a Session's name is its `sessionId`), tag
+
 **Foreign Run**:
 A live **Run** the Launcher did not start — a `claude` someone ran by hand in
 any other terminal, so it has no tmux window and no `@cl_run_id`. The Launcher
@@ -446,9 +469,14 @@ _Avoid_: access, availability
   **Ask** — the **Workspace** is what names it, and it truncates last. It is
   answering a different question from everything beside it (*where am I*, not
   *what is happening*), so nothing else on the surface can stand in for it
+- Beside the **Workspace**, and only ever beside it, sits the **Nickname** — the
+  second level of context, answering *which of the several here*. It truncates
+  before the Workspace and after everything else, and it takes the slot a
+  derived label would have taken, never the Workspace's (ADR 0026)
 - The **Focus**'s header gives the read everything it can spare and never the
-  **Workspace**, so the answer to *where am I* is on screen at the moment you
-  answer an **Ask** — deep in a **Scrollback**, where nothing else is (ADR 0025)
+  **Workspace** or the **Nickname**, so both levels of *where am I* are on
+  screen at the moment you answer an **Ask** — deep in a **Scrollback**, where
+  nothing else is (ADR 0025)
 - A **Board** holds exactly one **Focus**; every other actionable **Run**
   queues behind it by urgency. A **Blocked** Run outranks the queue, not the
   Focus
