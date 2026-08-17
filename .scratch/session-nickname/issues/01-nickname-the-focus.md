@@ -1,6 +1,6 @@
 # 01 — Nickname the Focus
 
-**Status:** ready-for-agent
+**Status:** landed — 9401dc0
 
 Spec: `.scratch/session-nickname/spec.md` · ADR 0026 · `CONTEXT.md` (*Nickname*)
 
