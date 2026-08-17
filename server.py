@@ -3652,7 +3652,7 @@ class Handler(BaseHTTPRequestHandler):
 def main() -> None:
     if not shutil.which("tmux"):
         sys.exit("claude-launcher: tmux not found on PATH — it is the Run substrate (ADR 0010)")
-    _load_state()   # restore per-session priority + snooze from the last run
+    _load_state()   # restore per-session priority, snooze + Nicknames from the last run
     server = ThreadingHTTPServer((HOST, PORT), Handler)
     print(f"claude-launcher listening on {HOST}:{PORT}", file=sys.stderr)
     try:

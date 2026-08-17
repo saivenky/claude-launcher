@@ -352,8 +352,9 @@ async function sendRespond(f, payload, force) {
   return true;
 }
 
-// Priority + snooze reorder a view (no Run is driven), so they are not
-// token-gated — just the same-origin + JSON POST every mutation uses.
+// Priority and snooze reorder a view, a Nickname relabels one, and no Run is
+// driven by any of the three — so they are not token-gated, just the
+// same-origin + JSON POST every mutation uses (ADR 0007's token is Respond's).
 async function postState(path, body, note) {
   try {
     const r = await fetch(path, {
