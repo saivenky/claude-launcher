@@ -549,6 +549,11 @@ question you are already reading, and this is the answer to a different question
 — WHERE AM I — asked at the moment the header may be slid out of the way. */
 .askws{font-size:0.625rem;letter-spacing:.5px;color:var(--fg);font-weight:600;
 border-left:2px solid var(--lane);padding-left:6px}
+/* The **Nickname**, beside it, same lane-coloured stamp — the harder version of
+"where am I" (ADR 0026). `--m` and the reading face, as `.fnick` uses on the
+header, so a typed name still reads as authored rather than as machine text. */
+.asknick{font-size:0.625rem;letter-spacing:.5px;color:var(--m);font-weight:600;
+font-family:var(--face);border-left:2px solid var(--lane);padding-left:6px}
 /* The question is PROSE — the full, unclipped text of it (ADR 0020) — so it
 wears the reading face like every other sentence on this page. */
 .ask .qtext{font-family:var(--face);font-size:0.84375rem;margin-top:5px;
@@ -897,6 +902,16 @@ border-radius:6px;min-width:30px;height:30px;font:inherit;font-size:1rem;line-he
 .recovrow input{flex:0 0 auto;width:18px;height:18px;accent-color:var(--accent)}
 .recovmid{flex:1;min-width:0}
 .recovtitle2{font-size:0.8125rem;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+/* A Nickname leading the row wears the same accent as everywhere else it
+appears (`.qone.nick`, `.fnick`) — `--m` and the reading face, so the one
+string here you typed does not read as louder or as more machine than it does
+on a queue row (ADR 0026). */
+.recovtitle2.nick{color:var(--m);font-family:var(--face)}
+/* The opening prompt, demoted rather than deleted when a Nickname leads —
+still the answer to "which conversation was that" for anyone who wants it, one
+size down from a leading Nickname the same way `.recovdir` sits one size down
+from an unnicknamed title. */
+.recovprompt{color:var(--dim);font-size:0.71875rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:2px}
 .recovdir{color:var(--dim);font-size:0.6875rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:2px}
 .recovtime{flex:0 0 auto;color:var(--dim);font-size:0.6875rem;white-space:nowrap}
 .recovfoot{padding:10px 16px calc(12px + env(safe-area-inset-bottom,0px));border-top:1px solid var(--line)}

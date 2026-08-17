@@ -272,6 +272,26 @@ class RecoverableSessionsTests(unittest.TestCase):
         rows = server._recoverable_sessions(base=self.state, live=set())
         self.assertEqual(rows[0]["title"], "actually build the thing")
 
+    def test_nickname_rides_along_and_is_none_when_unset(self):
+        """The Recover picker's rows are a different payload from the board's —
+        a Session with no live Run at all — so it needs its own Nickname rather
+        than inheriting the board's copy. Keyed the same way (sessionId), since
+        that is the one id every lifecycle verb leaves untouched (ADR 0026)."""
+        alpha = os.path.join(self.root, "alpha")
+        self._txn("proj-a", _S1, alpha, 3000)
+        self._txn("proj-b", _S2, alpha, 2000)
+        saved = dict(server._NICKNAME)
+        try:
+            server._NICKNAME.clear()
+            server._NICKNAME[_S1] = "the flaky test"
+            rows = {r["sessionId"]: r for r in server._recoverable_sessions(
+                base=self.state, live=set())}
+            self.assertEqual(rows[_S1]["nickname"], "the flaky test")
+            self.assertIsNone(rows[_S2]["nickname"])   # never "" — one representation
+        finally:
+            server._NICKNAME.clear()
+            server._NICKNAME.update(saved)
+
     def test_missing_state_dir_is_empty(self):
         self.assertEqual(
             server._recoverable_sessions(base=os.path.join(self.tmp, "nope"), live=set()), [])

@@ -797,6 +797,12 @@ def _recoverable_sessions(base: str = _PROJECTS_STATE,
             "dir": _display_path(cwd),          # ~ for home, as the board renders
             "title": _first_user_msg(session_id, base) or "claude",
             "mtime": int(mtime),                # epoch seconds; client renders relative
+            # This is a different payload from the board's — Recover lists
+            # Sessions with no live Run at all — so it needs its own Nickname
+            # rather than inheriting the board's. Keyed the same way (sessionId),
+            # because that is the one id every lifecycle verb, Recover included,
+            # leaves untouched (ADR 0026).
+            "nickname": _nickname(session_id),
         })
         if len(rows) >= _RECOVERABLE_MAX:
             break

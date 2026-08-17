@@ -558,6 +558,23 @@ const W = "wwwwwwww-3333-3333-3333-333333333333";
   ok("respond: the text reaches the pane", respondLog.length === 1 && respondLog[0].text === "ship it",
      JSON.stringify(respondLog));
   ok("respond: a sent reply clears the box", ti().value === "", "got " + JSON.stringify(ti().value));
+  // The toast used to read `f.title`, a field ADR 0023 removed from the payload —
+  // every successful reply toasted the literal string "session is now working"
+  // rather than naming anything. Workspace when there is no Nickname yet.
+  ok("respond: the toast names the Run by Workspace, not the literal 'session'",
+     doc.getElementById("toast").textContent === "✓ sent — bravo is now working",
+     JSON.stringify(doc.getElementById("toast").textContent));
+
+  // A Nickname, when there is one, wins over the Workspace here too — the same
+  // chain as every other surface that names a Run (ADR 0026).
+  world.find((s) => s.sessionId === B).nickname = "the release notes";
+  await poll();
+  ti().value = "ship it again";
+  focusWrap().querySelector(".send").dispatch("click");
+  await settle();
+  ok("respond: the toast names the Run by Nickname when there is one",
+     doc.getElementById("toast").textContent === "✓ sent — the release notes is now working",
+     JSON.stringify(doc.getElementById("toast").textContent));
 
   // --- Foreign Runs: visible, never drivable (ADR 0012) ---------------------
   // A `claude` started by hand at the Mac. It arrives on its own payload key, so
@@ -1299,6 +1316,24 @@ const W = "wwwwwwww-3333-3333-3333-333333333333";
      findAll(askBox()[0], "askws").length === 1 &&
      findAll(askBox()[0], "askws")[0].textContent === world[0].workspace,
      JSON.stringify(findAll(askBox()[0], "askws").map((a) => a.textContent)));
+  // No Nickname yet — nothing extra is drawn beside the Workspace stamp.
+  ok("ask: no Nickname, no second stamp",
+     findAll(askBox()[0], "asknick").length === 0,
+     JSON.stringify(findAll(askBox()[0], "asknick").map((a) => a.textContent)));
+
+  // The Nickname joins the Workspace, same lane-coloured treatment — the harder
+  // version of "where am I" (ADR 0026): the Workspace says which project, the
+  // Nickname says which of the several Runs in it, and an approval is the one
+  // irreversible tap this block exists to protect.
+  world[0].nickname = "the migration";
+  await poll();
+  ok("ask: a Nickname stamps beside the Workspace, same treatment",
+     findAll(askBox()[0], "askws").length === 1 &&
+     findAll(askBox()[0], "asknick").length === 1 &&
+     findAll(askBox()[0], "asknick")[0].textContent === "the migration",
+     JSON.stringify(findAll(askBox()[0], "asknick").map((a) => a.textContent)));
+  world[0].nickname = undefined;
+  await poll();
 
   // The composer is unconditional (CONTEXT.md: Focus). Responding to a working
   // Run is not a special case — its input queues until the turn ends. Each lane
@@ -1765,6 +1800,38 @@ const W = "wwwwwwww-3333-3333-3333-333333333333";
   await sandbox.loadRecoverable();
   await settle();
   ok("recover: nothing resumable again, so the row goes", recovRow().hidden === true);
+
+  // This is what nicknaming is FOR — a list of near-identical rows from one
+  // repo, which the opening prompt used to be the only way to tell apart
+  // (ADR 0023 tried swapping the Workspace in for it and rejected that; the
+  // prompt answers "which conversation was that" better than a repo name
+  // does). A row with a Nickname leads with it and keeps the prompt, demoted
+  // rather than deleted, on a second line; a row without one is unchanged.
+  recoverable = {sessions: [
+    {sessionId: "r1", title: "fix the flaky test", dir: "/p/one", mtime: 1, nickname: "the flaky test"},
+    {sessionId: "r2", title: "add auth middleware", dir: "/p/two", mtime: 1, nickname: null},
+  ], preselectCount: 0};
+  await sandbox.loadRecoverable();
+  await settle();
+  iplus().dispatch("click");
+  recovRow().dispatch("click");
+  await settle();
+  const recovList = () => doc.getElementById("recovlist");
+  const recovTitles = () => findAll(recovList(), "recovtitle2");
+  const recovPrompts = () => findAll(recovList(), "recovprompt");
+  ok("recover: a row with a Nickname leads with it",
+     recovTitles()[0].textContent === "the flaky test",
+     JSON.stringify(recovTitles().map((t) => t.textContent)));
+  ok("recover: and the opening prompt is demoted to a second line, not dropped",
+     recovPrompts().length === 1 && recovPrompts()[0].textContent === "fix the flaky test",
+     JSON.stringify(recovPrompts().map((p) => p.textContent)));
+  ok("recover: a row with no Nickname is unchanged — the prompt still leads, no second line",
+     recovTitles()[1].textContent === "add auth middleware",
+     JSON.stringify(recovTitles().map((t) => t.textContent)));
+  doc.getElementById("recovclose").dispatch("click");
+  recoverable = {sessions: [], preselectCount: 0};
+  await sandbox.loadRecoverable();
+  await settle();
 
   layout.barHeight = 96;   // e.g. a Blocked Focus: the composer grew a row of options
   win.dispatch("resize");

@@ -343,7 +343,11 @@ async function sendRespond(f, payload, force) {
     return false;
   }
   if (!r.ok) { toast(data.message || ("respond failed (" + r.status + ")")); return false; }
-  toast("✓ sent — " + (f.title || "session") + " is now working");
+  // `f.title` was never on this payload — ADR 0023 renamed it to `workspace`
+  // and split the rest into `nickname`, so this has toasted the literal string
+  // "session" since. Same chain as everywhere else a Run is named: the typed
+  // Nickname wins, the Workspace is the fallback everyone gets (ADR 0026).
+  toast("✓ sent — " + (f.nickname || f.workspace || "session") + " is now working");
   // You already hold this Focus — there is nothing to pin. render()'s
   // advance-on-resolve hands it on once it actually flips to working.
   etag = null;
@@ -739,13 +743,25 @@ function renderRecoverList() {
     cb.checked = s.preselect === true;
     cb.addEventListener("change", updateRecoverGo);
     const mid = el("div", "recovmid");
-    mid.append(el("div", "recovtitle2", s.title || "claude"));
-    // The prompt stays the title and the path stays beneath it — this row is
-    // picked by "which conversation was that", and the opening prompt answers it
-    // better than a repo name does. What changed is the truncation: head-first
-    // ellipsis on `~/projects/.worktrees/claude-launcher-scrollback-fold` kept
-    // `~/projects/.workt…` — every character of it shared with every other row —
-    // and dropped the only part that told them apart. By segment instead.
+    // A row with a Nickname leads with it — this is what nicknaming is FOR: a
+    // list of near-identical rows from one repo, picked apart until now only by
+    // the opening prompt (ADR 0023 tried the swap outright and rejected it,
+    // because most rows have no Nickname and the prompt was the only
+    // discriminator they had). With one, the prompt is demoted rather than
+    // deleted — a second line, still readable, no longer doing the leading
+    // work. A row without one is unchanged: `recovtitle2` stays the prompt.
+    if (s.nickname) {
+      mid.append(el("div", "recovtitle2 nick", s.nickname));
+      mid.append(el("div", "recovprompt", s.title || "claude"));
+    } else {
+      mid.append(el("div", "recovtitle2", s.title || "claude"));
+    }
+    // The path stays beneath both — this row is picked by "which conversation
+    // was that", and the opening prompt (or now, the Nickname) answers it
+    // better than a repo name does. Truncation is by segment, not head-first
+    // ellipsis: `~/projects/.worktrees/claude-launcher-scrollback-fold` kept
+    // `~/projects/.workt…` — every character shared with every other row, and
+    // the only part that told them apart, dropped.
     const rd = el("div", "recovdir");
     mid.append(rd);
     nextFrame(() => elidePath(rd, s.dir || ""));
@@ -1614,6 +1630,13 @@ function askEl(f) {
   // irreversible thing on the Board; it must not be possible to do it with
   // nothing on screen saying which project it lands in.
   if (f.workspace) strip.append(el("span", "askws", f.workspace));
+  // THE NICKNAME, BESIDE IT, FOR THE HARDER VERSION OF THE SAME REASON (ADR
+  // 0026): the Workspace answers WHERE, the Nickname answers WHICH OF THESE —
+  // the question the Workspace cannot, and the one an Ask most needs answered
+  // before an irreversible tap. Same lane-coloured stamp as the Workspace, not
+  // a duplicate of `.fnick`'s dim header treatment, because this block reads
+  // as one strip of "where this lands" rather than identity plus commentary.
+  if (f.nickname) strip.append(el("span", "asknick", f.nickname));
   // "ask 1 of 2" ONLY when there is a 2. 326 of 425 Asks on disk are a Set of
   // one (ADR 0020's census), so a permanent "ask 1 of 1" is a line of noise on
   // three quarters of them — and `index` is -1 when nothing matched, which is
