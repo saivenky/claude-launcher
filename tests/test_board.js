@@ -201,7 +201,7 @@ const doc = {
 // board.html ships these hidden and gives the sheets their classes; the stub
 // creates bare, visible elements, so seed both or the client reads a scrim that is
 // permanently up and a **Recover** row offering a set it has not fetched.
-["dirpop", "recover", "recovpanel", "toast", "swipehint", "zscrim", "iscrim"]
+["dirpop", "recover", "recovpanel", "toast", "swipehint", "peek", "zscrim", "iscrim"]
   .forEach((id) => { doc.getElementById(id).hidden = true; });
 // Classes, because a gesture is refused by where it started (board.js::inChrome
 // reads `closest`), and tags, because the arrow keys stand down while an input
@@ -398,9 +398,14 @@ const win = {prompt: () => "secret",
              _lis: {},
              addEventListener(t, fn) { (win._lis[t] = win._lis[t] || []).push(fn); },
              dispatch(t, ev) { (win._lis[t] || []).forEach((fn) => fn(ev || {})); }};
+// A phone has a haptic and this file has to be able to hear it: arming fires it
+// once per arm (board.js::haptic), which is a claim about a state machine and not
+// about hardware. Nothing else on the page vibrates.
+const vibrateLog = [];
 const sandbox = {
   document: doc, console,
   window: win,
+  navigator: {vibrate: (ms) => { vibrateLog.push(ms); return true; }},
   localStorage: {getItem: (k) => (k in store ? store[k] : null), setItem: (k, v) => { store[k] = v; },
                  removeItem: (k) => { delete store[k]; }},
   fetch: fakeFetch, setTimeout, clearTimeout, Date, JSON, Object, Array, Math, String, encodeURIComponent,
@@ -1950,12 +1955,30 @@ const C = "cccccccc-4444-4444-4444-444444444444";
   const isNow = (r) => (" " + r.className + " ").includes(" now ");
   const nowRow = () => railRows().find(isNow);
   const fdir = () => (card() ? card().querySelector(".fdir").textContent : "");
-  // Pointer, not touch: the prototype's touch-only first cut fired nothing under
-  // a mouse, so the gesture did not exist on a desktop at all.
+  // A drag is a STREAM, and the move in the middle of it is load-bearing: the
+  // gesture arms while the finger is down and release only spends what it armed,
+  // so a down/up pair with nothing between them is not a drag any browser makes
+  // and no longer moves anything here either.
+  const dragTo = (target, dx, dy, pointerType) =>
+    win.dispatch("pointermove", {target, clientX: 200 + dx, clientY: 400 + dy, pointerType});
   const swipe = (target, dx, dy) => {
     win.dispatch("pointerdown", {target, clientX: 200, clientY: 400});
+    dragTo(target, dx, dy);
     win.dispatch("pointerup", {target, clientX: 200 + dx, clientY: 400 + dy});
   };
+  const peek = () => doc.getElementById("peek");
+  const peekPill = () => (peek().hidden ? null : peek().children[0]);
+  const peekPart = (cls) => {
+    const p = peekPill();
+    const n = p && p.querySelector(cls);
+    return n ? n.textContent : "";
+  };
+  const peekSays = () => peekPart(".peektxt");
+  const peekState = () => peekPart(".peekstate");
+  const peekArmed = () => hasCls(peekPill(), "armed");
+  // How far the pill still has to travel before it is home: board.js writes the
+  // slide inline (paintPeek), so this is the one number a test can read back.
+  const peekSlide = () => parseFloat(String(peekPill().style.transform).replace(/[^-\d.]/g, ""));
 
   ok("hint: one line says the gesture is there — nothing else on the page does",
      hint().hidden === false, "hidden=" + hint().hidden);
@@ -1968,9 +1991,8 @@ const C = "cccccccc-4444-4444-4444-444444444444";
      shownSid() === B.slice(0, 8), "got " + shownSid());
   ok("swipe: and moves it the one way anything moves it — setPinned, so ?focus= follows",
      lastBoardUrl() === "api/board?focus=" + B, "got " + lastBoardUrl());
-  ok("swipe: the edge you moved toward flashes — a gesture leaves no other mark",
-     (" " + doc.getElementById("edger").className + " ").includes(" on "),
-     doc.getElementById("edger").className);
+  ok("swipe: the peek flashes on the Run it landed on — a gesture leaves no other mark",
+     peekSays() === "\u2192 bravo", JSON.stringify(peekSays()) + " hidden=" + peek().hidden);
   ok("swipe: and the toast names where it put you",
      doc.getElementById("toast").textContent === "→ bravo",
      JSON.stringify(doc.getElementById("toast").textContent));
@@ -2355,6 +2377,7 @@ const C = "cccccccc-4444-4444-4444-444444444444";
   // every pointer type, because a long press with a mouse is deliberate.
   const swipeAs = (target, dx, dy, pointerType) => {
     win.dispatch("pointerdown", {target, clientX: 200, clientY: 400, pointerType});
+    dragTo(target, dx, dy, pointerType);
     win.dispatch("pointerup", {target, clientX: 200 + dx, clientY: 400 + dy, pointerType});
   };
 
@@ -2391,6 +2414,192 @@ const C = "cccccccc-4444-4444-4444-444444444444";
   rowField().dispatch("keydown", {key: "Escape"});
   heldMouse.dispatch("click");   // the click the browser leaves after the hold, consumed
   await settle();
+  sandbox.setPinned(A);
+  await settle();
+
+  // --- The drag arms visibly, and can be abandoned (issue 02) ---------------
+  // Nothing on screen used to change while the finger was down: the commit was
+  // one arithmetic check at release, so you could not tell you were swiping
+  // until you had swiped, and there was no way to back out. The decision is
+  // drawn now — a pill under the header naming where you would land — and that
+  // pill's own armed state is what release spends. There is no second
+  // measurement behind it that could disagree with what you were looking at.
+  world = [S(A, "question", 1, "alpha"), S(B, "yourmove", 1, "bravo"), S(W, "working", 1, "worker")];
+  foreignWorld = [];
+  sandbox.setPinned(A);
+  await settle();
+
+  // The detent is felt as well as seen, and it fires on the EDGE: once when the
+  // drag crosses the threshold, not once per pixel past it, and not again on the
+  // way back — the finger already knows it came back.
+  const v0 = vibrateLog.length;
+  win.dispatch("pointerdown", {target: sbEl(), clientX: 200, clientY: 400, pointerType: "touch"});
+  dragTo(sbEl(), -40, 0, "touch");
+  await settle();
+  ok("haptic: nothing yet at 40px — under the threshold there is nothing to feel",
+     vibrateLog.length === v0, JSON.stringify(vibrateLog.slice(v0)));
+  dragTo(sbEl(), -90, 0, "touch");
+  dragTo(sbEl(), -160, 0, "touch");
+  await settle();
+  ok("haptic: one buzz on the arming edge, and dragging on past it stays silent",
+     vibrateLog.length === v0 + 1, JSON.stringify(vibrateLog.slice(v0)));
+  dragTo(sbEl(), -30, 0, "touch");
+  dragTo(sbEl(), -160, 0, "touch");
+  await settle();
+  ok("haptic: crossing back and out again is a second arm, and buzzes again",
+     vibrateLog.length === v0 + 2, JSON.stringify(vibrateLog.slice(v0)));
+  win.dispatch("pointerup", {target: sbEl(), clientX: 40, clientY: 400, pointerType: "touch"});
+  await settle();
+  sandbox.setPinned(A);
+  await settle();
+
+  // Nowhere to go is a refusal like any other, and the pill has to say it while
+  // the finger is still down. A gesture that armed here would be an invisible
+  // commit — the very thing this slice deletes — so it never arms.
+  world = [S(A, "question", 1, "alpha")];
+  await poll();
+  win.dispatch("pointerdown", {target: sbEl(), clientX: 200, clientY: 400, pointerType: "touch"});
+  dragTo(sbEl(), -120, 0, "touch");
+  await settle();
+  ok("peek: on a Board with nothing else on it the pill says so, and never arms",
+     peekSays() === "nothing else on the Board to move to" && !peekArmed(),
+     JSON.stringify(peekSays()) + " " + (peekPill() && peekPill().className));
+  win.dispatch("pointerup", {target: sbEl(), clientX: 80, clientY: 400, pointerType: "touch"});
+  await settle();
+  ok("peek: and releasing there moves nothing, because there was nothing to move to",
+     shownSid() === A.slice(0, 8), "got " + shownSid());
+  world = [S(A, "question", 1, "alpha"), S(B, "yourmove", 1, "bravo"), S(W, "working", 1, "worker")];
+  sandbox.setPinned(A);
+  await settle();
+
+  win.dispatch("pointerdown", {target: sbEl(), clientX: 200, clientY: 400, pointerType: "touch"});
+  dragTo(sbEl(), -40, 0, "touch");
+  await settle();
+  const firstPill = peekPill();
+  ok("peek: 40px sideways already names the Run this drag would land on",
+     peekSays() === "\u2192 bravo", JSON.stringify(peekSays()) + " hidden=" + peek().hidden);
+  ok("peek: and says what is waiting for you over there, in three words not five",
+     peekState() === "idle", JSON.stringify(peekState()));
+  ok("peek: unarmed at 40px — under the threshold this is a readout, not a promise",
+     !peekArmed(), peekPill().className);
+  const slid40 = peekSlide();
+  dragTo(sbEl(), -60, 0, "touch");
+  await settle();
+  ok("peek: it slides in from the side the destination is on, tracking the travel",
+     slid40 > peekSlide() && peekSlide() > 0, slid40 + " then " + peekSlide());
+  // One node, mutated. A pill rebuilt per frame would be a new element every
+  // time, and a new element has nothing to transition FROM — the snap that makes
+  // arming a detent could not animate at all (board.html: .peekpill).
+  ok("peek: and it is ONE node the whole way, so the snap has something to ease from",
+     peekPill() === firstPill && peek().children.length === 1, peek().children.length);
+  win.dispatch("pointerup", {target: sbEl(), clientX: 140, clientY: 400, pointerType: "touch"});
+  await settle();
+  ok("peek: so releasing short of the threshold leaves the Focus exactly where it was",
+     shownSid() === A.slice(0, 8), "got " + shownSid());
+  ok("peek: and the pill leaves with the finger", peek().hidden === true, peek().textContent);
+
+  win.dispatch("pointerdown", {target: sbEl(), clientX: 200, clientY: 400, pointerType: "touch"});
+  dragTo(sbEl(), -40, 0, "touch");
+  dragTo(sbEl(), -90, 0, "touch");
+  await settle();
+  ok("peek: past 70px it arms, and says what letting go now would do",
+     peekArmed() && peekSays() === "release \u2192 bravo",
+     peekPill().className + " " + JSON.stringify(peekSays()));
+  ok("peek: armed is a RESTING position — it snaps home rather than tracking on",
+     peekSlide() === 0 && peekPill().style.opacity === "1",
+     peekPill().style.transform + " / " + peekPill().style.opacity);
+  win.dispatch("pointerup", {target: sbEl(), clientX: 110, clientY: 400, pointerType: "touch"});
+  await settle();
+  ok("peek: and releasing armed is the one thing that moves the Focus",
+     shownSid() === B.slice(0, 8), "got " + shownSid());
+
+  // The whole point of drawing the gesture: a threshold you can cross back over.
+  sandbox.setPinned(A);
+  await settle();
+  win.dispatch("pointerdown", {target: sbEl(), clientX: 200, clientY: 400, pointerType: "touch"});
+  dragTo(sbEl(), -90, 0, "touch");
+  await settle();
+  const wasArmed = peekArmed();
+  dragTo(sbEl(), -30, 0, "touch");
+  await settle();
+  ok("peek: dragged back under the threshold it snaps out and disarms again",
+     wasArmed && !peekArmed() && peekSays() === "\u2192 bravo",
+     wasArmed + " / " + peekPill().className);
+  win.dispatch("pointerup", {target: sbEl(), clientX: 170, clientY: 400, pointerType: "touch"});
+  await settle();
+  ok("peek: releasing there does nothing at all — an armed gesture can be abandoned",
+     shownSid() === A.slice(0, 8), "got " + shownSid());
+
+  win.dispatch("pointerdown", {target: sbEl(), clientX: 200, clientY: 400, pointerType: "touch"});
+  dragTo(sbEl(), 10, 90, "touch");
+  await settle();
+  ok("peek: a mostly-vertical drag draws no peek — that is the read being scrolled",
+     peek().hidden === true, peek().textContent);
+  win.dispatch("pointerup", {target: sbEl(), clientX: 210, clientY: 490, pointerType: "touch"});
+  await settle();
+  ok("peek: and it moves nothing, however far it travelled",
+     shownSid() === A.slice(0, 8), "got " + shownSid());
+
+  // A **Nickname** names a Run wherever there is one, on this surface like every
+  // other (ADR 0026) — the peek is where you decide whether to go, so it has to
+  // call the destination what the rest of the Board calls it.
+  world.find((s) => s.sessionId === B).nickname = "the swipe cue";
+  await poll();
+  win.dispatch("pointerdown", {target: sbEl(), clientX: 200, clientY: 400, pointerType: "touch"});
+  dragTo(sbEl(), -50, 0, "touch");
+  await settle();
+  ok("peek: a Nickname is what it calls the destination, and the Workspace answers otherwise",
+     peekSays() === "\u2192 the swipe cue", JSON.stringify(peekSays()));
+  win.dispatch("pointerup", {target: sbEl(), clientX: 150, clientY: 400, pointerType: "touch"});
+  await settle();
+  world.find((s) => s.sessionId === B).nickname = null;
+  await poll();
+
+  // A refusal is visible from the first pixel. A gesture that armed and then
+  // refused at release would be a lie told in the one place there is room to
+  // tell the truth — and the reply is exactly what the Focus must not be taken
+  // away from (replyEngaged).
+  ti().value = "half a thought";
+  win.dispatch("pointerdown", {target: sbEl(), clientX: 200, clientY: 400, pointerType: "touch"});
+  dragTo(sbEl(), -120, 0, "touch");
+  await settle();
+  ok("peek: with a reply half-typed the pill says the reply is holding the Focus",
+     peekSays() === "the reply is holding the Focus", JSON.stringify(peekSays()));
+  ok("peek: and it does not arm past the threshold", !peekArmed(), peekPill().className);
+  dragTo(sbEl(), -400, 0, "touch");
+  await settle();
+  ok("peek: nor at any distance at all — a refusal never becomes a promise",
+     !peekArmed() && peekSays() === "the reply is holding the Focus", peekPill().className);
+  win.dispatch("pointerup", {target: sbEl(), clientX: -200, clientY: 400, pointerType: "touch"});
+  await settle();
+  ok("peek: so the Focus stays with the reply you are writing",
+     shownSid() === A.slice(0, 8), "got " + shownSid());
+  ti().value = "";
+  await settle();
+
+  // The two routes with no in-flight phase at all. They commit on the event that
+  // arrives, so the pill they never got to arm flashes on the Run they landed on
+  // — at rest and unarmed, because by then the release has already happened.
+  const beforeWheel = shownSid();
+  win.dispatch("wheel", {deltaX: 95, deltaY: 6, target: sbEl()});
+  await settle();
+  ok("landing: a trackpad flick still moves the Focus, and flashes the same pill",
+     shownSid() !== beforeWheel && peekSays().startsWith("\u2192 ") && !peekArmed(),
+     shownSid() + " " + JSON.stringify(peekSays()));
+  ok("landing: the toast that named where it put you is still there beside it",
+     doc.getElementById("toast").textContent.startsWith("\u2192 "),
+     JSON.stringify(doc.getElementById("toast").textContent));
+  const beforeKey = shownSid();
+  doc.activeElement = null;   // the arrows stand down while anything is taking text
+  doc.dispatch("keydown", {key: "ArrowRight"});
+  await settle();
+  ok("landing: and \u2190/\u2192 do the same — one readout for all three routes",
+     shownSid() !== beforeKey && peekSays().startsWith("\u2192 ") && !peekArmed(),
+     shownSid() + " " + JSON.stringify(peekSays()));
+  ok("landing: which clears itself, so a cue never sits over the read it named",
+     await (async () => { await tick(360); return peek().hidden === true; })(),
+     peek().textContent);
+
   sandbox.setPinned(A);
   await settle();
 
@@ -3216,9 +3425,22 @@ const C = "cccccccc-4444-4444-4444-444444444444";
   ok("density: the two faces are defined, and they are a serif and a monospace",
      /--face:[^;]*serif/.test(HTML) && /--mono:ui-monospace/.test(HTML),
      (HTML.match(/--face:[^;]*/) || [""])[0]);
-  ok("swipe: the landing cue is a fixed overlay — a cue may not move the read",
-     rule(".edge").includes("position:fixed") && /\.edge\.on\{opacity/.test(HTML),
-     rule(".edge"));
+  // The invariant the edge strip obeyed, restated about the thing that replaced
+  // it: the peek is drawn OVER the read and never in it. A cue that pushed the
+  // **Scrollback** sideways would be fighting the vertical read for the same
+  // pixels, which is the whole reason this is an overlay and not a transform on
+  // the page.
+  ok("swipe: the peek is a fixed overlay — a cue may not move the read",
+     rule("#peek").includes("position:fixed") && rule("#peek").includes("pointer-events:none") &&
+     rule(".edge") === "(no rule for .edge)" && !HTML.includes("id=edgel") &&
+     !HTML.includes("id=edger"), rule("#peek"));
+  // Arming is a DETENT, and the snap is what makes it one: past the threshold
+  // board.js writes the resting geometry and this transition lands it. Motion
+  // redundant with colour survives sunlight and a colour-blind reader, so the
+  // stylesheet has to carry both and neither alone.
+  ok("swipe: and arming snaps — the threshold is felt as a detent, not only seen",
+     /transition:transform \.12s/.test(rule(".peekpill")) &&
+     rule(".peekpill.armed").includes("var(--accent)"), rule(".peekpill"));
   ok("hint: it names the gesture, and clears the read like the rest of this edge",
      HTML.includes("drag sideways to move between Runs") &&
      /transform:translateY/.test(rule(".swipehint.hid")), rule(".swipehint.hid"));

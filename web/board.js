@@ -61,8 +61,8 @@ const recovListEl = document.getElementById("recovlist");
 const recovGoEl = document.getElementById("recovgo");
 const recovCloseEl = document.getElementById("recovclose");
 const railEl = document.getElementById("rail");           // the >=900px queue
-const edgeLEl = document.getElementById("edgel");         // the swipe's landing
-const edgeREl = document.getElementById("edger");         // cue, one per side
+const peekEl = document.getElementById("peek");           // the swipe's readout,
+                                                          // in flight and on landing
 const hintEl = document.getElementById("swipehint");
 
 // #app is split in two, once, up front: the Focus card gets its own container so
@@ -2843,7 +2843,17 @@ const SWIPE_BIAS = 1.8;    // ...and how far it must out-run the vertical
 const WHEEL_MIN = 42;      // one trackpad flick's deltaX
 const WHEEL_BIAS = 1.6;
 const WHEEL_LOCK = 700;    // a flick is many wheel events — take the first only
-const EDGE_FLASH = 320;
+// The peek's own numbers, and NEITHER OF THEM IS A THRESHOLD. 8px is where a
+// resting thumb stops being noise and the readout is worth drawing at all, and it
+// sits just inside HOLD_SLOP's 10px, so the peek can appear a moment before a
+// press-and-hold gives up on the same finger rather than a moment after it
+// — and 12px of vertical slop stops the pill flickering out over the first few
+// pixels of a drag that has not committed to an axis yet. PEEK_FLASH is how long
+// the routes with no in-flight phase hold the same pill on landing: it was
+// EDGE_FLASH, and the number did not move because the job did not.
+const PEEK_MIN = 8;
+const PEEK_SLOP = 12;
+const PEEK_FLASH = 320;
 
 // Where the gesture is NOT: the composer (you are typing into it), the **Intake**
 // sheet, the Recover sheet, the dir dropup — each its own surface with its own
@@ -2854,16 +2864,113 @@ function inChrome(node) {
   return !!(node && node.closest && node.closest(SWIPE_BLOCK));
 }
 
-// A gesture leaves no mark, so say where it landed: the edge you moved toward
-// flashes, and the toast names the Run. On a phone that is the only feedback
-// there is; on a monitor the rail's `.now` says it too.
-function flashEdge(dir) {
-  const n = dir > 0 ? edgeREl : edgeLEl;
-  if (!n) return;
-  const base = "edge " + (dir > 0 ? "r" : "l");
-  n.className = base + " on";
-  clearTimeout(n._flash);
-  n._flash = setTimeout(() => { n.className = base; }, EDGE_FLASH);
+// --- the peek: the gesture, drawn while it is still a gesture ---------------
+// A drag used to leave no mark until it had already happened — the commit was one
+// arithmetic check at release, so nothing on screen moved while the finger was
+// down and there was no way to back out. The peek is that decision on screen: a
+// pill under the header carrying the destination's **Nickname** or **Workspace**
+// and its state, sliding in from the edge you are moving toward.
+//
+// IT IS A FIXED OVERLAY AND IT NEVER MOVES THE READ. Dragging the **Scrollback**
+// sideways under the finger would fight the vertical read and cost `touch-action`
+// and pointer capture to arbitrate. That was the rule `.edge` obeyed — the pill
+// replaces the strip, not the rule.
+//
+// THREE WORDS FOR A STATE, NOT FIVE. The row vocabulary (ROW_BADGE) tells a
+// `question` from an `approval`, because on a row you are choosing which one to
+// answer. The peek answers a smaller question — what is over there — and a Run
+// you have not arrived at yet owes you only whether it is **Blocked**
+// (CONTEXT.md), still working, or sitting idle waiting on you. A `snoozed` Run
+// falls to "idle" with the rest, and that is the honest word for it here: a
+// snooze is a statement about WHEN it comes back, which is the queue's business
+// and not the destination's.
+const PEEK_STATE = {question: "blocked", approval: "blocked", working: "working"};
+
+// ONE NODE, MUTATED — NEVER REBUILT. A pill replaced on every pointermove is a
+// brand new element each frame, and a new element has no previous computed value
+// to transition FROM: the snap that makes arming a detent would never animate at
+// all, and neither would the flip to solid. So the pill is built once and its
+// class, its two inline values and its three spans are written in place — the
+// same class-toggle-on-a-persistent-node the rest of this edge already uses
+// (setCls, `.swipehint.hid`).
+let peekPill = null;
+function peekNode() {
+  if (!peekPill) {
+    peekPill = el("div", "peekpill");
+    peekPill.append(el("span", "peekdot"), el("span", "peektxt"), el("span", "peekstate"));
+    peekEl.append(peekPill);
+  }
+  return peekPill;
+}
+
+// Paint the pill, or clear it with a falsy `dir`. `p` is travel toward SWIPE_MIN
+// as 0..1 and `armed` is past it. The geometry is the variant that won on a real
+// phone (.scratch/prototypes/swipe-cue.html, preset `peek / snap /
+// workspace+state`): unarmed, the pill tracks the finger in from the side the
+// destination lies on — walk forward and it comes in from the right, exactly as
+// the edge strip used to flash on the right — and armed, it SNAPS to its resting
+// position and goes solid. Only the two tracking values are written inline; the
+// snap itself is a CSS transition (board.html: .peekpill), because a detent is
+// legible at arm's length in sunlight and to a colour-blind reader, where a
+// colour change alone is not.
+//
+// A falsy `it` with a real `dir` is the second refusal: there is nowhere to go.
+function paintPeek(dir, it, p, armed) {
+  if (!peekEl) return;
+  clearTimeout(peekEl._flash);
+  if (!dir) { peekEl.hidden = true; return; }
+  // A REFUSAL IS VISIBLE FROM THE FIRST PIXEL, never sprung at release. A gesture
+  // that armed and then refused would be a lie told in the one place there was
+  // room to tell the truth. Two of them: a half-typed reply holds the Focus (the
+  // same rule swipeFocus states for the routes that have no in-flight phase), and
+  // a Board with nothing else on it has nowhere to send you. Neither ever arms.
+  const held = !it || replyEngaged();
+  const solid = armed && !held;
+  const pill = peekNode();
+  pill.className = "peekpill " + (it ? (ROW_CLS[it.lane] || "lane-w") : "lane-w") +
+                   (held ? " held" : "") + (solid ? " armed" : "");
+  const ext = solid ? 1 : p;   // armed is a resting position, not a further px
+  pill.style.transform = "translateX(" + Math.round((1 - ext) * (dir > 0 ? 40 : -40)) + "px)";
+  pill.style.opacity = held ? "1" : String(Math.round((0.35 + ext * 0.65) * 100) / 100);
+  const dot = pill.querySelector(".peekdot");
+  const txt = pill.querySelector(".peektxt");
+  const state = pill.querySelector(".peekstate");
+  // A **Nickname** names a Run wherever there is one and the **Workspace**
+  // answers when there is not (ADR 0026) — the order every other surface on this
+  // page reads them in.
+  dot.hidden = held;
+  state.hidden = held;
+  txt.textContent = !it ? "nothing else on the Board to move to"
+                        : held ? "the reply is holding the Focus"
+                               : (armed ? "release \u2192 " : "\u2192 ") +
+                                 (it.nickname || it.workspace || it.dir || "run");
+  state.textContent = it && !held ? (PEEK_STATE[it.lane] || "idle") : "";
+  peekEl.hidden = false;
+}
+
+function clearPeek() { paintPeek(0); }
+
+// The landing readout, for the two routes that have no in-flight phase at all: a
+// trackpad flick and ←/→ commit on the event that arrives, so the pill they never
+// got to arm flashes on the Run they landed on instead. It is handed the item
+// rather than a direction because the Focus has already moved by now — asking the
+// ring again here would name the Run one step PAST the one you are reading.
+//
+// At rest and NOT armed, however it got here. Armed is a promise about a release
+// that has not happened yet, and by the time this paints it has: the pill has
+// arrived, so it reads the way the toast beside it reads — `→ <name>`.
+function flashPeek(dir, it) {
+  paintPeek(dir, it, 1, false);
+  if (peekEl) peekEl._flash = setTimeout(clearPeek, PEEK_FLASH);
+}
+
+// The detent, felt rather than seen. Once per arm — trackPeek holds the armed
+// direction, so dragging on past the threshold is silent — and never on disarm,
+// because the finger already knows it came back. Guarded twice over: `navigator`
+// need not exist at all, and `vibrate` is missing on every desktop that reaches
+// this file through the other two routes.
+function haptic() {
+  if (typeof navigator !== "undefined" && navigator.vibrate) navigator.vibrate(8);
 }
 
 // Nothing on the page says the gesture exists, so one dim line does — until the
@@ -2885,22 +2992,34 @@ function syncHint() {
   hintEl.hidden = swipeUsed || !boardData || !boardData.focus || ringOrder().length < 2;
 }
 
+// The Run one step around the ring from the Focus, or null when there is nowhere
+// to go. Asked twice per drag — once in flight, to name where you would land, and
+// once at release, to go there — and it has to be the same answer both times.
+// That is why it is a function and not the same arithmetic written down twice.
+function ringNext(dir) {
+  const ring = ringOrder();
+  if (ring.length < 2) return null;
+  const i = ring.indexOf(pinned);
+  const next = ring[((i < 0 ? 0 : i) + dir + ring.length) % ring.length];
+  return next && next !== pinned ? next : null;
+}
+
 // Move the Focus one step around the ring. This is **Rotation** by your consent
 // and nothing else (CONTEXT.md): a gesture you made, exactly like a row tap.
 // Nothing here is automatic, and it does not touch advanceWhenFree.
 function swipeFocus(dir) {
-  const ring = ringOrder();
-  if (ring.length < 2) { toast("nothing else on the Board to move to"); return; }
+  if (ringOrder().length < 2) { toast("nothing else on the Board to move to"); return; }
   // A gesture is easy to make by accident; a half-typed reply is not cheap to
   // lose. So the Focus does not move while there is one — the same rule the
-  // deferred advance obeys, for the same reason (replyEngaged).
+  // deferred advance obeys, for the same reason (replyEngaged). A drag says this
+  // from its first pixel and never arms (paintPeek); the two routes below have no
+  // in-flight phase to say it in, so they say it here.
   if (replyEngaged()) { toast("finish or clear the reply first — the Focus stays put"); return; }
-  const i = ring.indexOf(pinned);
-  const next = ring[((i < 0 ? 0 : i) + dir + ring.length) % ring.length];
-  if (!next || next === pinned) return;
+  const next = ringNext(dir);
+  if (!next) return;
   markSwipeUsed();
-  flashEdge(dir);
   const it = ringItem(next);
+  flashPeek(dir, it);
   toast("→ " + ((it && (it.workspace || it.dir)) || "run"));
   setPinned(next);   // the ONE mechanism that moves the Focus. Never a second.
 }
@@ -2972,10 +3091,40 @@ function dragPointer(e) {
 }
 
 let dragX = 0, dragY = 0, dragging = false;
+// The armed direction, or 0 — AND THIS IS THE COMMIT. It used to be one piece of
+// arithmetic at release, which is exactly why the gesture was invisible until it
+// had happened: nothing had to decide anything while the finger was down. The
+// decision moved into pointermove so it is a state you can see, feel and back out
+// of, and all release does is spend it. A drag that armed and was then dragged
+// back under the threshold releases on 0 and moves nothing, which is the whole of
+// "it can be abandoned".
+let dragArmed = 0;
+
+// Read the drag in flight and draw it. Everything here is a readout: it moves no
+// Focus and changes no layout, so a drag that turns out to be a vertical read
+// costs one cleared pill and nothing else.
+function trackPeek(dx, dy) {
+  const horiz = Math.abs(dx) > Math.abs(dy) * SWIPE_BIAS;
+  // Committed to the vertical: this is the read being scrolled, not a gesture.
+  if (!horiz && Math.abs(dy) > PEEK_SLOP) { dragArmed = 0; clearPeek(); return; }
+  const dir = dx < 0 ? 1 : -1;   // moving left walks forward, as it does at release
+  const sid = ringNext(dir);
+  // Nowhere to go is a refusal like any other, and it arms no more than a
+  // half-typed reply does — an arm the pill cannot show is the invisible commit
+  // this whole slice exists to delete.
+  const armed = !!sid && horiz && Math.abs(dx) > SWIPE_MIN && !replyEngaged();
+  if (armed && dragArmed !== dir) haptic();
+  dragArmed = armed ? dir : 0;
+  if (Math.abs(dx) < PEEK_MIN) { clearPeek(); return; }
+  paintPeek(dir, sid && ringItem(sid), Math.min(1, Math.abs(dx) / SWIPE_MIN), armed);
+}
+
 window.addEventListener("pointerdown", (e) => {
   dragging = dragPointer(e) && !inChrome(e.target);
   dragX = e.clientX || 0;
   dragY = e.clientY || 0;
+  dragArmed = 0;
+  if (dragging) clearPeek();   // a new drag replaces whatever the last one said
   holdFired = null;
   cancelHold();
   const item = nameableRow(e.target);
@@ -2993,21 +3142,33 @@ window.addEventListener("pointerdown", (e) => {
     openNick(item, "row");
   }, HOLD_MS);
 });
+// Both halves of this pointer read the same move, and they disagree about what
+// travel means: past HOLD_SLOP a finger is no longer resting on a row, and past
+// PEEK_MIN it is going somewhere worth naming. The hold is answered first because
+// it is the one with a timer running.
 window.addEventListener("pointermove", (e) => {
-  if (!holdT) return;   // nothing armed — this is the page being scrolled
-  if (Math.abs((e.clientX || 0) - dragX) > HOLD_SLOP ||
-      Math.abs((e.clientY || 0) - dragY) > HOLD_SLOP) cancelHold();
-});
-window.addEventListener("pointerup", (e) => {
-  cancelHold();
-  if (!dragging) return;
-  dragging = false;
   const dx = (e.clientX || 0) - dragX, dy = (e.clientY || 0) - dragY;
-  if (Math.abs(dx) > SWIPE_MIN && Math.abs(dx) > Math.abs(dy) * SWIPE_BIAS) {
-    swipeFocus(dx < 0 ? 1 : -1);
-  }
+  if (holdT && (Math.abs(dx) > HOLD_SLOP || Math.abs(dy) > HOLD_SLOP)) cancelHold();
+  if (dragging) trackPeek(dx, dy);
 });
-window.addEventListener("pointercancel", () => { dragging = false; cancelHold(); });
+// Release spends what the drag armed, and nothing else: there is no second
+// opinion about the geometry here, because a release that re-measured could
+// disagree with the pill the reader was looking at when they let go.
+window.addEventListener("pointerup", () => {
+  cancelHold();
+  if (!dragging) return;   // before the pill is touched: a stray release, or the
+  dragging = false;        // click after a hold, may not cut a landing flash short
+  const dir = dragArmed;
+  dragArmed = 0;
+  clearPeek();
+  if (dir) swipeFocus(dir);
+});
+window.addEventListener("pointercancel", () => {
+  dragging = false;
+  dragArmed = 0;
+  clearPeek();
+  cancelHold();
+});
 
 // The trackpad. Passive: this never preventDefaults, it only reads a flick that
 // the page has no horizontal axis to spend anyway.

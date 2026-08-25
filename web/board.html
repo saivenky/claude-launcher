@@ -61,7 +61,7 @@ EVERY horizontal gutter on this sheet reads this token — including `.zones`,
 which used to say `14px` in its own hand and would have quietly stayed there. */
 --col:740px;--gut:max(6px,calc(50% - var(--col)/2));
 /* The split rail's width, and 0 everywhere it does not exist. Every surface
-that spans the page — the reading column, the Intake sheet, the edge cue, the
+that spans the page — the reading column, the Intake sheet, the swipe's peek, the
 toast — offsets by it rather than sliding under it, so on a phone (where it is
 0px) the arithmetic below collapses to exactly what it was. Set to 290px by the
 >=900px media query at the bottom of this sheet, and nowhere else. */
@@ -872,7 +872,7 @@ border-radius:50%;animation:spin 1s linear infinite}
 @keyframes spin{to{transform:rotate(360deg)}}
 @media(prefers-reduced-motion:reduce){.spin{animation:none}
 .fhead,.respond,.isheet{transition:none}
-.swipehint,.edge{transition:none}}
+.swipehint,.peekpill{transition:none}}
 .qbody{flex:1;min-width:0;display:flex;align-items:center;gap:9px;background:transparent;border:0;
 color:inherit;font:inherit;text-align:left;padding:0;cursor:pointer}
 .rowact{flex:0 0 auto;display:flex;gap:6px;margin-left:4px}
@@ -958,17 +958,65 @@ from an unnicknamed title. */
 font:inherit;font-size:0.875rem;font-weight:700;cursor:pointer}
 .recovgo:disabled{opacity:.45;cursor:default}
 
-/* --- the return path, narrow: the swipe's cue and its one-off hint ---
-A gesture leaves no mark on a screen, so it needs both halves. The EDGE flashes
-on the side you moved toward and the toast names the Run you landed on — you
-have to know that something happened AND where it put you, and on a phone there
-is no rail to read it off. The HINT is the other half: nothing on the page says
-the gesture exists, so one dim line says it, until the first time the gesture is
-used (board.js: markSwipeUsed, remembered per device). It rides the same chrome
-state as everything else at this edge — read up into history and it clears. */
-.edge{position:fixed;top:0;bottom:0;width:3px;z-index:45;background:var(--accent);
-opacity:0;transition:opacity .3s ease;pointer-events:none}
-.edge.l{left:var(--rail)} .edge.r{right:0} .edge.on{opacity:.9}
+/* --- the return path, narrow: the swipe's peek and its one-off hint ---
+A gesture leaves no mark on a screen, so it needs both halves. The PEEK is the
+first: a pill under the header naming the Run you would land on, drawn while the
+finger is still down, so the gesture can be read and abandoned instead of only
+discovered afterwards. It replaces an edge strip that could flash only once the
+Focus had already moved — the toast still names where you ended up, and on a
+monitor the rail's `.now` says it too. The HINT is the second: nothing on the
+page says the gesture exists at all, so one dim line says it, until the first
+time the gesture is used (board.js: markSwipeUsed, remembered per device). It
+rides the same chrome state as everything else at its edge — read up into
+history and it clears.
+
+A FIXED OVERLAY, LIKE THE STRIP BEFORE IT. Nothing the gesture draws may move a
+pixel of the read: a **Scrollback** dragged sideways under the finger would
+fight the vertical read and cost `touch-action` and pointer capture to
+arbitrate. So the pill is `position:fixed`, `pointer-events:none`, and stands
+clear of the sticky header on its own offset rather than inside it — the header
+condenses on scroll (the chrome block above) and a cue anchored to a box that
+changes height would move with it mid-drag.
+
+THE TRANSITION IS THE DETENT. Arming SNAPS: past the threshold board.js writes
+the resting transform and adds `.armed`, and this .12s ease is what makes that
+land as a click rather than a colour change. Motion redundant with colour is the
+point — it survives sunlight and it survives a colour-blind reader. `transform`
+and `opacity` only: this is an overlay over a live read and neither costs a
+layout. board.js writes both inline per frame of travel (board.js: paintPeek),
+which is why the pill carries no transform or opacity of its own — the rule owns
+how they move, never where. */
+/* 88px clears the sticky header at its FULL height (~81px, the chrome block
+above), and it is a constant rather than a measurement on purpose: that header
+CONDENSES mid-read, so a cue that tracked its box would jump ~50px up the screen
+under a finger that had not moved. Below the header at rest, below it condensed,
+and never a moving target. */
+#peek{position:fixed;top:calc(env(safe-area-inset-top,0px) + 88px);
+left:calc(50% + var(--rail)/2);transform:translateX(-50%);z-index:46;pointer-events:none}
+#peek[hidden]{display:none}
+/* THE WRAPPER CENTRES, THE PILL SLIDES. Both are `transform:translateX`, and an
+element has exactly one — board.js writes the slide inline per frame (paintPeek)
+and an inline transform beats any rule here, so a centring translate written on
+the pill would be silently discarded on the first pointermove and the pill would
+hang off the right of a 390px phone. Two elements, one transform each. */
+.peekpill{display:flex;align-items:center;gap:7px;white-space:nowrap;
+background:var(--panel);border:1px solid var(--line);color:var(--fg);
+padding:6px 12px;border-radius:999px;font-size:0.75rem;box-shadow:0 2px 10px var(--shadow-soft);
+--lane:var(--w);transition:transform .12s ease,opacity .12s ease,background-color .12s ease,
+border-color .12s ease,color .12s ease}
+.peekpill.lane-q{--lane:var(--q)} .peekpill.lane-p{--lane:var(--p)} .peekpill.lane-m{--lane:var(--m)}
+/* Armed. Solid, and the accent every "you are here" on this page already wears
+(`.qrow.now`), because arming means the release will put you there. */
+.peekpill.armed{background:var(--accent);border-color:var(--accent);color:var(--on-accent)}
+/* A refusal, and a refusal can never arm. Two of them wear this: a half-typed
+reply holding the **Focus** (board.js: replyEngaged) and a Board with nowhere
+else to send you. Either way the pill says so from the first pixel, rather than
+arming and then lying about it at release — which is the failure the whole peek
+exists to end, so it gets one treatment and no state dot to argue with. */
+.peekpill.held{border-color:var(--red);color:var(--red)}
+.peekdot{flex:0 0 auto;width:6px;height:6px;border-radius:50%;background:var(--lane)}
+.peekstate{color:var(--dim)}
+.peekpill.armed .peekstate{color:var(--on-accent);opacity:.72}
 /* A strip across the column, not a floating pill. A pill is narrower than the
 line it covers, so the **Scrollback** showed through on both sides of it and the
 whole thing read as a rendering fault rather than a hint.
@@ -1152,8 +1200,7 @@ its dropup above it, where a dropup goes), then **Recover**, then resume by
 <noscript>This board needs JavaScript to reach the live session API.</noscript>
 </div>
 <nav class=rail id=rail aria-label="board queue"></nav>
-<div class="edge l" id=edgel></div>
-<div class="edge r" id=edger></div>
+<div id=peek hidden></div>
 <div class=swipehint id=swipehint hidden>◂&nbsp; drag sideways to move between Runs &nbsp;▸</div>
 <div class=recovpanel id=recovpanel hidden role=dialog aria-modal=true aria-label="recover sessions">
   <div class=recovsheet>
