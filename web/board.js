@@ -2063,8 +2063,8 @@ function focusCard(f) {
   pri.addEventListener("click", () => cyclePriority(f));
   actions.append(pri, el("span", "grow"));
   // No "↩ rotation" button any more: you always hold the Focus, so there is no
-  // rotation to hand back to. `skip →` already goes to the most urgent card
-  // that isn't this one, which is what that button was reached for.
+  // rotation to hand back to. `skip →` already goes to the next card in **Up
+  // Next** behind this one, which is what that button was reached for.
   const snooze = el("button", "ghost", "snooze ▾");
   snooze.addEventListener("click", () => {
     const h = parseFloat(window.prompt("Snooze how many hours? (0 to un-snooze)", "1"));
@@ -2072,10 +2072,14 @@ function focusCard(f) {
       h > 0 ? "snoozed " + h + "h" : "un-snoozed");
   });
   const skip = el("button", "ghost", "skip →");
-  // Reads the queue head at click time, not at build time — baking it in would
-  // make every change of head rebuild this card (and snatch back the keyboard)
-  // for a button you may never press.
-  skip.addEventListener("click", () => nextUp ? setPinned(nextUp) : toast("nothing up next"));
+  // Reads the queue at click time, not at build time — baking a target in would
+  // make every change of **Up Next** rebuild this card (and snatch back the
+  // keyboard) for a button you may never press. skipTarget is where the rule
+  // lives; this row only spends it.
+  skip.addEventListener("click", () => {
+    const nxt = skipTarget();
+    if (nxt) setPinned(nxt); else toast("nothing up next");
+  });
   actions.append(snooze, skip);
   // Per-run deep-link + attach + close, mirroring the queued rows.
   const link = deepLink(f.bridge);
@@ -2435,6 +2439,52 @@ function spliceFocus(group, f) {
   group.items = items.slice(0, i).concat([f], items.slice(i));
 }
 
+// `skip →`: the next Run in **Up Next** AFTER this one, wrapping inside that
+// zone. It read `upnext[0]` — the queue head — until priority became a tier of
+// its own (server.py::_board::_triage_key, and `sortsBefore.upnext` above). Head
+// and "the next one" used to be nearly the same row, because the **Focus** was
+// usually the head and skipping it left the runner-up standing at the front. A
+// tier ends that permanently: a `high` Run holds the head against everything
+// below it, so `skip` from the head landed back on the Run you had just declined,
+// or re-landed on it on the next poll. A verb that can return you to where you
+// stood is not a triage verb at all.
+//
+// IT NEVER LEAVES `upnext`. The ring the swipe walks is
+// `watching → upnext → snoozed → dormant` (ringGroups), and "next after me" read
+// across the whole of it would carry a triaged Focus out of the queue and into
+// `snoozed` and `dormant` — Runs you deferred on purpose, and a snooze is a
+// statement about *when* it comes back that no button here may quietly overrule.
+// **Rotation** is the curated queue and nothing wider (CONTEXT.md), so `skip` gets
+// one zone; the swipe is navigation and gets the whole Board. Two verbs, two
+// reaches — ringOrder and ringGroups are untouched by this and must stay that way.
+// A **Foreign Run** is unreachable here for free, the same way it is unreachable
+// from the ring: it arrives on `foreign` and this reads `upnext` (ADR 0012).
+//
+// THE FOCUS NEED NOT BE IN `upnext` AT ALL. The server hands it over on its own
+// key and removes it from every zone (server.py::_board), and it may be a
+// working, dormant or snoozed Run you pinned by tapping its row — in which case
+// there is no "me" in the queue to count from. The honest answer is the one the
+// rail already gives: where the Focus WOULD sit, via spliceFocus with
+// `sortsBefore.upnext`, the same index the ring splices it at. So `skip` from a
+// working Focus means "the row the queue resumes at behind me", `skip` from a
+// pinned dormant one means "the row that outranks it", and neither invents a
+// second opinion about the order for the Board to disagree with.
+function skipTarget() {
+  const d = boardData || {};
+  const items = (d.upnext || []).slice();
+  if (!items.length) return null;                 // nothing to hand the card to
+  const f = d.focus;
+  if (!f) return items[0].sessionId || null;      // no "me" to be after: the head
+  // spliceFocus mutates `group.items` into a new array containing `f` itself, so
+  // identity finds it — and the zone always has at least one other row here, so
+  // the wrap can never come back round to `f`.
+  const group = {key: "upnext", items};
+  spliceFocus(group, f);
+  const i = group.items.indexOf(f);
+  const nxt = group.items[(i + 1) % group.items.length];
+  return (nxt && nxt.sessionId) || null;
+}
+
 // The ring as sessionIds, in the order the rail draws them.
 function ringOrder() {
   const out = [];
@@ -2483,7 +2533,6 @@ function renderRail() {
 // moved, and even then the two stateful bits are carried across.
 let focusSig = null;   // signature of the payload the live card was built from
 let focusSid = null;   // its Session — a different one earns a clean card
-let nextUp = null;     // the queue head, for `skip →`. Kept out of the card.
 
 function sigOf(f) {
   if (!f) return "";
@@ -3038,7 +3087,6 @@ function render(data) {
     b(c.dormant || 0), document.createTextNode(" dormant"));
 
   const f = data.focus;
-  nextUp = ((data.upnext || [])[0] || {}).sessionId || null;
 
   // --- Focus discipline: rotation is consent-based ---------------------------
   // Adopt. The server only picks a head while we hold nothing; the moment it

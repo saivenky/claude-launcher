@@ -298,7 +298,14 @@ function fakeBoard(focusSid) {
     }) : null,
     upnext: order.filter((s) => s !== focus).map(strip),
     watching: world.filter((s) => s.lane === "working" && s !== focus).map(strip),
-    snoozed: [], dormant: [],
+    // The two dim zones. They were hard-coded empty for as long as nothing on the
+    // client could reach into them wrongly; `skip →` is the first verb that
+    // could, so they have to be able to hold a row before the test that says it
+    // does not. `rank` names neither lane, so neither ever enters `order` — which
+    // is the server's own shape: `snoozed` and `dormant` are lifted out before
+    // the triage list is built at all (server.py::_board).
+    snoozed: world.filter((s) => s.lane === "snoozed" && s !== focus).map(strip),
+    dormant: world.filter((s) => s.lane === "dormant" && s !== focus).map(strip),
     // A Foreign Run carries a Nickname too, and its absence is `null` here for
     // the same reason it is null on a queue row: one representation of "no
     // Nickname" (server.py::_foreign_items, ADR 0026).
@@ -2414,6 +2421,95 @@ const C = "cccccccc-4444-4444-4444-444444444444";
   ok("rail: but the slot is a readout there, never a control",
      railPri.every((n) => n.tag === "span" && !n.listeners.click && hasCls(n, "ro")),
      railPri.map((n) => n.tag + ":" + n.className).join(" | "));
+
+  // --- `skip →` walks Up Next, and only Up Next (slice 04) ------------------
+  // The button handed the card to `upnext[0]` — the queue HEAD. That was very
+  // nearly right while priority was a tiebreak, because the **Focus** was usually
+  // the head itself and skipping it left the runner-up standing at the front.
+  // Priority as a tier (5555960) ends that for good: a level holds the head
+  // against everything below it, so `skip` from the head landed back on the Run
+  // you had just declined, or re-landed on it on the next poll. It now means the
+  // row AFTER this one, wrapping inside `upnext`.
+  //
+  // The wrap is why `snoozed` and `dormant` carry rows here at last. Read across
+  // the swipe's ring instead of inside the zone, "next after me" would walk a
+  // triaged Focus out of **Rotation**'s queue and into two zones you deferred on
+  // purpose — so the point of the block below is as much what skip REFUSES as
+  // where it goes. The ring's own order and wrap are a separate verb and are
+  // asserted, untouched, further up this file.
+  const SNZ = "55555555-7777-7777-7777-777777777777";
+  const DRM = "66666666-8888-8888-8888-888888888888";
+  // Distinct `updatedAt`, because idle Runs sort freshest-first: alpha, bravo,
+  // charlie is then the queue's order and not an accident of insertion order.
+  world = [S(A, "yourmove", 1, "alpha"), S(B, "yourmove", 1, "bravo"),
+           S(C, "yourmove", 1, "charlie"), S(SNZ, "snoozed", 1, "snoozy"),
+           S(DRM, "dormant", 1, "dozy")];
+  world[0].updatedAt = 3000; world[1].updatedAt = 2000; world[2].updatedAt = 1000;
+  world[4].updatedAt = 500;   // dozy sorts behind the whole queue — see the wrap below
+  // A **Foreign Run** on the board for the length of the walk, so every step is
+  // also an assertion that skip cannot reach one (ADR 0012).
+  foreignWorld = [{sessionId: G, title: "byhand", dir: "~/projects/byhand", status: "waiting",
+                   bridge: "", updatedAt: 1000, one: "started by hand at the Mac"}];
+  // THE FOCUS STARTS IN THE MIDDLE OF THE QUEUE, and that is the whole design of
+  // this fixture. Hold the head and "the head" and "the row behind me" are the
+  // same Session, and the old `upnext[0]` passes every assertion below by
+  // accident. Held on `bravo`, the head is `alpha` — a row already BEHIND you —
+  // and the two readings finally name different Runs.
+  sandbox.setPinned(B);
+  await poll();
+  const rowText = () => findAll(zones(), "qrow").map((r) => r.textContent).join(" | ");
+  ok("skip: the zones it must never reach are on the board to be reached",
+     rowText().includes("snoozy") && rowText().includes("dozy"), rowText());
+  ok("skip: and the queue head is a row the Focus is already past",
+     findAll(zones(), "qrow")[0].textContent.includes("alpha"),
+     findAll(zones(), "qrow")[0].textContent);
+
+  const walked = [];
+  for (let i = 0; i < 4; i++) {
+    ghost("skip →").dispatch("click");
+    await settle();
+    walked.push(shownSid());
+  }
+  ok("skip: it lands on the row BEHIND the Focus, not back on the queue head",
+     walked[0] === C.slice(0, 8), "got " + walked[0]);
+  ok("skip: from the last row of Up Next it wraps to the first",
+     walked[1] === A.slice(0, 8), "got " + walked[1]);
+  ok("skip: past the wrap the walk simply resumes — the queue is a ring of its own",
+     walked[2] === B.slice(0, 8) && walked[3] === C.slice(0, 8),
+     JSON.stringify(walked));
+  ok("skip: and it never leaves Up Next — no snoozed, no dormant, no Foreign Run",
+     !walked.some((s) => [SNZ, DRM, G].map((x) => x.slice(0, 8)).includes(s)),
+     JSON.stringify(walked));
+
+  // A Focus that is in no queue at all: the server hands the Focus over on its
+  // own key, and this one is `dormant` — pinned by a row tap, a member of
+  // nothing. `skip` still has to mean something, and what it means is the row
+  // after where `sortsBefore.upnext` WOULD splice it. `dozy` is the stalest Run
+  // on the board, so it would splice in last, and "after last" is the head.
+  sandbox.setPinned(DRM);
+  await poll();
+  ghost("skip →").dispatch("click");
+  await settle();
+  ok("skip: from a Focus outside Up Next it steps off where the Focus WOULD sit",
+     shownSid() === A.slice(0, 8), "got " + shownSid());
+
+  // And an empty queue is a refusal. There are two dim rows sitting right there
+  // and neither is an answer.
+  world = [S(A, "yourmove", 1, "alpha"), S(SNZ, "snoozed", 1, "snoozy"),
+           S(DRM, "dormant", 1, "dozy")];
+  sandbox.setPinned(A);
+  await poll();
+  ghost("skip →").dispatch("click");
+  await settle();
+  ok("skip: an empty Up Next is a refusal, never a raid on the zones beside it",
+     shownSid() === A.slice(0, 8) &&
+     doc.getElementById("toast").textContent === "nothing up next",
+     shownSid() + " / " + JSON.stringify(doc.getElementById("toast").textContent));
+
+  world = [S(A, "question", 1, "alpha"), S(B, "yourmove", 1, "bravo")];
+  foreignWorld = [];
+  sandbox.setPinned(A);
+  await poll();
 
   // --- The Ask Set: what is asked, and what a tap is worth (ADR 0020) -------
   //
