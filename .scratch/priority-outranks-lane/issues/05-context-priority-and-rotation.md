@@ -1,6 +1,6 @@
 # 05 — CONTEXT.md: Priority, and Rotation rewritten
 
-**Status:** ready-for-agent
+**Status:** landed — 6163ed4
 **Blocked by:** 01, 02, 03, 04
 
 `Priority` has no glossary entry, despite being per-Session state you set
