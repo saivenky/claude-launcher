@@ -371,8 +371,8 @@ deliberate release and not on any release: a swipe you let go of before it has
 committed hands you nothing, and there is no such thing as a Focus you did not
 mean to take. The flick and the arrow keys that stand in for the swipe without
 touch are the same consent, given in one motion instead of two. The "curated
-round-robin" names this queue's order, not a clock: the order is **Priority** first — every `high`, then
-every `normal`, then every `low`, with **Blocked** before **idle** inside a
+round-robin" names this queue's order, not a clock: the order is **Priority**
+first — every `high`, then every `normal`, then every `low`, with **Blocked** before **idle** inside a
 level — and you walk it at your pace. `skip →` walks it too: it hands the Focus
 to the next Run after this one, not back to the queue's head, because under
 tiers the head is often the Run you have just declined.

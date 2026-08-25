@@ -1,6 +1,6 @@
 # 03 — correct the record where the claim lives
 
-**Status:** ready-for-agent
+**Status:** landed — 3f7e9b3
 **Blocked by:** 02
 
 No ADR has ever owned the swipe. The reasoning being reversed —
