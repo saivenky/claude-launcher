@@ -231,6 +231,10 @@ empty Board means nothing is live, never that nothing is urgent. Its header name
 the **Workspace** first and alone, on a row of its own (ADR 0023), and that row is
 what survives when the header yields to the read: the header never leaves, it
 gets smaller, and everything in it but the name is what gives way (ADR 0025).
+The swipe is a touch gesture, and it declares itself before it acts: while it is
+in flight it names the Run it would hand you, and it moves the Focus only on a
+release that means it. Where there is no touch the same move is a trackpad flick
+or ←/→, so the move exists everywhere the **Board** does.
 It stays yours until you move it or it resolves. **Priority** and
 urgency order the queue, never the Focus — a newly-**Blocked** Run joins the
 queue; it does not take the Focus from you.
@@ -362,8 +366,12 @@ not; it is read first and alone)
 How the **Focus** advances through the queue — consent-based. It moves only
 when you act (tap a row, swipe, skip) or when the Focus you hold *resolves*:
 goes **working** because you **Respond**, is closed, or stops being
-**Blocked**. Nothing else moves it. The "curated round-robin" names this
-queue's order, not a clock: the order is **Priority** first — every `high`, then
+**Blocked**. Nothing else moves it. Consent is why a swipe commits on a
+deliberate release and not on any release: a swipe you let go of before it has
+committed hands you nothing, and there is no such thing as a Focus you did not
+mean to take. The flick and the arrow keys that stand in for the swipe without
+touch are the same consent, given in one motion instead of two. The "curated
+round-robin" names this queue's order, not a clock: the order is **Priority** first — every `high`, then
 every `normal`, then every `low`, with **Blocked** before **idle** inside a
 level — and you walk it at your pace. `skip →` walks it too: it hands the Focus
 to the next Run after this one, not back to the queue's head, because under

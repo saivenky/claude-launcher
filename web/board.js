@@ -2826,18 +2826,29 @@ function showChrome() {
 }
 
 // --- The swipe: the narrow half of the return path --------------------------
-// POINTER events, never touch-only. The prototype's first cut listened on
-// `touchstart`/`touchend`, which fires nothing under a mouse: on a desktop the
-// gesture did not exist at all, and the design could not be judged there. One
-// pointer listener covers finger, mouse and pen. A trackpad's two-finger flick
-// arrives as `wheel` instead and ←/→ is the same move on a keyboard, so all
-// three are wired — they are one gesture, not three features.
+// THE DRAG IS TOUCH-ONLY, AND THAT REVERSES THE CALL THIS BLOCK USED TO MAKE.
+// It read every pointer — finger, mouse and pen through one listener — because
+// the prototype's first cut listened on `touchstart`/`touchend`, which fires
+// nothing under a mouse: on a desktop the gesture did not exist at all, and a
+// gesture you cannot perform is a design you cannot judge. THAT REASON IS SPENT,
+// not wrong. A trackpad's two-finger flick arrives as `wheel` and ←/→ is the
+// same move on a keyboard, and those two carry the gesture on a desktop now — so
+// reading a mouse no longer buys the judgement it was bought for, and it still
+// charges for it: a **Scrollback** is prose, and dragging across prose to select
+// it is the same pointer stream, so every quote you lift moves the Focus. All
+// three routes stay wired — they are one gesture, not three features — but only
+// a finger drags.
 //
 // THE THRESHOLDS ARE ABOUT VERTICAL SCROLLING. A **Scrollback** is read by
 // dragging it up and down, and a horizontal reading that fires too easily makes
 // that read feel sticky — which costs far more than a missed swipe. So a drag
 // must travel >70px sideways AND out-run its own vertical travel by 1.8x before
-// it counts. Both numbers came off a real phone (prototype/focus-layout).
+// it counts. Both numbers came off a real phone (prototype/focus-layout). What
+// changed is not the numbers but what they are the edge OF: they used to be a
+// verdict read out once at release, and they are now the boundary of a state you
+// can see — cross them and the peek arms and names where you are going, fall
+// back under them and it disarms, and a release on the wrong side of the line
+// does nothing at all.
 const SWIPE_MIN = 70;      // px of horizontal travel before a drag is a gesture
 const SWIPE_BIAS = 1.8;    // ...and how far it must out-run the vertical
 const WHEEL_MIN = 42;      // one trackpad flick's deltaX
