@@ -1,6 +1,6 @@
 # 01 — Priority outranks lane inside Up Next
 
-**Status:** ready-for-agent
+**Status:** landed — 5555960
 
 Re-nest the triage sort from `zone → lane → priority` to
 `zone → priority → lane → recency`.
