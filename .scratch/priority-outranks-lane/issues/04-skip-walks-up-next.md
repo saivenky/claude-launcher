@@ -1,6 +1,6 @@
 # 04 — skip walks Up Next, not the head
 
-**Status:** ready-for-agent
+**Status:** landed — 6e8380b
 **Blocked by:** 01
 
 `skip →` jumps to `upnext[0]` — the queue head (`web/board.js:2058`,
