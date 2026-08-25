@@ -452,6 +452,29 @@ function legacyCopy(text) {
   return ok;
 }
 
+// --- Priority: one rule, because there are two places to press it -----------
+// The **Focus**'s `.prisel` and a queue row's `.qpri` cycle the same three
+// levels. That is written once, here, rather than twice at the two call sites,
+// and the reason is not tidiness: a cycle stated twice is a cycle that gets
+// half-changed, and the two copies would then disagree about what the tap you
+// just made meant — on the same Run, depending only on which surface you were
+// looking at when you made it.
+//
+// The order is normal → high → low → normal, and it leads with `high` on
+// purpose. Under zone → priority → lane → recency (5555960) marking something
+// UP is the whole of what triage does; `low` is the rarer "I know it is asking,
+// I do not care yet" and sits one further tap away. Anything that is not 0 or 2
+// reads as normal — including a `pri` the server has not sent — so one tap from
+// any state a row can be in lands on `high`.
+//
+// It takes an `item`, not a Focus: `sessionId` and `pri` are the whole of what
+// it reads, and both are on every row the Board ships (server.py::_board).
+const NEXT_PRI = {1: "high", 0: "low", 2: "normal"};
+function cyclePriority(item) {
+  const lvl = NEXT_PRI[item.pri === 0 || item.pri === 2 ? item.pri : 1];
+  postState("api/priority", {sessionId: item.sessionId, level: lvl}, "priority: " + lvl);
+}
+
 async function closeRun(item) {
   if (!item.runId) { toast("nothing to close"); return; }
   // A mis-tap on a dense list would end a Run; confirm first. Closing ends the
@@ -2036,11 +2059,8 @@ function focusCard(f) {
   pri.append(document.createTextNode("⚑ priority "));
   pri.append(el("b", null, f.pri === 0 ? "high" : f.pri === 2 ? "low" : "normal"));
   pri.append(document.createTextNode(" ▾"));
-  const nextLevel = {1: "high", 0: "low", 2: "normal"};   // cycle normal→high→low→normal
-  pri.addEventListener("click", () => {
-    const lvl = nextLevel[f.pri === 0 || f.pri === 2 ? f.pri : 1];
-    postState("api/priority", {sessionId: f.sessionId, level: lvl}, "priority: " + lvl);
-  });
+  // The cycle itself lives in cyclePriority — the queue row presses the same one.
+  pri.addEventListener("click", () => cyclePriority(f));
   actions.append(pri, el("span", "grow"));
   // No "↩ rotation" button any more: you always hold the Focus, so there is no
   // rotation to hand back to. `skip →` already goes to the most urgent card
@@ -2121,7 +2141,6 @@ function qrow(item, opts) {
   const body = el(naming ? "div" : "button", naming ? "qbody qnaming" : "qbody");
   body.append(el("span", "qbadge", ROW_BADGE[item.lane] || ""));
   const dir = el("span", "qdir");
-  if (item.pri === 0) { dir.append(el("span", "flag", "⚑ ")); }
   const ws = el("span", "qws");
   dir.append(ws);
   body.append(dir);
@@ -2138,9 +2157,52 @@ function qrow(item, opts) {
     });
     body._nickOf = item;   // press and hold this — see the gesture layer
   }
-  row.append(body);
+  // The priority slot leads the row, and it is a SIBLING of the body rather than
+  // a child of it: the body is a <button> and a button may not nest one (ADR
+  // 0008 — the same rule that put `.rowact` outside it). That structure pays
+  // twice more. `nameableRow` walks to the first button or anchor, so a
+  // press-and-hold that lands here names nothing and the naming gesture needs no
+  // new exception; and the level stops spending the **Workspace**'s width, which
+  // is what the `⚑` did while it lived inside `.qdir`.
+  row.append(rowPri(item, !!o.compact), body);
   if (!o.compact) row.append(rowActions(item));
   return row;
+}
+
+// --- the priority slot on a row ---------------------------------------------
+// ALWAYS DRAWN, at every level, so the slot never reflows as levels change and
+// the affordance is findable without a gesture: a control that appeared only
+// once the Run was already `high` would be a control you could not reach in
+// order to MAKE it high. There is no long-press here for the same reason —
+// nothing on the page would say it existed, and the rail has no way to perform
+// one at all.
+//
+// All three levels are legible, because with priority as the outer ordering key
+// the tiers are the reason the queue is in the order it is in, and a row that
+// only ever said `high` left two of the three states looking identical. `low`
+// gets the hollow twin of `high`'s flag; `normal` gets the solid flag dimmed
+// nearly out of the row — present, plainly unset, plainly the same object.
+const PRI_GLYPH = {0: "⚑", 1: "⚑", 2: "⚐"};
+const PRI_CLS = {0: "hi", 1: "no", 2: "lo"};
+const PRI_NAME = {0: "high", 1: "normal", 2: "low"};
+function rowPri(item, readonly) {
+  const lvl = item.pri === 0 ? 0 : item.pri === 2 ? 2 : 1;
+  // In the rail the slot is a readout and not a control. 290px carries no
+  // action strip and the argument there was never only pixels — the rail is for
+  // *getting to* a Run, not for acting on one from a distance. But the level
+  // still has to be READABLE there, because the rail is the monitor surface and
+  // a queue whose tiers you cannot see is the original report again.
+  if (readonly) return el("span", "qpri ro " + PRI_CLS[lvl], PRI_GLYPH[lvl]);
+  const b = el("button", "qpri " + PRI_CLS[lvl], PRI_GLYPH[lvl]);
+  b.title = "priority: " + PRI_NAME[lvl] + " — tap to change";
+  b.setAttribute("aria-label", "priority: " + PRI_NAME[lvl] + ", tap to change");
+  // stopPropagation is the whole point of the control. The row's own tap means
+  // "make this the Focus", and NOT moving the Focus is what this slice buys:
+  // **Rotation** is consent-based, and triage under a priority-first order means
+  // walking the queue marking things — if every mark cost a focus-change, the
+  // fix would be charging you the one thing Rotation exists to protect.
+  b.addEventListener("click", (e) => { e.stopPropagation(); cyclePriority(item); });
+  return b;
 }
 
 // --- Foreign Runs: visible, never drivable (ADR 0012) -----------------------

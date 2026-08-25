@@ -250,6 +250,7 @@ const respondLog = [];
 const respondReplies = [];   // [status, body] per POST, in order; empty = plain 200
 const transferLog = [];  // every body posted to api/transfer
 const nickLog = [];      // every body posted to api/nickname — token-free by design
+const priLog = [];       // every body posted to api/priority — the row's control and the Focus's share it
 let transferReply = {status: 200, body: {ok: true, runId: "r-transferred"}};
 // GET /api/recoverable: the **Resumable Sessions**, newest-first, with the
 // **recovery set** flagged (ADR 0013). Steerable, because the **Recover** row's
@@ -337,6 +338,17 @@ function fakeFetch(url, opts) {
   // The store the real server keeps, in one line: keyed by sessionId, empty
   // clears, and the next poll shows it. Applied to `world` rather than merely
   // recorded, so the tests can assert the round trip and not just the request.
+  // Same shape as the nickname store below, and applied to `world` for the same
+  // reason: the row's priority control is only interesting if the level it sets
+  // comes BACK on the next poll and redraws the glyph. Recording the request
+  // alone would prove the tap fired and nothing about what the row then said.
+  if (url === "api/priority") {
+    const b = JSON.parse(opts.body);
+    priLog.push(b);
+    const s = world.find((w) => w.sessionId === b.sessionId);
+    if (s) s.pri = {high: 0, normal: 1, low: 2}[b.level];
+    return res(200, {ok: true});
+  }
   if (url === "api/nickname") {
     const b = JSON.parse(opts.body);
     nickLog.push(b);
@@ -2329,6 +2341,80 @@ const C = "cccccccc-4444-4444-4444-444444444444";
   await settle();
   ok("rail: and closing it hands the surface back to the poll", !rail().querySelector(".fnickin"));
 
+  // --- Priority, set from a queue row (slice 03) ----------------------------
+  // Priority is the OUTER key of the triage order now (5555960), so triage
+  // means walking the queue marking things. Every mark used to cost a
+  // focus-change, because `.prisel` lives on the **Focus** and nowhere else —
+  // and a focus-change is precisely what **Rotation** is built to protect. The
+  // row's own control is the fix, so the two things that have to be proved
+  // about it are the two halves of that sentence: the tap moves the LEVEL, and
+  // it does not move the FOCUS.
+  world = [S(A, "question", 1, "alpha"), S(B, "yourmove", 1, "bravo")];
+  foreignWorld = [];
+  sandbox.setPinned(A);
+  await poll();
+  // The event a real row hands its control. `stopPropagation` is not decoration
+  // here — it is the mechanism, so the test counts it rather than swallowing it.
+  let stopped = 0;
+  const tap = (node) => node.dispatch("click", {stopPropagation: () => { stopped++; }});
+  const priOf = (row) => findAll(row, "qpri")[0];
+  ok("row priority: the control is on the row at `normal` too — dim, not absent",
+     !!priOf(rowFor("bravo")) && hasCls(priOf(rowFor("bravo")), "no"),
+     priOf(rowFor("bravo")) && priOf(rowFor("bravo")).className);
+  ok("row priority: and it is a real button, so a keyboard and the hold gesture both know what it is",
+     priOf(rowFor("bravo")).tag === "button");
+
+  const p0 = priLog.length, focusBefore = shownSid();
+  tap(priOf(rowFor("bravo")));
+  await settle();
+  ok("row priority: tapping it marks THAT Run up a level",
+     priLog.length === p0 + 1 && priLog[p0].sessionId === B && priLog[p0].level === "high",
+     JSON.stringify(priLog.slice(p0)));
+  ok("row priority: and the Focus does not move — the mark costs no Rotation",
+     shownSid() === focusBefore && focusBefore === A.slice(0, 8), "got " + shownSid());
+  ok("row priority: which is the stopPropagation, not a coincidence", stopped === 1);
+  await poll();
+  ok("row priority: the level comes back on the poll and the row wears the flag",
+     hasCls(priOf(rowFor("bravo")), "hi") && priOf(rowFor("bravo")).textContent === "\u2691",
+     priOf(rowFor("bravo")).className + " " + priOf(rowFor("bravo")).textContent);
+
+  // The same cycle the Focus's `.prisel` runs, because it IS the same function
+  // (board.js::cyclePriority). high → low → normal, and `low` is legible on a
+  // row now rather than looking exactly like `normal`.
+  tap(priOf(rowFor("bravo")));
+  await poll();
+  ok("row priority: the cycle continues to `low`, which has a glyph of its own",
+     priLog.slice(-1)[0].level === "low" && hasCls(priOf(rowFor("bravo")), "lo") &&
+     priOf(rowFor("bravo")).textContent === "\u2690",
+     priOf(rowFor("bravo")).className + " " + priOf(rowFor("bravo")).textContent);
+  tap(priOf(rowFor("bravo")));
+  await poll();
+  ok("row priority: and back to `normal` — one cycle, shared with the Focus's own control",
+     priLog.slice(-1)[0].level === "normal" && hasCls(priOf(rowFor("bravo")), "no"),
+     priOf(rowFor("bravo")).className);
+  ok("row priority: the Focus never moved across the whole walk",
+     shownSid() === A.slice(0, 8), "got " + shownSid());
+
+  // The other half of the affordance: the row is still a row.
+  const p1 = priLog.length;
+  rowFor("bravo").querySelector(".qbody").dispatch("click");
+  await settle();
+  ok("row priority: tapping anywhere ELSE on the row still makes it the Focus",
+     shownSid() === B.slice(0, 8) && priLog.length === p1, "got " + shownSid());
+  sandbox.setPinned(A);
+  await poll();
+
+  // The rail draws the same rows and gets the same glyph — it is the monitor
+  // surface, and the tiers are why the queue is in the order it is in. What it
+  // does NOT get is the tap, for the same reason it gets no ↗ ❯ × strip.
+  const railPri = railRows().map(priOf);
+  ok("rail: every row there shows its level too — the tiers are readable at a distance",
+     railPri.length === railRows().length && railPri.every(Boolean),
+     railPri.map((n) => n && n.className).join(" | "));
+  ok("rail: but the slot is a readout there, never a control",
+     railPri.every((n) => n.tag === "span" && !n.listeners.click && hasCls(n, "ro")),
+     railPri.map((n) => n.tag + ":" + n.className).join(" | "));
+
   // --- The Ask Set: what is asked, and what a tap is worth (ADR 0020) -------
   //
   // The transcript says WHAT is asked; the pane says WHERE the widget stands.
@@ -2863,6 +2949,34 @@ const C = "cccccccc-4444-4444-4444-444444444444";
        (s) => /padding:[^;]*\bvar\(--gut\)/.test(rule(s))) &&
      !/padding:8px 14px/.test(rule(".zones")),
      [".wrap", ".isheet", ".zones", ".swipehint"].map((s) => s + " => " + rule(s)).join(" || "));
+
+  // The row's priority slot. The stub runs no CSS, so it can prove the client
+  // toggled `hi` / `no` / `lo` and never that the three come out LOOKING
+  // different — and on a 13px glyph that is the whole design. Only the
+  // stylesheet can say it: no pair of levels may differ by opacity alone, or
+  // one of them is just another one seen through fog.
+  ok("row priority: the three levels differ in colour, not only in opacity",
+     rule(".qpri").includes("color:var(--accent)") &&
+     rule(".qpri.lo").includes("color:var(--dim)") &&
+     rule(".qpri.no").includes("color:var(--dim)") && /opacity/.test(rule(".qpri.no")) &&
+     !/opacity/.test(rule(".qpri.lo")),
+     rule(".qpri") + " || " + rule(".qpri.lo") + " || " + rule(".qpri.no"));
+  // `flex:0 0 auto` on the slot is the same statement `.qdir` makes: the snippet
+  // shrinks first. It is what "spend the pixels out of `.qone`" actually means,
+  // and it is not assertable anywhere but here.
+  ok("row priority: the slot holds its width, so the snippet is what gives way",
+     /flex:0 0 auto/.test(rule(".qpri")) && /flex:0 0 auto/.test(rule(".qdir")) &&
+     /flex:1 1 0/.test(rule(".qone")), rule(".qpri"));
+  // The hit box has to be thumb-sized and the row must not grow to hold it —
+  // padding out, margin back, and the negative half is the part that is easy to
+  // drop and impossible to notice until the queue is one row taller.
+  ok("row priority: the tap target grows, the row does not",
+     /padding:7px 3px/.test(rule(".qpri")) && /margin:-7px 0 -7px -3px/.test(rule(".qpri")),
+     rule(".qpri"));
+  // The `⚑` no longer has a rule of its own: it was a bare colour on a span
+  // inside `.qdir`, and both the span and the width it was spending are gone.
+  ok("row priority: and the old bare flag rule went with the span that wore it",
+     rule(".flag") === "(no rule for .flag)", rule(".flag"));
 
   // --- Intake, as only the markup and the stylesheet can say it (ADR 0015) ---
   // The sheet's contents are authored, not built, so the stub DOM cannot see them:

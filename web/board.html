@@ -718,7 +718,46 @@ to press. */
 /* In the rail the row already wraps (`.rail .qbody`), and the label owns a line
 of its own down there — so does the field that replaces it. */
 .rail .fnickin{flex:0 0 100%;margin-top:2px}
-.flag{color:var(--accent)}
+/* The priority slot on a queue row. It is a SIBLING of `.qbody`, not a child:
+the body is a <button> and a button may not nest one (ADR 0008, the same rule
+that split `.rowact` out of it), and a bare <span> would have made the one tap
+target on this row that no keyboard can reach sit beside three that it can.
+It leads the row rather than riding the strip at the far end, because with
+priority as the OUTER ordering key the level is now WHY the row is where it is,
+and the thing that explains an order belongs at the edge you read the order down.
+
+ALWAYS DRAWN, at all three levels, so the slot never reflows as a level changes.
+A control that appeared only once a Run was already `high` would be a control
+you could not find in order to make it high; `normal` is therefore the flag as
+a ghost of itself — present, obviously unset, obviously the same object the
+other two are.
+
+The three read apart in more than one channel each, which is what a 13px glyph
+on a phone needs: `high` is the solid flag in `--accent`, `low` the hollow twin
+in `--dim`, `normal` that same solid flag dimmed nearly out. No pair of them
+differs by opacity alone, so none of them is another one seen through fog.
+
+WHAT GAVE WAY, since the row was already tight: the slot costs about 22px with
+its gap, and it comes out of `.qone`. The `⚑` used to live INSIDE `.qdir` and so
+was spending the **Workspace**'s own 62% (see the `flex:0 0 auto` note above);
+moving it out hands those pixels back to the Workspace and charges the snippet
+instead — which is exactly the ranking `.qdir` already argues for, the snippet
+being a hint and the Workspace being which project you would be switching to.
+The padding-plus-negative-margin is the rest of the answer: the hit box grows to
+something a thumb can find without the row growing with it. */
+.qpri{flex:0 0 auto;background:transparent;border:0;font:inherit;font-size:0.8125rem;
+line-height:1;min-width:13px;text-align:center;color:var(--accent);cursor:pointer;
+padding:7px 3px;margin:-7px 0 -7px -3px}
+.qpri.lo{color:var(--dim)}
+.qpri.no{color:var(--dim);opacity:.3}
+.qpri:not(.ro):hover{color:var(--fg);opacity:1}
+/* In the rail the same slot is a READOUT, not a control — `qrow`'s compact
+branch draws a span with no listener on it. 290px gets no ↗ ❯ × strip and the
+reason there was never only pixels: the rail is for *getting to* a Run, not for
+acting on one from a distance, and the card and the page's zones still carry
+every action. The glyph stays because the rail is the monitor surface, and a
+queue you cannot read the tiers of is the report this whole feature answers. */
+.qpri.ro{cursor:default}
 .dim{opacity:.5}
 .note{color:var(--dim);font-size:0.6875rem;margin-top:22px;border-top:1px solid var(--line);padding-top:10px}
 /* Clears the composer, so feedback never lands on the box you are about to type
