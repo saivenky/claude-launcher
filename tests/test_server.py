@@ -3192,6 +3192,42 @@ class TriageOrderTests(unittest.TestCase):
         self.assertEqual([it["sessionId"] for it in board["upnext"]], [])
         self.assertEqual([it["sessionId"] for it in board["dormant"]], [self.NO_IDLE])
 
+    def test_a_high_working_run_leads_watching_regardless_of_recency(self):
+        # `working.sort` gained `pri` as its leading key alongside `dormant`'s —
+        # the asymmetric half of this slice's decision (`snoozed` is the other,
+        # covered below). Recency alone would have put the fresher `normal` Run
+        # first; `pri` has to override that even though `watching` is the one
+        # zone the triage list itself never touches.
+        # A decoy Blocked Run gives `_board` something to make the Focus out of
+        # — otherwise, with nothing wanting you, the head of `watching` itself
+        # is drafted as Focus and pulled out of the very list under test.
+        self._runs((self.LO_BLOCKED, "waiting", 2, 1_000),
+                   (self.NO_IDLE, "busy", 1, 1_000),       # fresher, normal
+                   (self.HI_IDLE, "busy", 0, 90_000))      # stale, high
+        board = server._board()
+        self.assertEqual([it["sessionId"] for it in board["watching"]],
+                         [self.HI_IDLE, self.NO_IDLE])
+
+    def test_snoozed_order_is_unchanged_by_priority(self):
+        # THE ASYMMETRY, PINNED. `snoozed` orders by wake time and nothing else
+        # — a Run you explicitly deferred does not get pulled back to the top
+        # by marking it `high`, because that would break the one promise
+        # **snooze** makes. `pri` here runs backwards from wake time on purpose,
+        # so a naive "pri leads" sort would visibly disagree with this order.
+        server._SNOOZE[self.HI_IDLE] = time.time() * 1000 + 20 * 60_000     # wakes later
+        server._SNOOZE[self.NO_IDLE] = time.time() * 1000 + 5 * 60_000      # wakes sooner
+        try:
+            # Same decoy as above: gives `_board` a Focus that is not one of
+            # the two Runs this test is asserting the order of.
+            self._runs((self.LO_BLOCKED, "waiting", 2, 1_000),
+                       (self.HI_IDLE, "", 0, 0), (self.NO_IDLE, "", 1, 0))
+            board = server._board()
+            self.assertEqual([it["sessionId"] for it in board["snoozed"]],
+                             [self.NO_IDLE, self.HI_IDLE])
+        finally:
+            server._SNOOZE.pop(self.HI_IDLE, None)
+            server._SNOOZE.pop(self.NO_IDLE, None)
+
 
 class NicknameStoreTests(unittest.TestCase):
     """The **Nickname**: a short name you typed, on the **Session**, kept beside

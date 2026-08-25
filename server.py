@@ -2991,9 +2991,20 @@ def _board(focus_sid: str = "") -> dict:
         old = it["updatedAt"] and now - it["updatedAt"] >= _BOARD_DORMANT_MS
         (dormant if old and it["pri"] != 0 else recent).append(it)   # high priority never dorms
 
-    working.sort(key=lambda it: -(it["updatedAt"] or 0))
-    dormant.sort(key=lambda it: -(it["updatedAt"] or 0))
-    snoozed.sort(key=lambda it: _SNOOZE.get(it["sessionId"], 0))
+    # `pri` LEADS HERE TOO, AND DELIBERATELY STOPS AT `snoozed`. `watching` and
+    # `dormant` get the same tier-not-tiebreak treatment as the triage list
+    # below: a `high` Run does not lose its rank by going **working**, and a
+    # `high` peer inside `dormant` (the `normal`/`low` Runs old enough that
+    # `pri != 0` let through the dormancy gate above — `high` itself never
+    # reaches this list) still surfaces above them before recency gets a say.
+    # `snoozed` is the one lane that does NOT gain `pri`, on purpose: its order
+    # is *when it wakes*, not who is loudest, and letting `pri` reorder that
+    # would surface a Run you explicitly deferred — the one thing **snooze**
+    # promises not to do. `web/board.js::sortsBefore` carries the same split
+    # (`prioritized` for these two zones, `rest`, unchanged, for `snoozed`).
+    working.sort(key=lambda it: (it["pri"], -(it["updatedAt"] or 0)))
+    dormant.sort(key=lambda it: (it["pri"], -(it["updatedAt"] or 0)))
+    snoozed.sort(key=lambda it: _SNOOZE.get(it["sessionId"], 0))   # wake time, never pri
 
     # PRIORITY IS A TIER, NOT A TIEBREAK. `order` used to be `blocked + recent`
     # with `pri` sorting inside each half, which nested the triage list

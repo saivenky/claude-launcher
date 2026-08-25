@@ -2344,16 +2344,29 @@ const sortsBefore = {
     return fb === 0 ? (f.updatedAt || 0) <= (it.updatedAt || 0)
                     : (f.updatedAt || 0) >= (it.updatedAt || 0);
   },
-  // Newest activity first — the server's key for `watching` and `dormant`
-  // alike. `snoozed` is the one it cannot reproduce (the server orders that by
-  // snooze expiry, which the payload does not carry); recency stands in, and
-  // the cost is the Focus sitting a row from where it belongs in a zone you
-  // parked on purpose.
+  // `watching` and `dormant`: priority leads, same as `upnext` — the server's
+  // key for both (server.py::_board, the `working.sort` / `dormant.sort`
+  // lines) is `(pri, -updatedAt)`, not recency alone. A `high` Focus splices
+  // above its `normal`/`low` peers here regardless of who was touched last.
+  prioritized: (f, it) => {
+    const fp = f.pri === undefined ? 1 : f.pri, ip = it.pri === undefined ? 1 : it.pri;
+    if (fp !== ip) return fp < ip;
+    return (f.updatedAt || 0) >= (it.updatedAt || 0);
+  },
+  // `snoozed` ONLY: newest activity first, and it stays that way on purpose —
+  // the server orders `snoozed` by wake time, never by `pri` (that lane's
+  // order is a promise, not a ranking), and the payload does not carry wake
+  // time at all, so recency is already an approximation standing in for it.
+  // Leading with `pri` here would be a second, unrelated wrong; the cost of
+  // leaving it alone is the Focus sitting a row from where it belongs in a
+  // zone you parked on purpose.
   rest: (f, it) => (f.updatedAt || 0) >= (it.updatedAt || 0),
 };
 
 function spliceFocus(group, f) {
-  const before = group.key === "upnext" ? sortsBefore.upnext : sortsBefore.rest;
+  const before = group.key === "upnext" ? sortsBefore.upnext
+               : group.key === "watching" || group.key === "dormant" ? sortsBefore.prioritized
+               : sortsBefore.rest;
   const items = group.items;
   let i = 0;
   while (i < items.length && !before(f, items[i])) i++;
