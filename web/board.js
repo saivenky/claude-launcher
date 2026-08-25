@@ -2327,13 +2327,20 @@ function ringGroups(withFocus) {
 // only has to agree with the order the zone already arrived in — the other
 // rows are never re-sorted, so their order stays exactly the server's.
 const sortsBefore = {
-  // blocked before idle, then priority, then age — oldest-first while blocked
-  // (you have waited longest), newest-first otherwise. The server's `order` key.
+  // Priority first, then blocked before idle, then age — oldest-first while
+  // blocked (you have waited longest), newest-first otherwise. The server's
+  // `order` key (server.py::_board::_triage_key), and it is a COPY: the nesting
+  // was zone -> lane -> priority on both sides and moved to
+  // zone -> priority -> lane -> recency on both sides in one change. Re-nest one
+  // copy alone and the Focus splices in at an index the server disagrees with,
+  // which is the oscillation the comment above exists to prevent — the zone's
+  // other rows are never re-sorted here, so this is the only thing that can
+  // disagree with them.
   upnext: (f, it) => {
-    const fb = isBlocked(f) ? 0 : 1, ib = isBlocked(it) ? 0 : 1;
-    if (fb !== ib) return fb < ib;
     const fp = f.pri === undefined ? 1 : f.pri, ip = it.pri === undefined ? 1 : it.pri;
     if (fp !== ip) return fp < ip;
+    const fb = isBlocked(f) ? 0 : 1, ib = isBlocked(it) ? 0 : 1;
+    if (fb !== ib) return fb < ib;
     return fb === 0 ? (f.updatedAt || 0) <= (it.updatedAt || 0)
                     : (f.updatedAt || 0) >= (it.updatedAt || 0);
   },

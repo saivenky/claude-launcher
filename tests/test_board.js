@@ -265,8 +265,13 @@ let boardDown = true;
 
 function fakeBoard(focusSid) {
   const rank = {question: 0, approval: 0, yourmove: 1};
+  // zone -> priority -> lane -> recency, the same nesting server.py::_board
+  // sorts by: priority is a tier, Blocked precedes idle inside a tier, and
+  // recency flips direction by lane (Blocked oldest-first, idle freshest-first).
   const order = world.filter((s) => s.lane in rank)
-    .sort((a, b) => (rank[a.lane] - rank[b.lane]) || (a.pri - b.pri));
+    .sort((a, b) => (a.pri - b.pri) || (rank[a.lane] - rank[b.lane])
+                 || (rank[a.lane] === 0 ? (a.updatedAt || 0) - (b.updatedAt || 0)
+                                        : (b.updatedAt || 0) - (a.updatedAt || 0)));
   let focus = focusSid ? world.find((s) => s.sessionId === focusSid) : null;
   const pinned = !!focus;
   if (!focus) focus = order[0] || null;
@@ -441,6 +446,7 @@ const S = (sid, lane, pri, workspace) => ({sessionId: sid, runId: "r-" + sid, la
 const A = "aaaaaaaa-1111-1111-1111-111111111111";
 const B = "bbbbbbbb-2222-2222-2222-222222222222";
 const W = "wwwwwwww-3333-3333-3333-333333333333";
+const C = "cccccccc-4444-4444-4444-444444444444";
 
 (async () => {
   // The boot case, before anything is asked of the client: its load-time poll was
@@ -465,6 +471,22 @@ const W = "wwwwwwww-3333-3333-3333-333333333333";
      shownSid() === A.slice(0, 8), "got " + shownSid());
   ok("no cut-in: it queues in up-next instead", app.children[1].textContent.includes("bravo"));
   ok("no cut-in: and the held card is not even rebuilt", card() === before);
+
+  // THE TWO COPIES OF THE TRIAGE SORT HAVE TO AGREE. The zone arrives already
+  // sorted by the server and is never re-sorted here; only the **Focus** is
+  // spliced back in, at the index `sortsBefore.upnext` computes. So the ring is
+  // the one place the client's copy can be caught disagreeing — and `C` is the
+  // case that catches it: a `high` **idle** Run must sit above a `normal`
+  // **Blocked** one, which is false under the old zone -> lane -> priority
+  // nesting and true under zone -> priority -> lane -> recency. The Focus (`A`,
+  // normal and Blocked) is the row it has to be spliced past.
+  world.push(S(C, "yourmove", 0, "charlie"));
+  await poll();
+  ok("triage order: priority outranks lane, and the Focus splices in by the same rule",
+     sandbox.ringOrder().join(",") === [B, C, A].join(","),
+     "got " + sandbox.ringOrder().join(","));
+  world.pop();
+  await poll();
 
   // One ETag covers the whole board, so another Run's churn redraws this page.
   // That redraw must not reach the Focus card.

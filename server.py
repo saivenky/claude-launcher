@@ -2991,13 +2991,38 @@ def _board(focus_sid: str = "") -> dict:
         old = it["updatedAt"] and now - it["updatedAt"] >= _BOARD_DORMANT_MS
         (dormant if old and it["pri"] != 0 else recent).append(it)   # high priority never dorms
 
-    blocked.sort(key=lambda it: (it["pri"], it["updatedAt"] or 0))        # oldest-first (urgency)
-    recent.sort(key=lambda it: (it["pri"], -(it["updatedAt"] or 0)))      # freshest-first
     working.sort(key=lambda it: -(it["updatedAt"] or 0))
     dormant.sort(key=lambda it: -(it["updatedAt"] or 0))
     snoozed.sort(key=lambda it: _SNOOZE.get(it["sessionId"], 0))
 
-    order = blocked + recent
+    # PRIORITY IS A TIER, NOT A TIEBREAK. `order` used to be `blocked + recent`
+    # with `pri` sorting inside each half, which nested the triage list
+    # zone -> lane -> priority and let a `low` **Blocked** Run outrank a `high`
+    # **idle** one — priority never got to be a level of its own. It is now
+    # zone -> priority -> lane -> recency, and the consequence is the one that
+    # was asked for: a level of **Rotation**'s round-robin empties as its
+    # members go **working**, because a working Run leaves this list entirely
+    # and so holds no slot open, and only then does the queue descend.
+    #
+    # There is deliberately no floor under **Blocked**. `low` on a Blocked Run
+    # is "I know it is asking, I do not care yet", and a level that cannot say
+    # that is not worth a control.
+    #
+    # Inside one level the old rule survives whole: Blocked before idle, and
+    # recency still flips direction by lane — Blocked oldest-first, because that
+    # is who has waited longest; idle freshest-first, because staleness reads as
+    # done. `web/board.js::sortsBefore.upnext` re-implements this key so the
+    # **Focus** can be spliced back into its zone at the index this sort would
+    # have given it; the two have to be re-nested together or the splice lands
+    # in the wrong slot and swipes oscillate.
+    def _triage_key(it: dict) -> tuple:
+        wants = it["lane"] in ("question", "approval")
+        age = it["updatedAt"] or 0
+        return (it["pri"], 0 if wants else 1, age if wants else -age)
+
+    # Membership is untouched by the re-nest: `order` still holds exactly the
+    # Runs that want you, which is what `counts.needYou` counts.
+    order = sorted(blocked + recent, key=_triage_key)
     # Sticky focus: the client can pin any listed Session (a row tap). A pin
     # wins over the rotation head and survives polls until cleared. An unknown
     # or vanished id silently falls back to the rotation head.

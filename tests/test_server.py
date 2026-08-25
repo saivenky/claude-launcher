@@ -3054,6 +3054,145 @@ class BoardPayloadTests(unittest.TestCase):
         self.assertNotEqual(body_up, body_down)
 
 
+class TriageOrderTests(unittest.TestCase):
+    """The **Board**'s triage list, nested zone -> priority -> lane -> recency.
+
+    The whole reason this class exists: nothing here was covered. `_board`'s
+    `(pri, updatedAt)` sort had no server-side test at all, and neither did
+    "high priority never dorms" — the only thing asserting anything about `pri`
+    was the client's no-cut-in test, which guards the opposite concern (that
+    urgency orders the queue and never the **Focus**). So the sort was free to
+    be re-nested by accident, which is roughly how it came to nest lane above
+    priority in the first place.
+
+    `_board` hands the head of the triage list to the **Focus** when nothing is
+    pinned, so the order under test is `[focus] + upnext` and not `upnext`
+    alone — the Focus is the first row of the queue here, not a row taken out
+    of it.
+    """
+
+    # Any string keys `_PRIORITY`; these only have to be distinct and readable
+    # in a failure message, so they say what they are rather than pretending to
+    # be uuids the sort never parses.
+    HI_BLOCKED, HI_IDLE = "s-hi-blocked", "s-hi-idle"
+    NO_BLOCKED, NO_IDLE = "s-normal-blocked", "s-normal-idle"
+    LO_BLOCKED = "s-low-blocked"
+
+    def setUp(self):
+        self._saved = {k: getattr(server, k) for k in
+                       ("cached_runs", "cached_foreign_runs", "_tmux_server_down",
+                        "_tail_rows", "_pane_contents")}
+        self._pris = dict(server._PRIORITY)
+        server._tmux_server_down = lambda: False
+        server.cached_foreign_runs = lambda: []
+        # No transcript and no pane: a `waiting` Run with no flushed tool_use
+        # reads as the question lane, which is **Blocked** and is all this sort
+        # cares about. The concrete **Ask** is another test's subject.
+        server._tail_rows = lambda sid: []
+        server._pane_contents = lambda rid: ""
+        server._PRIORITY.clear()
+
+    def tearDown(self):
+        for k, v in self._saved.items():
+            setattr(server, k, v)
+        server._PRIORITY.clear()
+        server._PRIORITY.update(self._pris)
+
+    def _runs(self, *specs):
+        """specs are (sessionId, status, pri, age_ms); status "waiting" is
+        Blocked and "" is idle. Registers the priorities and installs the list.
+
+        Ages, never absolute stamps: an idle Run older than `_BOARD_DORMANT_MS`
+        is not in this queue at all, so a literal `updatedAt` of 5000 — 1970 —
+        would quietly dorm every idle row and leave the sort untested.
+        """
+        now = time.time() * 1000
+        rows = []
+        for sid, status, pri, age in specs:
+            if pri != 1:
+                server._PRIORITY[sid] = pri
+            rows.append({"id": "run-" + sid, "sessionId": sid, "dir": "~/projects/x",
+                         "status": status, "bridge": "", "updatedAt": now - age,
+                         "snippet": ""})
+        server.cached_runs = lambda: rows
+
+    def _order(self):
+        board = server._board()
+        head = [board["focus"]["sessionId"]] if board["focus"] else []
+        return head + [it["sessionId"] for it in board["upnext"]]
+
+    def test_a_high_idle_run_outranks_a_normal_blocked_one(self):
+        # The report, in one assertion. Under the old nesting the lane decided
+        # first and this was the other way round, so a `high` you had just
+        # marked sat under every Blocked Run on the Board.
+        self._runs((self.NO_BLOCKED, "waiting", 1, 1000),
+                   (self.HI_IDLE, "", 0, 1000))
+        self.assertEqual(self._order(), [self.HI_IDLE, self.NO_BLOCKED])
+
+    def test_a_low_blocked_run_sinks_below_a_normal_idle_one(self):
+        # There is no floor under **Blocked**. `low` on a Blocked Run means "I
+        # know it is asking, I do not care yet", and the level is worthless if
+        # the lane can veto it.
+        self._runs((self.LO_BLOCKED, "waiting", 2, 1000),
+                   (self.NO_IDLE, "", 1, 1000))
+        self.assertEqual(self._order(), [self.NO_IDLE, self.LO_BLOCKED])
+
+    def test_inside_one_level_blocked_still_precedes_idle(self):
+        # The old rule is not gone, it is one level deeper.
+        self._runs((self.NO_IDLE, "", 1, 1000),
+                   (self.NO_BLOCKED, "waiting", 1, 1000))
+        self.assertEqual(self._order(), [self.NO_BLOCKED, self.NO_IDLE])
+
+    def test_recency_still_flips_direction_by_lane(self):
+        # Blocked oldest-first (you have waited longest); idle freshest-first
+        # (staleness reads as done). Both ties are broken inside one priority
+        # level, so this is the innermost key and nothing above it can be
+        # deciding the result.
+        old_b, new_b = self.NO_BLOCKED, self.NO_BLOCKED + "-2"
+        new_i, old_i = self.NO_IDLE, self.NO_IDLE + "-2"
+        self._runs((new_b, "waiting", 1, 1000), (old_b, "waiting", 1, 90_000),
+                   (old_i, "", 1, 90_000), (new_i, "", 1, 1000))
+        self.assertEqual(self._order(), [old_b, new_b, new_i, old_i])
+
+    def test_the_three_keys_nest_in_that_order(self):
+        # One board carrying every combination, so the nesting is asserted whole
+        # rather than one key at a time: priority outermost, then lane, then age.
+        self._runs((self.NO_BLOCKED, "waiting", 1, 1000),
+                   (self.LO_BLOCKED, "waiting", 2, 1000),
+                   (self.HI_IDLE, "", 0, 1000),
+                   (self.HI_BLOCKED, "waiting", 0, 1000),
+                   (self.NO_IDLE, "", 1, 1000))
+        self.assertEqual(self._order(),
+                         [self.HI_BLOCKED, self.HI_IDLE,      # high: blocked, then idle
+                          self.NO_BLOCKED, self.NO_IDLE,      # normal, same split
+                          self.LO_BLOCKED])                   # low, under both idles
+
+    def test_a_working_run_holds_no_priority_level_open(self):
+        # "Until that level is exhausted" only means anything because a Run that
+        # goes **working** leaves the triage list entirely — it does not sit at
+        # the head of `high` blocking the descent. It goes to `watching`, and
+        # `counts.needYou` keeps meaning the number of Runs that want you.
+        self._runs((self.HI_BLOCKED, "busy", 0, 1000),
+                   (self.NO_IDLE, "", 1, 1000))
+        board = server._board()
+        self.assertEqual([it["sessionId"] for it in board["upnext"]], [])
+        self.assertEqual(board["focus"]["sessionId"], self.NO_IDLE)   # the head, not the high one
+        self.assertEqual([it["sessionId"] for it in board["watching"]], [self.HI_BLOCKED])
+        self.assertEqual(board["counts"]["needYou"], 1)
+
+    def test_high_priority_never_dorms(self):
+        # `_BOARD_DORMANT_MS` parks a long-idle Run out of the queue, and `pri`
+        # exempts it — untested until now, and load-bearing under the new
+        # nesting: a `high` that dormed would be a level that empties for a
+        # reason other than its members going working.
+        stale = server._BOARD_DORMANT_MS + 1000
+        self._runs((self.HI_IDLE, "", 0, stale), (self.NO_IDLE, "", 1, stale))
+        board = server._board()
+        self.assertEqual(board["focus"]["sessionId"], self.HI_IDLE)
+        self.assertEqual([it["sessionId"] for it in board["upnext"]], [])
+        self.assertEqual([it["sessionId"] for it in board["dormant"]], [self.NO_IDLE])
+
+
 class NicknameStoreTests(unittest.TestCase):
     """The **Nickname**: a short name you typed, on the **Session**, kept beside
     `priority` and `snooze` in `.board-state.json` (ADR 0026). Keyed by
