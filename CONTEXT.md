@@ -205,7 +205,8 @@ session (the view is a throwaway grouped session, never a **Run**)
 **Board**:
 The single screen — the Launcher's only page — that aggregates every live
 **Run**, holds one at a time as the **Focus** while the rest queue by
-urgency (**Blocked** first, with its concrete blocker), lets you **Respond**
+**Priority**, and inside a level by urgency (**Blocked** first, with its
+concrete blocker), lets you **Respond**
 to the Focus inline, and carries the full **intake** and lifecycle
 surface: launch, **resume**, **recover**, close, the one-tap **Task** / **Dispatch**
 buttons, and the two per-Run handoffs — the `↗` deep-link to the **Remote
@@ -221,7 +222,7 @@ _Avoid_: dashboard, list (it is more than a list now), inbox, feed
 **Focus**:
 The single **Run** the **Board** shows in full — its **scrollback**, its
 **ask** when it has one, and the reply box — as opposed to the queued rows. At
-most one. *You* choose it: a row tap, a swipe, or, when you hold none, urgency's
+most one. *You* choose it: a row tap, a swipe, or, when you hold none, the queue's
 head if anything wants you and otherwise the newest live Run. The second half of
 that fallback is not a nicety: a **Board** whose Runs are all merely **working**
 has no urgent head, and a Focus of *none* takes the header, the queue's way in
@@ -230,9 +231,9 @@ empty Board means nothing is live, never that nothing is urgent. Its header name
 the **Workspace** first and alone, on a row of its own (ADR 0023), and that row is
 what survives when the header yields to the read: the header never leaves, it
 gets smaller, and everything in it but the name is what gives way (ADR 0025).
-It stays yours until you move it or it resolves. Urgency orders
-the queue, never the Focus — a newly-**Blocked** Run joins the queue; it does
-not take the Focus from you.
+It stays yours until you move it or it resolves. **Priority** and
+urgency order the queue, never the Focus — a newly-**Blocked** Run joins the
+queue; it does not take the Focus from you.
 _Avoid_: card (it is not drawn as one — a card marks one of many, and a Focus is
 at most one, ADR 0024), selection, current, active, top
 
@@ -337,12 +338,36 @@ always a Set of one; only a question can raise several.
 _Avoid_: MultiAsk (names the rare case — most Sets hold one), batch, group,
 tab strip (the widget's rendering of a Set, not the Set)
 
+**Priority**:
+The level *you* set on a **Session** — `high`, `normal` or `low` — saying how
+much of your attention its work is owed, and the thing the queue's tiers are cut
+along. Set from the **Board**, from any queued row and not only the **Focus**,
+and persisted, so it outlives the **Run** exactly as the Session does and
+survives a restart. It outranks urgency because it is the one thing here you
+*typed*: whether a Run is **Blocked** is inferred from what it happens to be
+doing this second, where a level is a standing judgement about the work — so a
+`low` Blocked Run sits below a `normal` **idle** one, and "I know it is asking,
+I do not care yet" stays sayable. A tier and never a tiebreak: the queue is
+walked one level at a time, a level is exhausted only once every Run in it has
+gone **working**, and only then does the queue descend to the next. A `high` Run
+never dorms, however long it has sat. It does not reorder **snoozed** — a snooze
+says *when* a Run comes back, and no level may quietly overrule that.
+_Avoid_: urgency (that is the lane — **Blocked** before **idle** — which
+Priority now outranks), importance (a claim about the work's worth; a level is a
+claim about your attention today), rank (names a position in the queue, which is
+what a level *produces*), weight (implies it is summed with something — it is
+not; it is read first and alone)
+
 **Rotation**:
 How the **Focus** advances through the queue — consent-based. It moves only
 when you act (tap a row, swipe, skip) or when the Focus you hold *resolves*:
 goes **working** because you **Respond**, is closed, or stops being
 **Blocked**. Nothing else moves it. The "curated round-robin" names this
-queue's order, not a clock — you walk it at your pace.
+queue's order, not a clock: the order is **Priority** first — every `high`, then
+every `normal`, then every `low`, with **Blocked** before **idle** inside a
+level — and you walk it at your pace. `skip →` walks it too: it hands the Focus
+to the next Run after this one, not back to the queue's head, because under
+tiers the head is often the Run you have just declined.
 _Avoid_: round-robin (the queue's order, not the advance rule), auto-advance,
 cycle, refresh
 
@@ -361,7 +386,8 @@ A **Run** paused awaiting a *specific required input from you*: an
 **approval** (a permission prompt or plan approval) or a **question**
 (AskUserQuestion). Distinct from **idle** ("your move" — the turn ended but
 nothing is required) and from Claude Code's `status: waiting` flag, which is
-only a lossy proxy for it. The **Board**'s top priority. Read from the
+only a lossy proxy for it. What the **Board**'s queue leads with inside a level
+of **Priority**, never across them. Read from the
 transcript tail plus the **rendered pane**, never from the status flag
 alone. A question may raise several **Asks** at once — an **Ask Set** — in
 which case the Run stays Blocked until the last one is submitted, and each is
@@ -478,8 +504,8 @@ _Avoid_: access, availability
   screen at the moment you answer an **Ask** — deep in a **Scrollback**, where
   nothing else is (ADR 0025)
 - A **Board** holds exactly one **Focus**; every other actionable **Run**
-  queues behind it by urgency. A **Blocked** Run outranks the queue, not the
-  Focus
+  queues behind it by **Priority**, and by urgency inside a level. A **Blocked**
+  Run outranks its own level, not the levels above it and not the Focus
 - A **Focus** always offers a reply box — **idle**, **Blocked** or **working**
   alike. Only an **Ask** is conditional, because only a **Blocked** Run has
   one. Responding to a working Run is not a special case: its input queues
