@@ -1,6 +1,6 @@
 # 02 — the drag arms visibly, and can be abandoned
 
-**Status:** ready-for-agent
+**Status:** landed — 3e71bfd
 **Blocked by:** 01
 
 Nothing on screen changes while the finger is down: the commit is one check at
