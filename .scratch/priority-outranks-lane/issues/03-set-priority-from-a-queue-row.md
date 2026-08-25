@@ -1,6 +1,6 @@
 # 03 — Set priority from a queue row
 
-**Status:** ready-for-agent
+**Status:** landed — 75bd9b3
 **Blocked by:** 01
 
 Priority is settable only from the Focus today — the `.prisel` span in the
