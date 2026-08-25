@@ -2348,6 +2348,52 @@ const C = "cccccccc-4444-4444-4444-444444444444";
   await settle();
   ok("rail: and closing it hands the surface back to the poll", !rail().querySelector(".fnickin"));
 
+  // --- Touch only: a mouse selects text, it does not swipe (issue 01) -------
+  // The Scrollback is prose you drag across to select on a desktop. Gating the
+  // drag half of this listener to touch means that selection never moves the
+  // Focus — the hold below shares the same pointerdown and stays open to
+  // every pointer type, because a long press with a mouse is deliberate.
+  const swipeAs = (target, dx, dy, pointerType) => {
+    win.dispatch("pointerdown", {target, clientX: 200, clientY: 400, pointerType});
+    win.dispatch("pointerup", {target, clientX: 200 + dx, clientY: 400 + dy, pointerType});
+  };
+
+  sandbox.setPinned(A);
+  await settle();
+  const beforeMouse = shownSid();
+  swipeAs(sbEl(), -180, 0, "mouse");
+  await settle();
+  ok("touch-only: a mouse drag across the Scrollback leaves the Focus where it was",
+     shownSid() === beforeMouse, "got " + shownSid());
+  swipeAs(sbEl(), -180, 0, "pen");
+  await settle();
+  ok("touch-only: a pen drag is the same selection, not a swipe",
+     shownSid() === beforeMouse, "got " + shownSid());
+  swipeAs(sbEl(), -180, 0, "touch");
+  await settle();
+  ok("touch-only: the same drag on glass still moves the Focus",
+     shownSid() !== beforeMouse, "got " + shownSid());
+
+  sandbox.setPinned(A);
+  await settle();
+  swipeAs(sbEl(), -180, 0, undefined);
+  await settle();
+  ok("touch-only: and an event with no pointerType at all is treated as touch too",
+     shownSid() !== beforeMouse, "got " + shownSid());
+
+  const heldMouse = rowFor("bravo").querySelector(".qbody");
+  win.dispatch("pointerdown", {target: heldMouse, clientX: 200, clientY: 400, pointerType: "mouse"});
+  await tick(HOLD_MS + 60);
+  win.dispatch("pointerup", {target: heldMouse, clientX: 200, clientY: 400, pointerType: "mouse"});
+  await settle();
+  ok("touch-only: a mouse press-and-hold on a row still opens the Nickname field",
+     !!rowField() && rowField().tag === "input", zones().textContent);
+  rowField().dispatch("keydown", {key: "Escape"});
+  heldMouse.dispatch("click");   // the click the browser leaves after the hold, consumed
+  await settle();
+  sandbox.setPinned(A);
+  await settle();
+
   // --- Priority, set from a queue row (slice 03) ----------------------------
   // Priority is the OUTER key of the triage order now (5555960), so triage
   // means walking the queue marking things. Every mark used to cost a

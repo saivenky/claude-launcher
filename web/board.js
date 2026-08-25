@@ -2960,9 +2960,20 @@ function consumeHold(sid) {
   return true;
 }
 
+// Touch only: a mouse or pen drag across the Scrollback is text selection,
+// not a swipe, and must not move the Focus (see the block comment above).
+// Per-event, never `matchMedia("(pointer: coarse)")` — a touchscreen laptop
+// selects with its mouse and swipes with its finger, and only the event
+// knows which. An event with no pointerType at all (the stub DOM's default,
+// and any synthesised event) is treated as touch. Gates the DRAG half only —
+// the hold below shares this listener and stays open to every pointer type.
+function dragPointer(e) {
+  return !e.pointerType || e.pointerType === "touch";
+}
+
 let dragX = 0, dragY = 0, dragging = false;
 window.addEventListener("pointerdown", (e) => {
-  dragging = !inChrome(e.target);
+  dragging = dragPointer(e) && !inChrome(e.target);
   dragX = e.clientX || 0;
   dragY = e.clientY || 0;
   holdFired = null;
