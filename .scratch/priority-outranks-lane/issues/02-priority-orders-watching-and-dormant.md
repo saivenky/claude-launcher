@@ -1,6 +1,6 @@
 # 02 — Priority orders watching and dormant, never snoozed
 
-**Status:** ready-for-agent
+**Status:** landed — 1f2980c
 **Blocked by:** 01
 
 `watching`, `dormant` and `snoozed` sort purely by recency / wake time today
