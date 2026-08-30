@@ -80,18 +80,31 @@ touches the transport.
   restart attaches to the wrong Run *after* one. Accepted because this is
   copy-and-paste-*now* on the same Mac (staleness ≈ seconds), not a phone holding
   an id for minutes; the re-resolving variant above is the fix if it bites.
-- **`❯` renders wherever the server serves an `attach` string; the copy degrades,
-  not the button.** `navigator.clipboard.writeText` needs a secure context — fine
-  at localhost, absent when the Board is reached over plain HTTP by hostname (e.g.
-  `http://mac-mini`) or the Tailscale phone path (ADR 0001). An earlier revision
-  *hid* the button off a secure context, but that also hid it on the Mac whenever
-  it was opened by hostname rather than `localhost` — the common case. So the
-  button always shows, and `copyAttach` falls back to a synchronous
-  `execCommand('copy')` off an off-screen textarea, which still lands the string
-  on a real clipboard on an insecure origin. On the phone the copy reaches the Mac
-  terminal only via Universal Clipboard, so that path stays a fallback, not the
-  design centre; a secure context (e.g. Tailscale Serve over HTTPS) restores the
-  native one-tap `navigator.clipboard` write.
+- **Two axes decide whether `❯` is drawn, and they are decided opposite ways.**
+  *Origin — the copy degrades, not the button.* `navigator.clipboard.writeText`
+  needs a secure context — fine at localhost, absent when the Board is reached
+  over plain HTTP by hostname (e.g. `http://mac-mini`) or the Tailscale phone
+  path (ADR 0001). An earlier revision *hid* the button off a secure context, but
+  that also hid it on the Mac whenever it was opened by hostname rather than
+  `localhost` — the common case. So on this axis the button always shows, and
+  `copyAttach` falls back to a synchronous `execCommand('copy')` off an off-screen
+  textarea, which still lands the string on a real clipboard on an insecure
+  origin; a secure context (e.g. Tailscale Serve over HTTPS) restores the native
+  one-tap `navigator.clipboard` write.
+  *Device — the button itself goes.* Where the **primary** pointer is coarse, `❯`
+  is not offered at all: both surfaces (the queue row's compact glyph and the
+  Focus card's `attach ❯`) carry an `attach` class that `board.html` hides under
+  `@media(pointer:coarse)`. The string is a `tmux` line and a phone runs no tmux,
+  so there is nothing on that device for it to land in — the Universal Clipboard
+  hop to the Mac's terminal, which this bullet once kept as the phone's fallback,
+  is a hand-off between two machines rather than anything the Board can offer.
+  `pointer`, never `any-pointer`: the question is the *primary* pointer, so a
+  laptop with both a trackpad and a touchscreen reads `fine` and keeps its `❯` —
+  that machine has a terminal, and the button is for it. The rule lives entirely
+  in the stylesheet: `/api/board` goes on serving `attach` on every Managed row,
+  so the payload and its ETag stay device-blind, and `display:none` takes the
+  button out of the tab order rather than leaving it for a screen reader on a
+  device that could never spend it.
 - **Attach and Respond drive the same pane without conflict.** Respond's
   `send-keys` and Observe's `capture-pane` target the *pane* directly, never as
   attaching tmux clients, so a human attached-and-typing and the phone responding

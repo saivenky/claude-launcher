@@ -497,10 +497,17 @@ function rowActions(item) {
     wrap.append(a);
   }
   // ❯ — the local twin of ↗: copy the tmux attach line for a hands-on terminal.
-  // Shown wherever the server serves an attach string; copyAttach degrades to a
-  // legacy clipboard write on an insecure origin (see copyAttach).
+  // Built wherever the server serves an attach string, because the ORIGIN never
+  // decides this one: copyAttach degrades to a legacy clipboard write rather than
+  // let an insecure origin take the button away (see copyAttach, ADR 0011). The
+  // DEVICE does decide it, and the `attach` class is how — board.html hides that
+  // class under `@media(pointer:coarse)`, since a phone has no tmux for the line
+  // to land in. Left to CSS rather than gated here: the stub DOM runs no CSS and
+  // has no matchMedia, so a branch would make every test that counts an `iconbtn`
+  // strip depend on a device fact, and `display:none` also takes the button out of
+  // the tab order, which a skipped `append` would do only by accident.
   if (item.attach) {
-    const t = el("button", "iconbtn", "❯");
+    const t = el("button", "iconbtn attach", "❯");
     t.title = "copy tmux attach command";
     t.setAttribute("aria-label", "copy tmux attach command");
     t.addEventListener("click", (e) => { e.stopPropagation(); copyAttach(item.attach); });
@@ -2088,8 +2095,10 @@ function focusCard(f) {
     open.href = link; open.target = "_blank"; open.rel = "noopener";
     actions.append(open);
   }
+  // The same class the row's ❯ wears, and deliberately not a second rule: what
+  // makes Attach unofferable is the device, not the surface it is drawn on.
   if (f.attach) {
-    const term = el("button", "ghost", "attach ❯");
+    const term = el("button", "ghost attach", "attach ❯");
     term.title = "copy tmux attach command";
     term.addEventListener("click", () => copyAttach(f.attach));
     actions.append(term);
@@ -3094,7 +3103,12 @@ function consumeHold(sid) {
 // not a swipe, and must not move the Focus (see the block comment above).
 // Per-event, never `matchMedia("(pointer: coarse)")` — a touchscreen laptop
 // selects with its mouse and swipes with its finger, and only the event
-// knows which. An event with no pointerType at all (the stub DOM's default,
+// knows which. THE ATTACH RULE ANSWERS THE OTHER WAY AND IS NOT A CONTRADICTION:
+// board.html hides `.attach` under `@media(pointer:coarse)` because that question
+// is about the machine — whether there is a local terminal to paste a tmux line
+// into at all — which is the same before and after every gesture, and which no
+// single event can answer. This question is about the gesture in the hand, and
+// changes with each one. An event with no pointerType at all (the stub DOM's default,
 // and any synthesised event) is treated as touch. Gates the DRAG half only —
 // the hold below shares this listener and stays open to every pointer type.
 function dragPointer(e) {

@@ -279,10 +279,14 @@ function fakeBoard(focusSid) {
   // `nickname` rides BESIDE `one`, never substituted into it, and its absence is
   // `null` and never `""` — one representation for "no Nickname", so the client
   // has one truthiness check per surface (server.py::_nickname, ADR 0026).
+  // Every Managed row carries an `attach` string, unconditionally — the server is
+  // device-blind by design (ADR 0011), and a fake that only sometimes sent one
+  // would let a client-side device sniff pass the suite.
+  const ATTACH = "tmux -L claude-launcher new-session -t claude-launcher";
   const strip = (s) => ({runId: s.runId, sessionId: s.sessionId, workspace: s.workspace,
                          dir: "/p/" + s.workspace,
                          status: "", bridge: "", updatedAt: s.updatedAt, lane: s.lane, pri: s.pri,
-                         one: s.one, nickname: s.nickname || null});
+                         attach: ATTACH, one: s.one, nickname: s.nickname || null});
   // The **Ask** is a property of being **Blocked** and of nothing else: server.py
   // blanks it off the question/approval lanes (ADR 0014). Mirrored here, or the
   // "no ask on an idle Focus" test would only be testing the fake.
@@ -621,6 +625,21 @@ const C = "cccccccc-4444-4444-4444-444444444444";
   ok("respond: the toast names the Run by Nickname when there is one",
      doc.getElementById("toast").textContent === "✓ sent — the release notes is now working",
      JSON.stringify(doc.getElementById("toast").textContent));
+
+  // --- Attach: the hook, here; the pixels, in the stylesheet block ----------
+  // `/api/board` serves `attach` on every Managed row and knows nothing about
+  // the device (ADR 0011), so what the client owes is the class board.html hides
+  // under `@media(pointer:coarse)` — and it owes it on BOTH surfaces, because the
+  // reason a phone is not offered `❯` is that the phone has no tmux, not that a
+  // queue row is short of width. The stub runs no CSS and has no matchMedia; that
+  // is the other half of why this gate is a class and not a branch here.
+  const terms = findAll(zones(), "iconbtn").filter((b) => b.textContent === "❯");
+  ok("attach: the queue row's ❯ carries the class the coarse-pointer rule hides",
+     terms.length > 0 && terms.every((b) => hasCls(b, "attach")),
+     JSON.stringify(terms.map((b) => b.className)));
+  ok("attach: and the Focus card's labelled twin carries the same one — one rule takes both",
+     hasCls(ghost("attach ❯"), "attach"),
+     ghost("attach ❯") && ghost("attach ❯").className);
 
   // --- Foreign Runs: visible, never drivable (ADR 0012) ---------------------
   // A `claude` started by hand at the Mac. It arrives on its own payload key, so
@@ -3382,6 +3401,19 @@ const C = "cccccccc-4444-4444-4444-444444444444";
      mqBlock.slice(0, 200));
   ok("swipe: the Scrollback keeps the vertical axis and claims only the horizontal",
      rule(".sb").includes("touch-action:pan-y"), rule(".sb"));
+  // The other pointer question, and it is answered the other way round on
+  // purpose (board.js::dragPointer says which is which). The swipe asks which
+  // pointer made THIS gesture and only the event can say; Attach asks whether the
+  // machine has a terminal to paste a tmux line into, which is a device fact and
+  // belongs here. `rule()` anchors on `^<sel>{` and so cannot read inside a
+  // one-line @media block — this reads the sheet directly, the way the rail's
+  // breakpoint above does. The negative is half the decision: `any-pointer` would
+  // catch a touchscreen laptop, which has tmux and keeps its ❯.
+  const coarse = HTML.indexOf("@media(pointer:coarse){");
+  ok("attach: a primary-coarse device is not offered ❯ at all — only the sheet can say so",
+     coarse > 0 && /^@media\(pointer:coarse\)\{\.attach\{display:none\}\}/
+       .test(HTML.slice(coarse)) && !/any-pointer/.test(DECLS),
+     HTML.slice(coarse, coarse + 60));
   // The stub runs no CSS, so only the stylesheet can say that the gutter is ONE
   // column — which is the whole value of the Record, and the thing a variable
   // prose gist could not give (ADR 0017).

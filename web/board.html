@@ -263,6 +263,20 @@ sessionId is 8 characters you never read on a phone (it is for pasting into a
 resume, which you do from a keyboard). It buys the margin that keeps row two one
 row on the widest lane. */
 @media(max-width:560px){.fsid{display:none}}
+/* ❯ IS A CONTROL FOR SOMETHING A PHONE CANNOT DO. Both Attach buttons wear
+`.attach` — the queue row's compact `❯` and the Focus card's `attach ❯` — and
+this is the whole of the rule that decides who is offered them. What they copy is
+a `tmux … new-session` line (ADR 0011); a phone runs no tmux, so the string has
+nowhere to be spent and the button is a promise the device cannot keep. `pointer`
+and never the any- variant: this is the PRIMARY pointer, so a laptop with both a
+trackpad and a touchscreen reads `fine` and keeps its `❯` — that machine has a
+terminal and the button is for it. Here rather than a matchMedia branch in
+board.js because a device that gains a keyboard should gain the button without a
+reload, and because `display:none` takes it out of the tab order too: a control a
+screen reader could still reach on a phone would be the same broken promise, read
+aloud. The ORIGIN axis is the opposite call and lives in board.js::copyAttach —
+an insecure origin degrades the copy, it never takes the button. */
+@media(pointer:coarse){.attach{display:none}}
 /* THE SESSION TITLE IS NOT A BAND ANY MORE. It was the other tinted stripe to
 the viewport edge, treated as `.ask` still is (ADR 0024) — and it was carrying a
 second job it was never meant to have: with the header two rows and the title a
