@@ -1,6 +1,6 @@
 # 01 — `❯` hides where the primary pointer is coarse
 
-**Status:** ready-for-agent
+**Status:** landed — e8b68bd
 
 `rowActions` draws `❯` on every row with an `attach` string
 (`web/board.js:502`), and `renderFocus` draws `attach ❯` on the Focus card
