@@ -20,10 +20,10 @@ has already landed — do not invent names this ticket does not own.
 
 **Blocked by:** 01 — the README must speak vocabulary that is already settled.
 
-**Status:** ready-for-agent
+**Status:** landed — 1368a22
 
-- [ ] README head matches the agreed copy exactly
-- [ ] No occurrence of `launcher` (any case) remains in the README
-- [ ] No word naming the reference behind the name appears anywhere in the repo
-- [ ] Links to `CONTEXT.md` and ADRs still resolve
-- [ ] `python -m unittest discover -s tests` and `ruff check .` pass
+- [x] README head matches the agreed copy exactly
+- [x] No occurrence of `launcher` (any case) remains in the README
+- [x] No word naming the reference behind the name appears anywhere in the repo
+- [x] Links to `CONTEXT.md` and ADRs still resolve
+- [x] `python -m unittest discover -s tests` and `ruff check .` pass
