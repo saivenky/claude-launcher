@@ -1,8 +1,8 @@
-# claude-launcher
+# AttSD
 
-Spawn, observe, and respond to local Claude Code Runs from a phone. See
-`CONTEXT.md` for the domain glossary and `docs/adr/` for the decisions behind
-the design.
+The AttSD server spawns, observes, and answers local Claude Code Runs; the
+Board is the page you drive it from. See `CONTEXT.md` for the domain glossary
+and `docs/adr/` for the decisions behind the design.
 
 ## Agent skills
 

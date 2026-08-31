@@ -1,22 +1,24 @@
-# claude-launcher
+# AttSD
 
-Tiny HTTP server to spawn and manage Claude Code sessions on a Mac from
-a phone over Tailscale. Opens a detached tmux window running `claude` with
-Remote Control enabled — so you can drive the session from the Claude
-app — and lists what's running, each with a tap-to-close button.
+**Assistant to the Software Developer.** Not the assistant — *assistant to*. It doesn't write your code; it watches the ones that do, and taps you when they need a decision.
 
-The launcher owns *lifecycle* (spawn, list, close) — the one thing the
-Claude app can't do. It now also **manages and responds** to running
-sessions from a phone, on its [session board](#session-board): one screen
-that surfaces whichever live session needs you and lets you answer it in
-place.
+Spawn, observe, and answer local Claude Code Runs from your phone.
+
+It is a tiny HTTP server on the Mac, reached over Tailscale. It opens a
+detached tmux window running `claude` with Remote Control enabled — so you can
+drive the session from the Claude app — and it owns *lifecycle* (spawn, list,
+close), the one thing the Claude app can't do.
+
+It also **manages and responds** to running sessions from a phone, on its
+[session board](#session-board): one screen that surfaces whichever live
+session needs you and lets you answer it in place.
 
 Two words, used precisely throughout (see [CONTEXT.md](CONTEXT.md)):
 
 - a **session** is the durable thread Claude Code identifies by
   `sessionId` — the one the Claude app shows you, the one you resume.
 - a **run** is one `claude` process executing a session, concretely a
-  tmux window. The launcher only ever starts and closes runs. **Closing a
+  tmux window. The server only ever starts and closes runs. **Closing a
   run never destroys a session.**
 
 ## Requirements
@@ -49,7 +51,7 @@ refreshes the run list in place; the list polls every 4s while the page
 is visible and pauses when it isn't. A freshly launched run shows as
 `starting…` for the second or so before `claude` registers itself.
 
-**The page requires JavaScript.** It's a small client over a JSON API
+**The launch page requires JavaScript.** It's a small client over a JSON API
 (`GET /api/runs`, `POST /api/launch|resume|close`) — see
 [ADR 0003](docs/adr/0003-launcher-page-runs-javascript.md).
 
@@ -83,7 +85,7 @@ refuses to append onto a box that already holds unsent text, showing you
 what's there with a one-tap clear.
 
 The board's UI is served from files on disk (`web/board.html`,
-`web/board.js`) and re-read per request, so it ships without a launcher
+`web/board.js`) and re-read per request, so it ships without an AttSD server
 restart; the `/api/*` surface behind it is the stable contract. See ADRs
 [0005](docs/adr/0005-ui-hot-served-from-disk.md) (hot-served UI),
 [0006](docs/adr/0006-board-context-rendered-server-side.md) (context
@@ -105,7 +107,7 @@ TASKS = [
 Each task spawns `cl <command>` in `workdir` (a `/slash-command` is
 typical); `input: "text"` adds a seed box whose value is appended to the
 command. `tasks.py` is private (gitignored) — without it you just get the
-generic launcher. Task runs are tagged (`user.cl_task`) so the live list
+generic launch field. Task runs are tagged (`user.cl_task`) so the live list
 shows their label; the list still includes every running `claude` run.
 
 ## Dispatches (optional)
@@ -133,19 +135,19 @@ A Dispatch returns no `runId`, so the page just toasts and moves on. Its
 own output is its only trace — set `log`, or use it only for a command that
 records its own results. See [ADR 0004](docs/adr/0004-dispatches-run-detached-not-as-runs.md).
 
-**The spawned command inherits the launcher's environment**, which under
+**The spawned command inherits the AttSD server's environment**, which under
 launchd is bare. If it needs more (a `PATH` entry, `USER`), set it in a
 wrapper script rather than relying on what happens to be inherited.
 
 ## Resume a session
 
 To get back into a Claude Code session you closed, paste its `sessionId`
-into the `$ cl --resume …` line and tap **resume**. The launcher looks up
+into the `$ cl --resume …` line and tap **resume**. The server looks up
 that session's transcript, finds the directory it ran in, and starts a
 fresh run there with `claude --resume <id>` (Remote Control on, so the
 Claude app can drive it).
 
-You supply the id — the launcher only lists *live* runs, so read the id
+You supply the id — the server only lists *live* runs, so read the id
 off the Claude app. Notes:
 
 - A session that already has a live run is refused (you're already in it;
@@ -200,14 +202,14 @@ What the server does enforce:
   touches the shell) that already has a transcript on disk, and refuses ids
   whose run is currently live.
 - `/api/close` only acts on a run id that matches a currently-live `claude`
-  run, and only closes tmux windows the launcher created — never arbitrary
+  run, and only closes tmux windows the AttSD server created — never arbitrary
   processes or windows.
 - `/api/transfer` takes a `sessionId`, never a pid. The pid it signals is
   re-derived server-side from the live-run walk and must belong to a
   currently-live *foreign* `claude` (one started by hand elsewhere); a
-  session naming a launcher-created run is refused, because closing those
+  session naming a server-created run is refused, because closing those
   is `/api/close`'s job. So the set of processes this can ever kill is
-  exactly the set the launcher already lists.
+  exactly the set the server already lists.
 - Log injection blocked (CRLF + control chars scrubbed).
 
 If you need access control on top, add a shared-secret token to the JSON
