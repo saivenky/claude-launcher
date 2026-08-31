@@ -1,8 +1,8 @@
-# Tailscale as the launcher transport
+# Tailscale as the AttSD transport
 
-We keep Tailscale as the **Launcher transport** (how a phone reaches the
+We keep Tailscale as the **AttSD transport** (how a phone reaches the
 spawn/list/close endpoint) and reject moving to iroh or a public tunnel.
-The launcher has zero app-auth by design — it leans entirely on a network
+The AttSD server has zero app-auth by design — it leans entirely on a network
 boundary — and it spawns shell sessions on the Mac, so the threat model
 is unforgiving.
 

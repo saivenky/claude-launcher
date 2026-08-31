@@ -29,7 +29,7 @@ restart, which is not.
 
 Three variants, prototyped against live Runs on branch
 `prototype/bottom-edge-intake` (`prototype-serve.py` overlays the real Board and
-proxies `/api/*` to the running Launcher, POSTs stubbed). All three share the
+proxies `/api/*` to the running server, POSTs stubbed). All three share the
 sheet, the textarea, and the eviction of the pill; they disagree only about where
 the one affordance that opens Intake lives.
 

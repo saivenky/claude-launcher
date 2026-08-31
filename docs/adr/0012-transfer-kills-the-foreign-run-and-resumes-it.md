@@ -8,8 +8,8 @@ as a Managed Run in tmux. Custody moves; the process does not.
 ## Context
 
 ADR 0010 made a Run a tmux window stamped `@cl_run_id`, and noted as a
-consequence that a pane created outside the Launcher is invisible to
-`list_runs`. That was accepted as "arguably correct — the Launcher only
+consequence that a pane created outside the AttSD server is invisible to
+`list_runs`. That was accepted as "arguably correct — the AttSD server only
 manages Runs it created."
 
 It has a second effect that was not noticed at the time. `_live_session_ids()`
@@ -17,7 +17,7 @@ is derived from `cached_runs()`, which walks tmux panes, so a **Session** live
 in iTerm is not in the resume guard set. CONTEXT.md promises "at most one live
 Run per Session — a transcript is never forked," and since 0010 that has been
 true only of Managed Runs. Resuming a Session that is live in another terminal
-forks it today. So the Launcher needs to *see* foreign `claude` processes
+forks it today. So the AttSD server needs to *see* foreign `claude` processes
 regardless of whether it can act on them — this ADR's visibility half fixes a
 broken invariant, not just an ergonomic gap.
 
@@ -100,7 +100,7 @@ cannot approve anything.
   refusing Transfer on an `idle` Run (where you are most likely mid-sentence),
   and that argument was heard and rejected.
 - **"Foreign" is decided by who started the Run, not by which terminal holds
-  it.** A `claude` sitting in a tmux pane the Launcher did not stamp is Foreign
+  it.** A `claude` sitting in a tmux pane the AttSD server did not stamp is Foreign
   too. So Transfer can one day kill a process and leave a live *tmux* pane
   behind — the same shape as the dead tab below, in the substrate we chose.
 - **The resume guard must outlive the tmux server.** `list_runs` used to treat
@@ -111,10 +111,10 @@ cannot approve anything.
   failure now degrades to "no Managed Runs"; only a `ps` failure blinds the walk.
 - **The dead terminal tab survives.** Transfer kills the process, not the
   terminal, so iTerm keeps a tab at a dead shell prompt until a human closes
-  it. Closing it would require reaching into a GUI app the Launcher does not
+  it. Closing it would require reaching into a GUI app the AttSD server does not
   own — the dependency this whole design refuses. The tab pile-up ADR 0010
   complained about is therefore *not* fully solved for hand-started sessions;
-  it is merely never *caused* by the Launcher.
+  it is merely never *caused* by the AttSD server.
 - **`Run` is no longer synonymous with "tmux window."** CONTEXT.md widens Run
   to "one `claude` process executing a Session," with Managed and Foreign as
   the two kinds. Code that assumed a Run always has a pane — anything reaching

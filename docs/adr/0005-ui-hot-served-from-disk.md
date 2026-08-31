@@ -2,7 +2,7 @@
 
 The **Board**'s UI (`web/board.html`, `web/board.js`) lives in files on disk
 and is served *fresh on every request*. Editing a file and refreshing the
-browser ships a new UI with no launcher restart. `server.py` becomes the
+browser ships a new UI with no server restart. `server.py` becomes the
 stable capability layer — the `/api/*` surface — behind a UI that changes
 constantly.
 
@@ -60,7 +60,7 @@ hidden). The API is the contract; the files are the product.
 - **Trust boundary unchanged.** The files sit on the user's Mac, same trust as
   `tasks.py`. Anyone who could rewrite `web/board.js` could already rewrite
   `server.py`; hot-serving adds no new writer.
-- **The legacy launcher page (`/`, `APP_JS`) is untouched.** The Board is
+- **The legacy launch page (`/`, `APP_JS`) is untouched.** The Board is
   additive at `/board`; promoting it to `/` and retiring the inline page is a
   later, separate step.
 

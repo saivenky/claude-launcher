@@ -3,7 +3,7 @@
 A **Run** stops being an iTerm pane driven over AppleScript and becomes a
 **tmux window** — one pane — inside a single detached session named
 `claude-launcher` on a dedicated socket. Launch, list, close, **Observe**, and
-**Respond** all move from `osascript` to the `tmux` CLI. The Launcher's model is
+**Respond** all move from `osascript` to the `tmux` CLI. The AttSD server's model is
 untouched: a Run is still the one thing it creates and destroys, still keyed by a
 UUID, still correlated to its **Session** through `pane tty -> ps -> sessions/<pid>.json`.
 
@@ -40,9 +40,9 @@ reason.
 
 ## Decision
 
-**One detached server, one session, a window per Run.** A single `tmux -L
+**One detached tmux server, one session, a window per Run.** A single `tmux -L
 claude-launcher` server holds one session, `claude-launcher`; each Run is a
-`new-window` in it with a single pane. Ensuring the server/session exists is the
+`new-window` in it with a single pane. Ensuring that server/session exists is the
 direct analogue of today's `activate` + `if (count of windows) = 0 then create
 window`. The pane is addressed for `send-keys` and `capture-pane`; its window
 owns the size.
@@ -103,7 +103,7 @@ existing code shape.
   text" warning). `capture-pane -p` returns only the visible frame, so 0009's
   "only the last contiguous run of option lines is live" scrollback guard becomes
   belt-and-suspenders rather than load-bearing — a strict improvement.
-- **The macOS-only guard drops.** The Launcher no longer needs AppleScript or a
+- **The macOS-only guard drops.** The AttSD server no longer needs AppleScript or a
   GUI session, so it can run on any host with `tmux` + `claude`. This wasn't the
   motivation, but it comes for free.
 - **A dead tmux server kills every Run silently.** iTerm quitting is at least
@@ -111,10 +111,10 @@ existing code shape.
   all Runs with it and leaves nothing on screen. The Board should surface "no
   tmux server" as a distinct empty state rather than an ordinary empty list, so
   this failure is legible.
-- **A pane created outside the Launcher has no `@cl_run_id`, so it is invisible
-  to `list_runs`.** This is arguably correct — the Launcher only manages Runs it
-  created — but it is a behaviour change from the iTerm walk, which saw every
-  pane.
+- **A pane created outside the AttSD server has no `@cl_run_id`, so it is
+  invisible to `list_runs`.** This is arguably correct — the AttSD server only
+  manages Runs it created — but it is a behaviour change from the iTerm walk,
+  which saw every pane.
 - **`respond_run`'s 0.15s bracketed-paste sleep is iTerm-specific and may be
   removable.** It exists because iTerm's `write text` wraps input in bracketed
   paste; `tmux send-keys -l` does not. The submit-as-separate-Enter split should

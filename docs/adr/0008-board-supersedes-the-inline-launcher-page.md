@@ -1,8 +1,8 @@
-# The Board supersedes the inline launcher page
+# The Board supersedes the inline launch page
 
 The **Board** (`web/board.html`, `web/board.js`, hot-served from disk per
-[ADR 0005](0005-ui-hot-served-from-disk.md)) becomes the Launcher's *only*
-page, served at `/`. The legacy inline launcher — `INDEX_HTML`, `APP_JS`,
+[ADR 0005](0005-ui-hot-served-from-disk.md)) becomes the server's *only*
+page, served at `/`. The legacy inline launch page — `INDEX_HTML`, `APP_JS`,
 `/app.js`, `/api/runs` — is deleted, and the Board absorbs everything it did:
 the generic dir **launch**, **resume**, the one-tap **Task** / **Dispatch**
 buttons (**intake**), close, and the deep-link handoff to the **Remote
@@ -12,7 +12,7 @@ step [ADR 0005](0005-ui-hot-served-from-disk.md) named and deferred.
 ## Context
 
 Two generations of the same page shipped side by side: the server-embedded
-inline launcher at `/` (read via `/api/runs`, tasks string-replaced into the
+inline launch page at `/` (read via `/api/runs`, tasks string-replaced into the
 HTML by `_render_index`) and the disk-served Board at `/board` (read via
 `/api/board`). The Board is the one the owner actually lives on — it surfaces
 **Blocked** Runs first, renders run-up context, and **Responds** inline — but
@@ -51,7 +51,7 @@ reach the client as *data*, not baked markup.
   different lifecycles (tasks change only when `tasks.py` is edited) and
   belong on different clocks.
 - **A new `GET /api/tasks` endpoint.** One route, fetched once on load (and on
-  `visibilitychange`, to catch a `tasks.py` edit). Chosen. Costs one launcher
+  `visibilitychange`, to catch a `tasks.py` edit). Chosen. Costs one server
   restart to add — the restart [ADR 0005](0005-ui-hot-served-from-disk.md)
   explicitly budgets for a genuinely new capability, after which the UI
   iterates freely on top.
@@ -84,7 +84,7 @@ reach the client as *data*, not baked markup.
 - **One page, one read-path.** `/api/board` + `/api/tasks` is the whole GET
   surface behind a single hot-served UI. The `/api/runs` machinery and its
   tests go with the inline page.
-- **`board.js` grows the launcher's client logic** — the optimistic
+- **`board.js` grows the server's client logic** — the optimistic
   `starting…` card keyed by the returned `runId`, and the burst-poll that
   reconciles it ([ADR 0003](0003-launcher-page-runs-javascript.md) invariant
   4), now adapted from a flat list to the Board's lanes. A **Dispatch**
@@ -101,7 +101,7 @@ reach the client as *data*, not baked markup.
   `/` and `/app.js`" — root now serves `board.html`; `/app.js` is gone. The
   JSON-API + `Origin` + `textContent` invariants it established are unchanged
   and still carry the merged page.
-- [ADR 0005](0005-ui-hot-served-from-disk.md): "The legacy launcher page
+- [ADR 0005](0005-ui-hot-served-from-disk.md): "The legacy launch page
   (`/`, `APP_JS`) is untouched … promoting it to `/` and retiring the inline
   page is a later, separate step." This is that step.
 

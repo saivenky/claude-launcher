@@ -44,7 +44,7 @@ live Run at a time — so resume never forks an in-flight transcript.
 
 ## Escape hatch
 
-If resume ever needs tightening (e.g. the launcher is exposed to a less
+If resume ever needs tightening (e.g. the server is exposed to a less
 trusted network), reintroduce a `CLAUDE_LAUNCHER_RESUME_ROOT` gate on the
 resolved cwd — the check has one obvious home, right after the cwd is read
 from the transcript.

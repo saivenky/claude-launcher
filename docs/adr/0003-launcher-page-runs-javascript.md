@@ -1,4 +1,4 @@
-# The launcher page runs JavaScript
+# The launch page runs JavaScript
 
 The page becomes a small JS client: it `fetch`es a JSON **Run** list from
 `GET /api/runs`, renders rows in the DOM, and posts lifecycle actions
@@ -20,7 +20,7 @@ Two facts constrain how far this can go:
 - **`server.py` has zero third-party dependencies and no build step.** That
   is what lets it be a single file behind a launchd plist. A page that
   manages seven rows does not need a bundler.
-- **The launcher is a shell-spawner with no app-auth** (see
+- **The AttSD server is a shell-spawner with no app-auth** (see
   [ADR 0001](0001-tailscale-as-launcher-transport.md)). It leans entirely on
   a network boundary. Anything that widens the browser-side attack surface
   must pay for itself.

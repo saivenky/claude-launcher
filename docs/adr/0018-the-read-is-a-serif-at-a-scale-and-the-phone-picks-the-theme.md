@@ -26,7 +26,7 @@ reasoning about it substitutes for looking. So the first move was not a design,
 it was a **prototype**: `web/proto.html`, generated from `board.html`, serving
 the real `board.js` against the real `/api/board`, with four knobs (theme, type
 scale, prose face, density) and a loud dot to open them. Reachable over the
-**Launcher transport** on the phone this tool exists for, against live **Runs**.
+**AttSD transport** on the phone this tool exists for, against live **Runs**.
 
 Building it forced the work that any themed page needs anyway. `board.html` had
 a token block, but **34 colour literals leaked past it** — `#b9c4ce` inside

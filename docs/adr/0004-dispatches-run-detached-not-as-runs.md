@@ -3,11 +3,11 @@
 `tasks.py` gains a second button kind. A **Task** carries `command` and starts an
 ordinary **Run** — an iTerm pane running `claude` on a fresh **Session**. A
 **Dispatch** carries `exec` and starts a plain process: no `claude`, no Session,
-no pane. The launcher spawns it and forgets it.
+no pane. The server spawns it and forgets it.
 
 ## Context
 
-The launcher's whole model is that it owns *lifecycle* — spawn, **observe**,
+The server's whole model is that it owns *lifecycle* — spawn, **observe**,
 close — over things that are Runs. Every verb in `CONTEXT.md` assumes one:
 `list_runs` filters iTerm panes down to those where `ps` shows `claude`; `close`
 refuses anything that isn't a live Run; `resume` needs a `sessionId`.
@@ -48,8 +48,8 @@ stronger guarantee than a Task gets: a Task's seed is `shell_quote`d into a
 command line, which is safe but relies on quoting being right. A Dispatch's seed
 never touches a shell at all — and it is the field a phone types freely into.
 
-`start_new_session` detaches the child from the launcher's process group, so it
-survives a launcher restart and never receives a signal meant for the server. We
+`start_new_session` detaches the child from the server's process group, so it
+survives a server restart and never receives a signal meant for it. We
 never `wait()`: `subprocess` reaps exited children on its next `Popen`, which the
 four-second run poll guarantees.
 
@@ -57,7 +57,7 @@ four-second run poll guarantees.
 
 - **A Dispatch is invisible to every other verb**, by construction. It cannot be
   observed, closed, or resumed, and it never appears in the run list. The toast is
-  the only feedback the launcher gives; the agent's own trace (a note, a log) is
+  the only feedback the server gives; the agent's own trace (a note, a log) is
   the real one. `watch(runId)` already no-ops on a missing id, so the client needed
   no special case.
 - **The glossary grows a word rather than stretching one.** Calling this a Task
@@ -67,7 +67,7 @@ four-second run poll guarantees.
   the page. This is acceptable only because the agent it was built for guarantees
   its own trace — a failed expansion still records the seed verbatim. A Dispatch
   that cannot make that promise should set `log`.
-- **The launcher now spawns non-`claude` processes.** Its security posture is
+- **The server now spawns non-`claude` processes.** Its security posture is
   unchanged in kind (trusted network, trusted `tasks.py`), but `exec` is a new
   place where a typo in private config becomes an arbitrary command. It is
   validated at import — a list of strings, never alongside `command` — so a

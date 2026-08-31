@@ -2,8 +2,8 @@
 
 **Recover** brings back the Sessions that were live before a restart by
 *guessing* — a recency-cluster over transcript mtimes (the **recovery set**),
-pre-ticked for you to edit — rather than by the Launcher persisting a snapshot
-of which Runs were live. The Launcher keeps no memory across a restart; each
+pre-ticked for you to edit — rather than by the AttSD server persisting a
+snapshot of which Runs were live. The server keeps no memory across a restart; each
 Session's own `.jsonl` is the only state.
 
 ## Context
@@ -11,7 +11,7 @@ Session's own `.jsonl` is the only state.
 A machine restart kills every **Run** — the tmux server and every `claude`
 process — while every **Session** survives on disk. "Bring back what I was
 running" could be answered two ways: reconstruct the exact live set from a
-snapshot the Launcher writes while alive, or discover recently-active
+snapshot the AttSD server writes while alive, or discover recently-active
 **Resumable Sessions** and let the human pick, pre-selecting a best guess.
 
 ## Considered options

@@ -1,18 +1,18 @@
-# The Launcher responds to Runs, and therefore requires a shared secret
+# The server responds to Runs, and therefore requires a shared secret
 
-The Launcher gains **Respond**: `POST /api/respond` injects input into a live
-**Run**'s iTerm pane over the **Launcher transport** — a typed reply
+The AttSD server gains **Respond**: `POST /api/respond` injects input into a live
+**Run**'s iTerm pane over the **AttSD transport** — a typed reply
 (submitted), or a whitelisted key sequence that drives a selector (a permission
-menu, an AskUserQuestion). This is the Launcher's own driving channel,
+menu, an AskUserQuestion). This is the server's own driving channel,
 independent of the **Remote Control bridge**. Because it can *approve* a tool
 call, it is gated by a shared secret; the read-only Board is not.
 
 ## Context
 
-Until now the Launcher owned lifecycle (spawn / close / **resume**) plus
+Until now the server owned lifecycle (spawn / close / **resume**) plus
 read-only **Observe**. [ADR 0001](0001-tailscale-as-launcher-transport.md)
 leaned entirely on a network boundary with no app-auth, reasoning about a
-"shell-spawner." Respond changes the Launcher's *nature*: it can now type into,
+"shell-spawner." Respond changes the server's *nature*: it can now type into,
 and approve permission prompts in, any live Session. That removes the
 human-in-the-loop that currently backstops a destructive tool call — a caller
 who reaches the port could spawn a Run and approve its own `rm -rf`.
@@ -50,10 +50,10 @@ feature by forbidding permission approvals (which is most of the point of
 
 ## Consequences
 
-- **The Launcher is now a driver, not only an observer.** `CONTEXT.md` grows the
+- **The server is now a driver, not only an observer.** `CONTEXT.md` grows the
   verb **Respond** as the two-way sibling of **Observe**, and the old invariant
   "it never types, answers, or approves — those belong to the bridge" is amended:
-  those are now Respond's job (Launcher transport) *or* the bridge's (cloud).
+  those are now Respond's job (AttSD transport) *or* the bridge's (cloud).
 - **The bridge is no longer the only way to drive a Run** — but it stays the
   rich, single-session channel for deep work; Respond is the multiplexed,
   triage-speed one. They coexist by design.

@@ -47,7 +47,7 @@ tmux window, so the server resolves it: `#{window_id}` is added to the existing
 `list-panes` walk (`_PANE_FMT`) — one call, no new endpoint — and each row is
 handed a ready-to-paste `attach` string, exactly as `bridge` rides each row
 today. No user input is interpolated into the string, so there is no injection
-surface and no token gate. The string is *served* over the **Launcher
+surface and no token gate. The string is *served* over the **AttSD
 transport**; the attach connection itself is a local tmux client that never
 touches the transport.
 

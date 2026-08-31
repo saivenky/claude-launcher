@@ -1,7 +1,7 @@
-# claude-launcher
+# AttSD
 
 A tool to spawn, observe, and respond to local Claude Code sessions on a
-Mac from a phone. It owns *lifecycle* (spawn / close / **resume**) and now
+Mac from a phone. It owns *lifecycle* (spawn / close / **resume**) and
 **observes** and **responds** to live Runs over its own transport; the
 Claude app's **Remote Control bridge** stays the rich single-session
 channel. This glossary fixes the language so the channels are never
@@ -14,17 +14,22 @@ thing the Claude app calls a session.
 
 ## Language
 
-**Launcher**:
-The server that spawns, lists, and closes local Claude Code **Runs**, and
-the page used to drive it.
-_Avoid_: server, app (overloaded), backend
+**Server**:
+The process on the Mac that spawns, lists, and closes local Claude Code
+**Runs**, serves the **Board**, and answers the `/api/*` surface behind it.
+The page you drive it from is the **Board**, named separately: the two were
+one term (`Launcher`) until ADR 0027 retired it. Written **AttSD server** in any
+passage where tmux's own server is also under discussion, so the two are never
+confused.
+_Avoid_: launcher (retired with the rename, ADR 0027), app (overloaded),
+backend, daemon, host
 
 **Session**:
 The durable thread of work, persisted as
 `~/.claude/projects/*/<sessionId>.jsonl` and identified by Claude Code's
 own `sessionId`. This is what the Claude app shows you and what you paste
 to **resume**. A Session outlives any one **Run**: close it, resume it
-later, and it is the same Session. Never destroyed by the Launcher.
+later, and it is the same Session. Never destroyed by the server.
 _Avoid_: conversation, transcript (the file on disk, not the living
 thread), history, thread
 
@@ -32,7 +37,7 @@ thread), history, thread
 One `claude` process executing a **Session**, whatever terminal holds it. A
 Run embodies exactly one Session; ending a Run leaves its Session intact. At
 most one live Run per Session. Two kinds, told apart by who started it: a
-**Managed Run** — the only thing the Launcher creates and destroys —
+**Managed Run** — the only thing the AttSD server creates and destroys —
 concretely a tmux window (one pane) stamped `@cl_run_id` (see ADR 0010;
 formerly an iTerm pane), and a **Foreign Run**.
 _Avoid_: session (that's the durable thread here — and tmux's own container,
@@ -67,7 +72,7 @@ at what a Session is *about*, where a Nickname is a decision about what it is
 **Resume**, **Recover** and **Transfer**, all of which keep the `sessionId`, and
 a **Foreign Run**'s Session has one like any other, because a Session does not
 stop being yours because you started its Run in a terminal. Never unique — the
-Launcher cannot promise it across Sessions it does not control, and two rows
+server cannot promise it across Sessions it does not control, and two rows
 reading the same word is a mistake you can see and retype. Wherever a Run is
 named, the Nickname takes the slot the guess would have taken, and the
 **Workspace** stays beside it: identity truncates last, and the Workspace is the
@@ -78,24 +83,24 @@ alias (implies you could **resume** by it — you cannot; a Session is addressed
 by its `sessionId`), name (a Session's name is its `sessionId`), tag
 
 **Foreign Run**:
-A live **Run** the Launcher did not start — a `claude` someone ran by hand in
-any other terminal, so it has no tmux window and no `@cl_run_id`. The Launcher
+A live **Run** the AttSD server did not start — a `claude` someone ran by hand in
+any other terminal, so it has no tmux window and no `@cl_run_id`. The server
 sees it (its **Session**, dir, status, and last message all come from Claude
 Code's own state, never the terminal's) but cannot reach into it: no
 **rendered pane**, so no **Respond**, no **Attach**, no close. Visible for
 exactly two reasons — so it can be **transferred**, and so the one-live-Run-per-
 Session guard is not blind to it.
-_Avoid_: unmanaged (the Launcher does observe it), external, orphan, stray
+_Avoid_: unmanaged (the server does observe it), external, orphan, stray
 
 **Resume**:
 Start a new **Run** on an existing **Session** (via
 `claude --resume <sessionId>`). Distinct from re-attaching to a *live*
-Run, which is the **Remote Control bridge**'s job, not the Launcher's.
+Run, which is the **Remote Control bridge**'s job, not the server's.
 _Avoid_: reopen, restore, continue (overloaded by `claude --continue`)
 
 **Resumable Session**:
 A **Session** with a transcript on disk *and* a working directory that still
-exists, but no live **Run** — one the Launcher can bring back. A Session whose
+exists, but no live **Run** — one the server can bring back. A Session whose
 cwd is gone is not resumable (there is nowhere to `cd`), and a Session with a
 live Run is not either (the one-live-Run-per-Session guard refuses it). Wider
 than what the **Recover** picker lists: a **Headless Session** is Resumable and
@@ -137,11 +142,11 @@ resume (names the mechanism, not the restart intent), restart (the trigger,
 not the act)
 
 **Recovery set**:
-The subset of **Resumable Sessions** the Launcher judges were live at the last
+The subset of **Resumable Sessions** the server judges were live at the last
 restart, pre-ticked in the **Recover** picker: a recency-cluster anchored on
 the newest Resumable Session, chaining to older ones while each gap stays
 within a tolerance, leashed to a total span. A *heuristic over transcript
-mtimes, not a record* — the Launcher keeps no memory of what was live (ADR
+mtimes, not a record* — the server keeps no memory of what was live (ADR
 0013) — so it is a best guess, freely editable before you resume.
 _Avoid_: restart batch (informal only — the set is the named thing),
 live-at-restart set (wordy)
@@ -152,8 +157,8 @@ tap, one atomic operation. What moves is *custody of the Session*, not a
 process: the original `claude` is killed and a new Run replaces it, so the
 in-flight turn and any text typed-but-not-sent in the old terminal are lost
 (accepted — see ADR 0012). The Session itself is untouched, as always. The
-only Launcher action that destroys a Run it did not create, and the only
-thing that can be done to a Foreign Run at all.
+only thing the server does that destroys a Run it did not create, and the
+only thing that can be done to a Foreign Run at all.
 _Avoid_: adopt / take over (each reads as driving it *where it lives*, which
 is the rejected design); migrate, move (no process moves — see *Flagged
 ambiguities*); hand-off (that's **Attach** and the bridge)
@@ -164,15 +169,15 @@ executing, its working directory, its status, its most recent message, and
 its **rendered pane** (the on-screen TUI, where a **Blocked** Run's actual
 prompt lives even when it never reaches the transcript) — without driving
 it. Strictly one-way. Typing, answering, and approving are **Respond**'s
-job (over the Launcher transport) or the **Remote Control bridge**'s (over
+job (over the AttSD transport) or the **Remote Control bridge**'s (over
 the cloud) — never Observe's.
 _Avoid_: monitor, watch, view, read (each also suggests two-way)
 
 **Respond**:
-Inject input into a live **Run** over the **Launcher transport** — free
+Inject input into a live **Run** over the **AttSD transport** — free
 text, a selector choice (arrow / enter), or a permission approval — by
 writing to the Run's pane (`tmux send-keys`; ADR 0010). The two-way sibling of **Observe** and the
-Launcher's own driving channel, distinct from the **Remote Control bridge**
+server's own driving channel, distinct from the **Remote Control bridge**
 (Anthropic's cloud, one session, the Claude app). When the Run is busy,
 Claude Code's native input queue absorbs the response until the next turn.
 Free text is *routed*, never typed at whatever is on screen: while an **Ask
@@ -195,7 +200,7 @@ new **Run**: it opens an ephemeral grouped-session *view* onto the Run's
 existing window, so the Run keeps its one live process and its UUID, and the
 view self-destroys the moment you detach. The connection is a **local** tmux
 client on the Mac — the Board only *serves the command string* over the
-**Launcher transport**; the attach itself traverses no transport. Distinct
+**AttSD transport**; the attach itself traverses no transport. Distinct
 from **Resume** (a *new* Run on a *dead* **Session** — refused while this Run
 is live) and from **Respond** (input over the transport, no terminal).
 Requires a live Run; a closed one has no window to attach.
@@ -203,7 +208,7 @@ _Avoid_: resume (a new Run, not this), open / reopen (overloaded), tmux
 session (the view is a throwaway grouped session, never a **Run**)
 
 **Board**:
-The single screen — the Launcher's only page — that aggregates every live
+The single screen — the server's only page — that aggregates every live
 **Run**, holds one at a time as the **Focus** while the rest queue by
 **Priority**, and inside a level by urgency (**Blocked** first, with its
 concrete blocker), lets you **Respond**
@@ -211,10 +216,10 @@ to the Focus inline, and carries the full **intake** and lifecycle
 surface: launch, **resume**, **recover**, close, the one-tap **Task** / **Dispatch**
 buttons, and the two per-Run handoffs — the `↗` deep-link to the **Remote
 Control bridge** and the `❯` **Attach** line for a local terminal. It
-supersedes the legacy inline launcher page (once served at `/` alongside
-it): the Board *is* the launcher page now, grown from a run list into the
+supersedes the legacy inline launch page (once served at `/` alongside
+it): the Board *is* the server's page now, grown from a run list into the
 whole management surface. Its UI is served from disk and hot-reloads (ship
-new HTML, no relaunch); the Launcher's `/api/*` capability surface behind
+new HTML, no relaunch); the server's `/api/*` capability surface behind
 it — including `/api/tasks`, the task definitions the static page can no
 longer inline server-side — is the stable contract.
 _Avoid_: dashboard, list (it is more than a list now), inbox, feed
@@ -412,35 +417,35 @@ _Avoid_: job, action, command (overloaded); **Dispatch** (that starts no Run)
 **Dispatch**:
 A named, preset *command* in `tasks.py` (an `exec` argv), run **detached**:
 no `claude`, no **Session**, no **Run**, no pane. It shares only the
-one-tap button with a **Task**. The **Launcher** spawns it and forgets it —
+one-tap button with a **Task**. The **server** spawns it and forgets it —
 there is nothing to **observe**, nothing to close, and no `sessionId` to
 **resume**. Its own output is its trace, wherever it chooses to leave it.
 Exists for fire-and-forget agents a phone should be able to trigger without
 opening a session to babysit.
 _Avoid_: task, run (a Dispatch is neither); job, background task (each
-suggests something the Launcher tracks — it does not)
+suggests something the server tracks — it does not)
 
-**Launcher transport**:
-The path by which a phone reaches the **Launcher** endpoint (today: a
+**AttSD transport**:
+The path by which a phone reaches the **AttSD server** (today: a
 Tailscale-routed HTTP request to a LAN-bound port). This is the only
 thing a Tailscale replacement would change.
 _Avoid_: connection, network, tunnel (each names only one option)
 
 **Remote Control bridge**:
 Anthropic's cloud channel that carries a **Run**'s typing, approvals, and
-output to the Claude app. Independent of the **Launcher transport** — it
+output to the Claude app. Independent of the **AttSD transport** — it
 does not flow over Tailscale. Its own `bridgeSessionId` names a *bridge
 channel*, never a **Session**.
 _Avoid_: remote control (lowercase reads as a generic capability)
 
 **Reachability scope**:
-Where a phone must be for the **Launcher transport** to work:
+Where a phone must be for the **AttSD transport** to work:
 *same-LAN* (home Wi-Fi only) vs *anywhere* (cellular / foreign network).
 _Avoid_: access, availability
 
 ## Relationships
 
-- A **Launcher** spawns and closes many **Runs**. It never creates or
+- The **server** spawns and closes many **Runs**. It never creates or
   destroys a **Session**
 - A **Run** executes exactly one **Session**; a **Session** outlives its
   Run and can be **resumed** into a new one
@@ -462,10 +467,10 @@ _Avoid_: access, availability
   wanted (ADR 0013), so it is allowed to be wrong in the direction of offering
   less, where **Resume** obeys a `sessionId` you typed and is not
 - After a machine restart no **Run** survives, so every Session that had one
-  becomes **Resumable**. The **recovery set** is the Launcher's guess at which
+  becomes **Resumable**. The **recovery set** is the server's guess at which
   of those were *live at the restart* — a heuristic over transcript mtimes, not
-  a record; the Launcher never persists the live set (ADR 0013)
-- Every **Run** is either Managed or **Foreign**, and only the Launcher's own
+  a record; the server never persists the live set (ADR 0013)
+- Every **Run** is either Managed or **Foreign**, and only the server's own
   act of starting it decides which. A Managed Run never becomes Foreign; a
   Foreign Run becomes Managed only by being **transferred**, which replaces it
 - A **Foreign Run** is never **Blocked**, never takes the **Focus**, and never
@@ -474,23 +479,23 @@ _Avoid_: access, availability
   the queue lie. It sits outside the triage surface entirely
 - **Transfer** needs a **Foreign Run**; **Attach** and **Respond** need a
   Managed one. No Run offers both, and the split is the same one throughout:
-  the Launcher drives only what it started
-- A **Run**'s lifecycle flows over the **Launcher transport**; its I/O
+  the server drives only what it started
+- A **Run**'s lifecycle flows over the **AttSD transport**; its I/O
   flows over the **Remote Control bridge** — different channels
-- A **Launcher** **observes** Runs; it never drives them. Observing rides
-  the **Launcher transport**; driving rides the bridge
+- The **server** **observes** Runs; it never drives them. Observing rides
+  the **AttSD transport**; driving rides the bridge
 - Three ways lead onto a *live* **Run**: **Respond** (input over the
-  **Launcher transport**), the **Remote Control bridge** (Anthropic's cloud →
+  **AttSD transport**), the **Remote Control bridge** (Anthropic's cloud →
   the Claude app), and **Attach** (a local terminal onto the Run's tmux
   window). Only the bridge leaves the Mac; **Attach** never touches the
   transport at all — the Board just serves its command string
 - **Attach** needs a live **Run**; **Resume** needs a **Session** with none.
   The same Session cannot offer both at once — the live-Run guard that refuses
   Resume is exactly what makes Attach the only terminal route while a Run runs
-- A **Launcher transport** choice is bounded by the required
+- A **AttSD transport** choice is bounded by the required
   **Reachability scope**
 - A **Dispatch** produces no **Run** and no **Session**, so none of the
-  Launcher's other verbs apply to it: it cannot be **observed**, closed, or
+  server's other verbs apply to it: it cannot be **observed**, closed, or
   **resumed**. Spawning it is the whole interaction
 - A **Task** and a **Dispatch** are told apart by one field — `command`
   starts a **Run**, `exec` starts a Dispatch. Never both
@@ -548,7 +553,7 @@ _Avoid_: access, availability
 > **A:** "If we drop Tailscale, do we lose the ability to drive a **Run**
 > from the phone?"
 > **B:** "No — driving a Run rides the **Remote Control bridge** through
-> Anthropic's cloud. Tailscale only carries the **Launcher transport**.
+> Anthropic's cloud. Tailscale only carries the **AttSD transport**.
 > Replacing it only affects spawn / list / close."
 
 > **A:** "I left a `claude` running in iTerm at home — can I answer it from
@@ -561,7 +566,7 @@ _Avoid_: access, availability
 > **A:** "The Run's idle and it asked me something at the end — why is there no
 > **ask** on the card?"
 > **B:** "Because it isn't **Blocked**. An **Ask** is the blocker of a Blocked
-> Run, and the Launcher reads it off the **rendered pane** when the transcript
+> Run, and the server reads it off the **rendered pane** when the transcript
 > hasn't got it. Prose ending in a `?` is just the last **turn** — it's already
 > on screen in the **scrollback**, so a strip would say it twice."
 
@@ -579,29 +584,37 @@ _Avoid_: access, availability
   - `bridgeSessionId` — the **Remote Control bridge**'s channel. Here: a
     *bridge channel*, never a Session.
   - tmux's top-level container, a `tmux session` — the most dangerous
-    claimant, because it is a word in the Launcher's own CLI. Resolved by
-    topology: the Launcher runs *one* tmux session (`claude-launcher`) and a
+    claimant, because it is a word in the CLI the **AttSD server** drives.
+    Resolved by topology: the AttSD server runs *one* tmux session and a
     Run is a **window** in it, never a tmux session (ADR 0010). So "close the
     session" is never ambiguous — you close a **Run**, i.e. a tmux window.
   - a Run's tmux window/pane (formerly iTerm's `sessions of tabs`) — the
     terminal container. Here: a **Run**, an implementation detail.
 - "close a session" conflated ending a process with destroying a thread —
-  resolved: you close a **Run**. Nothing the Launcher does can destroy a
+  resolved: you close a **Run**. Nothing the server does can destroy a
   **Session**.
+- "server" was on the retired `Launcher` entry's _Avoid_ list as too
+  ambiguous — reversed by ADR 0027. **Server** is now the canonical word for
+  the process, because the term that displaced it (`Launcher`) also claimed
+  the page, and the page is the **Board**. The ambiguity it was avoiding is
+  real but narrow: tmux runs a server of its own. It is resolved by spelling
+  rather than by a different word — **AttSD server** and **tmux server**,
+  written out in any passage where both are in play, and plain "server"
+  meaning the AttSD one everywhere else.
 - "session management" was used to mean lifecycle *and* possibly typing
   into a live Run — partially resolved: management today means lifecycle
   (spawn / close / **resume**) plus **Observe**. Driving a Run stays the
   **Remote Control bridge**'s and is deferred, not ruled out.
 - "transfer a session from iTerm" read as *moving* something — flagged and
   kept anyway, with the reading pinned down. Nothing moves: a **Session**
-  never moves (it is a file the Launcher never touches), and a `claude`
+  never moves (it is a file the server never touches), and a `claude`
   process cannot be reparented off its tty. **Transfer** moves only *custody*,
   by destroying one **Run** and starting another on the same Session. If a
   future reader expects the process to survive, this is the line that says it
   does not.
 - "a Run is a tmux window" was true between ADR 0010 and 0012 — resolved: a
   **Run** is one `claude` process; a tmux window is what a *Managed* Run is
-  made of. The narrower definition made every `claude` outside the Launcher
+  made of. The narrower definition made every `claude` outside the server
   nameless, which is why the one-live-Run-per-Session guard silently stopped
   holding.
 - "context" named the **Focus**'s reading surface while that surface was one
@@ -651,10 +664,10 @@ _Avoid_: access, availability
   **Headless Session** — because its own name is not ours to spend, and the
   filter would be wrong if it were about one agent rather than about origin.
 - "depend on Tailscale" was used to mean the whole tool — resolved:
-  Tailscale is only the **Launcher transport**; the **Remote Control
+  Tailscale is only the **AttSD transport**; the **Remote Control
   bridge** is unaffected.
 - "no install" was used to mean lighter overall — flagged: it constrains
-  only the *phone* side; the Mac still runs **Launcher** code (and any
+  only the *phone* side; the Mac still runs **AttSD** code (and any
   transport's native bits).
 - "recover" reads as *restore prior state* — flagged and narrowed: **Recover**
   reopens **Sessions**; it does not bring back a Run's in-flight turn, which is

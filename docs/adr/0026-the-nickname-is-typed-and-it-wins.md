@@ -11,8 +11,8 @@ The **Workspace** is the first level of context and ADR 0023 spent an ADR making
 sure it survives: it is the identity, it truncates last, it holds the header's
 first row alone. That works until you run three Sessions in one repo, which is
 the normal case here — a worktree per feature is one Workspace each, but three
-`claude`s in `~/projects/claude-launcher` are three rows reading
-`claude-launcher`, and the Workspace has no more to say.
+`claude`s in `~/projects/attsd` are three rows reading
+`attsd`, and the Workspace has no more to say.
 
 The second level is not missing. It is derived, late, and in one place:
 
@@ -39,7 +39,7 @@ changes — resume is literally `cl --resume <sessionId>` (`server.py:193`), and
 across 3568 transcripts there are zero files whose inner `sessionId` differs from
 the filename and zero ids appearing in two files. **Transfer** (`server.py:1319`)
 and **Recover** (`server.py:3540`) funnel into the same call. Anything keyed by
-`sessionId` survives every lifecycle verb the Launcher has, for free.
+`sessionId` survives every lifecycle verb the server has, for free.
 
 ## Decision
 
@@ -100,7 +100,7 @@ Workspace stays):
   someone else's terminal, no **Respond**, visible only so it can be
   **Transferred** — able to display a Nickname and never receive one. Putting
   the Nickname on the Session rather than the Run was meant to avoid depending
-  on Launcher control; a header-only edit would have reintroduced that
+  on server control; a header-only edit would have reintroduced that
   dependency at the last step. Press-and-hold is free: `board.js` has zero touch
   listeners, no `contextmenu` and no hold timers.
 - **The edit is inline, in place.** The header is `position:sticky` at a fixed
@@ -113,7 +113,7 @@ Workspace stays):
   second affordance for the null case of one you already have. The cap roughly
   matches what row one can render, so you cannot author a name whose
   distinguishing half is never shown — ADR 0023's failure, self-inflicted.
-- **Not unique.** The Launcher cannot promise uniqueness across Sessions it does
+- **Not unique.** The server cannot promise uniqueness across Sessions it does
   not control, and enforcing it means a modal at the moment you were reducing
   friction. Two identical Nicknames in one Workspace is visible on screen and
   costs one retype.
@@ -154,7 +154,7 @@ also adds a second decision to an intake that currently asks one.
 
 **Enforce uniqueness within a Workspace.** Tempting, because the whole point is
 telling two Sessions in one repo apart, and two rows reading `auth` fails at
-exactly that. Rejected on where the check would have to live: the Launcher would
+exactly that. Rejected on where the check would have to live: the server would
 be refusing a name on behalf of Sessions it may not control, at the moment of a
 one-handed edit on a phone, with a modal. The failure is visible and self-
 correcting; the guard is not.
