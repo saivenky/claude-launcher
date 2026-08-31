@@ -16,7 +16,8 @@ The sequence, in order:
    derives that directory name from the cwd, so skipping this splits the repo's
    history across two slugs and `--resume` shows only half of it.
 5. Install and load the new LaunchAgent (`com.saivenky.attsd`).
-6. Resume every Session from the manifest onto socket `attsd`.
+6. Repoint the untracked `.claude/settings.local.json` permission paths.
+7. Resume every Session from the manifest onto socket `attsd`.
 
 The agent delivers the runbook — the exact commands, in order, with what to
 check between each. A human runs it with their own eyes on it. A detached
@@ -26,9 +27,12 @@ and leaves no tmux, no LaunchAgent, and no agent left to repair it.
 
 **Blocked by:** 03, 04, 05.
 
+**Runbook:** `.scratch/rename-attsd/cutover.md` — written and ready; the
+remaining work is a human running it.
+
 **Status:** ready-for-human
 
-- [ ] A runbook exists with the exact commands in order and a check after each
+- [x] A runbook exists with the exact commands in order and a check after each
 - [ ] All eight Runs are drained and then resumed on socket `attsd`
 - [ ] Both directories renamed; no path still says `claude-launcher`
 - [ ] `--resume` from `~/projects/attsd` shows the full session history
