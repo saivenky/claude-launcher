@@ -19,11 +19,10 @@ machine. The test suite must stay green while the live socket is still called
 **Blocked by:** None — can start immediately. It touches files disjoint from
 tickets 01 and 02.
 
-**Status:** ready-for-agent
+**Status:** landed — f27cc8e
 
-- [ ] `ATTSD_TMUX_SOCKET` is the env var; `attsd` the default socket
-- [ ] LaunchAgent label is `com.saivenky.attsd`, log path `~/Library/Logs/attsd.log`, plist filename renamed to match
-- [ ] Plist load instructions reference the new label, log path, and `~/projects/attsd`
-- [ ] Server startup and failure messages say AttSD
-- [ ] `.claude/settings.local.json` paths point at `~/projects/attsd`
-- [ ] `python -m unittest discover -s tests` and `ruff check .` pass with the old socket still live
+- [x] `ATTSD_TMUX_SOCKET` is the env var; `attsd` the default socket
+- [x] LaunchAgent label is `com.saivenky.attsd`, log path `~/Library/Logs/attsd.log`, plist filename renamed to match
+- [x] Plist load instructions reference the new label, log path, and `~/projects/attsd`
+- [x] Server startup and failure messages say AttSD
+- [x] `python -m unittest discover -s tests` and `ruff check .` pass with the old socket still live

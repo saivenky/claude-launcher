@@ -6,10 +6,12 @@
   Before loading:
     1. Replace __SERVER_PY__ with the absolute path to server.py
        e.g. /Users/you/projects/attsd/server.py
-    2. (Optional) Adjust EnvironmentVariables.PATH if your `python3`
+    2. Replace __HOME__ with your home directory — launchd does not expand
+       `~`, so both log paths must be absolute.
+    3. (Optional) Adjust EnvironmentVariables.PATH if your `python3`
        lives somewhere unusual.
-    3. Copy to ~/Library/LaunchAgents/
-    4. launchctl load ~/Library/LaunchAgents/com.saivenky.attsd.plist
+    4. Copy to ~/Library/LaunchAgents/
+    5. launchctl load ~/Library/LaunchAgents/com.saivenky.attsd.plist
 -->
 <plist version="1.0">
 <dict>
@@ -36,10 +38,10 @@
     <true/>
 
     <key>StandardOutPath</key>
-    <string>/Users/skandallu/Library/Logs/attsd.log</string>
+    <string>__HOME__/Library/Logs/attsd.log</string>
 
     <key>StandardErrorPath</key>
-    <string>/Users/skandallu/Library/Logs/attsd.log</string>
+    <string>__HOME__/Library/Logs/attsd.log</string>
 
     <key>ProcessType</key>
     <string>Background</string>

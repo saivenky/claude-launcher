@@ -221,6 +221,7 @@ A template is in `launchd/com.saivenky.attsd.plist`.
 
 ```sh
 cp launchd/com.saivenky.attsd.plist ~/Library/LaunchAgents/
+# then replace __SERVER_PY__ and __HOME__ inside the copy
 # Edit: replace __SERVER_PY__ with the absolute path to server.py
 launchctl load   ~/Library/LaunchAgents/com.saivenky.attsd.plist
 launchctl unload ~/Library/LaunchAgents/com.saivenky.attsd.plist  # stop
