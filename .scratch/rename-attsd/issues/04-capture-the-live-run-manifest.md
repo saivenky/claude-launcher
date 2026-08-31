@@ -16,10 +16,10 @@ send keys to a pane — one of them is the session doing the work.
 
 **Blocked by:** None — can start immediately, and must run before ticket 06.
 
-**Status:** ready-for-agent
+**Status:** landed
 
-- [ ] A committed manifest lists every live Run with its `sessionId`, cwd, and pane id
-- [ ] All eight current Runs appear
-- [ ] The capture is read-only — no pane is killed, signalled, or written to
-- [ ] The manifest's format is directly usable by the ticket 06 runbook
-- [ ] `python -m unittest discover -s tests` and `ruff check .` pass
+- [x] A committed manifest lists every live Run with its `sessionId`, cwd, and pane id
+- [x] All eight current Runs appear
+- [x] The capture is read-only — no pane is killed, signalled, or written to
+- [x] The manifest's format is directly usable by the ticket 06 runbook
+- [x] `python -m unittest discover -s tests` and `ruff check .` pass
