@@ -19,11 +19,11 @@ Prose only. Nothing executes differently after this ticket.
 
 **Blocked by:** None — can start immediately.
 
-**Status:** ready-for-agent
+**Status:** landed — 1bfeeff
 
-- [ ] `CONTEXT.md` titled `# AttSD`, opening paragraph flat and free of the expansion
-- [ ] `Launcher` no longer appears as a defined term; **Board** and **server** cover its meaning
-- [ ] Passages discussing both servers disambiguate as **AttSD server** vs **tmux server**
-- [ ] All ADRs previously using `Launcher` read correctly in the new vocabulary
-- [ ] ADR 0027 exists, recording rename + retirement together, and names the rewritten-history trade-off
-- [ ] `python -m unittest discover -s tests` and `ruff check .` pass
+- [x] `CONTEXT.md` titled `# AttSD`, opening paragraph flat and free of the expansion
+- [x] `Launcher` no longer appears as a defined term; **Board** and **server** cover its meaning
+- [x] Passages discussing both servers disambiguate as **AttSD server** vs **tmux server**
+- [x] All ADRs previously using `Launcher` read correctly in the new vocabulary
+- [x] ADR 0027 exists, recording rename + retirement together, and names the rewritten-history trade-off
+- [x] `python -m unittest discover -s tests` and `ruff check .` pass
