@@ -2987,9 +2987,9 @@ class BoardPayloadTests(unittest.TestCase):
         # Right for a repo AND for this workspace's worktree layout, which
         # flattens the discriminator into the directory name — so two worktrees
         # of one repo are two different Workspaces (ADR 0023).
-        self.assertEqual(server._workspace("~/projects/claude-launcher"), "claude-launcher")
-        self.assertEqual(server._workspace("~/projects/.worktrees/claude-launcher-recover-filter"),
-                         "claude-launcher-recover-filter")
+        self.assertEqual(server._workspace("~/projects/attsd"), "attsd")
+        self.assertEqual(server._workspace("~/projects/.worktrees/attsd-recover-filter"),
+                         "attsd-recover-filter")
         self.assertEqual(server._workspace("~/projects/x/"), "x")
 
     def test_no_cwd_means_no_workspace(self):

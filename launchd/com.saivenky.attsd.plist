@@ -1,20 +1,20 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <!--
-  claude-launcher LaunchAgent template.
+  attsd LaunchAgent template.
 
   Before loading:
     1. Replace __SERVER_PY__ with the absolute path to server.py
-       e.g. /Users/you/projects/claude-launcher/server.py
+       e.g. /Users/you/projects/attsd/server.py
     2. (Optional) Adjust EnvironmentVariables.PATH if your `python3`
        lives somewhere unusual.
     3. Copy to ~/Library/LaunchAgents/
-    4. launchctl load ~/Library/LaunchAgents/com.saivenky.claude-launcher.plist
+    4. launchctl load ~/Library/LaunchAgents/com.saivenky.attsd.plist
 -->
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>com.saivenky.claude-launcher</string>
+    <string>com.saivenky.attsd</string>
 
     <key>ProgramArguments</key>
     <array>
@@ -36,10 +36,10 @@
     <true/>
 
     <key>StandardOutPath</key>
-    <string>/tmp/claude-launcher.log</string>
+    <string>/Users/skandallu/Library/Logs/attsd.log</string>
 
     <key>StandardErrorPath</key>
-    <string>/tmp/claude-launcher.log</string>
+    <string>/Users/skandallu/Library/Logs/attsd.log</string>
 
     <key>ProcessType</key>
     <string>Background</string>

@@ -30,7 +30,7 @@ Two words, used precisely throughout (see [CONTEXT.md](CONTEXT.md)):
 - For Remote Control: Claude Code v2.1.51+, a Pro/Max/Team/Enterprise
   plan, and full-scope login (`claude auth login`, not an API key)
 
-Runs live in a single detached `tmux -L claude-launcher` server, so there is
+Runs live in a single detached `tmux -L attsd` server, so there is
 no GUI app to focus and nothing to approve — a Run never steals the Mac's
 foreground.
 
@@ -79,7 +79,7 @@ leave, and the run keeps going. See
 [ADR 0011](docs/adr/0011-terminal-handoff-attaches-to-the-live-run.md).
 
 Respond types into a live session — and can approve a permission — so it is
-gated by a shared secret: set `CLAUDE_LAUNCHER_TOKEN` and enter it once in
+gated by a shared secret: set `ATTSD_TOKEN` and enter it once in
 the browser. Without a token the board is read-only. Before typing, it
 refuses to append onto a box that already holds unsent text, showing you
 what's there with a one-tap clear.
@@ -161,13 +161,13 @@ off the Claude app. Notes:
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `CLAUDE_LAUNCHER_HOST` | `0.0.0.0` | Bind address. Set to `127.0.0.1` for local-only. |
-| `CLAUDE_LAUNCHER_PORT` | `8765` | TCP port. |
-| `CLAUDE_LAUNCHER_DEFAULT_DIR` | `~` | Used when the form's `dir` field is blank. |
-| `CLAUDE_LAUNCHER_PROJECTS_ROOT` | `~/projects` | Allowed parent for `dir`. Anything outside is rejected. |
-| `CLAUDE_LAUNCHER_COMMAND` | `cl` | Command run after `cd`. Use `claude` if you don't have a `cl` alias. |
-| `CLAUDE_LAUNCHER_REMOTE` | `1` | Append `--remote-control` so the Claude app can drive the session. Set `0` to disable. |
-| `CLAUDE_LAUNCHER_TOKEN` | *(unset)* | Shared secret for the board's **Respond**. Unset disables Respond; the board stays read-only. |
+| `ATTSD_HOST` | `0.0.0.0` | Bind address. Set to `127.0.0.1` for local-only. |
+| `ATTSD_PORT` | `8765` | TCP port. |
+| `ATTSD_DEFAULT_DIR` | `~` | Used when the form's `dir` field is blank. |
+| `ATTSD_PROJECTS_ROOT` | `~/projects` | Allowed parent for `dir`. Anything outside is rejected. |
+| `ATTSD_COMMAND` | `cl` | Command run after `cd`. Use `claude` if you don't have a `cl` alias. |
+| `ATTSD_REMOTE` | `1` | Append `--remote-control` so the Claude app can drive the session. Set `0` to disable. |
+| `ATTSD_TOKEN` | *(unset)* | Shared secret for the board's **Respond**. Unset disables Respond; the board stays read-only. |
 
 ## Security model
 
@@ -175,14 +175,14 @@ off the Claude app. Notes:
 (spawn / resume / close) has no authentication; anyone who can reach the
 port can trigger a session, and the board serves session context over the
 network. The board's **Respond** is the exception: because it types into a
-live session and can approve a permission, it requires `CLAUDE_LAUNCHER_TOKEN`
+live session and can approve a permission, it requires `ATTSD_TOKEN`
 (checked with `hmac.compare_digest`) and is disabled until one is set. See
 [ADR 0007](docs/adr/0007-respond-requires-auth.md).
 
 What the server does enforce:
 
 - Path traversal blocked (`realpath` + prefix check on
-  `CLAUDE_LAUNCHER_PROJECTS_ROOT`). Named-task workdirs come from your own
+  `ATTSD_PROJECTS_ROOT`). Named-task workdirs come from your own
   `tasks.py` (trusted config) and are intentionally *not* confined to
   `PROJECTS_ROOT`; the generic `dir` field still is.
 - Shell injection blocked: the launch line is single-quoted, and Respond
@@ -217,14 +217,14 @@ body and check it with `hmac.compare_digest`.
 
 ## Auto-start at login (launchd)
 
-A template is in `launchd/com.saivenky.claude-launcher.plist`.
+A template is in `launchd/com.saivenky.attsd.plist`.
 
 ```sh
-cp launchd/com.saivenky.claude-launcher.plist ~/Library/LaunchAgents/
+cp launchd/com.saivenky.attsd.plist ~/Library/LaunchAgents/
 # Edit: replace __SERVER_PY__ with the absolute path to server.py
-launchctl load   ~/Library/LaunchAgents/com.saivenky.claude-launcher.plist
-launchctl unload ~/Library/LaunchAgents/com.saivenky.claude-launcher.plist  # stop
-tail -F /tmp/claude-launcher.log                                            # logs
+launchctl load   ~/Library/LaunchAgents/com.saivenky.attsd.plist
+launchctl unload ~/Library/LaunchAgents/com.saivenky.attsd.plist  # stop
+tail -F ~/Library/Logs/attsd.log                                            # logs
 ```
 
 ## License

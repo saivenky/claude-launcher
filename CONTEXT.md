@@ -193,7 +193,7 @@ type / answer / approve (each names only one shape); remote control
 
 **Attach**:
 Open a *live* **Run**'s own tmux window in a local terminal to drive it by
-hand — the copy-to-clipboard `tmux … new-session -t claude-launcher \;
+hand — the copy-to-clipboard `tmux … new-session -t attsd \;
 select-window` line the **Board** hands you per Run (the `❯` local twin of the
 `↗` **Remote Control bridge** handoff). A *handoff to a local terminal*, not a
 new **Run**: it opens an ephemeral grouped-session *view* onto the Run's

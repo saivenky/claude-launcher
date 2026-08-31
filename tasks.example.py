@@ -19,7 +19,7 @@ Fields:
     id           stable slug; also the user.cl_task tag value (Tasks only)
     label        button text shown on the page
     workdir      directory to start in (~ expanded; trusted config, so it is NOT
-                 confined to CLAUDE_LAUNCHER_PROJECTS_ROOT)
+                 confined to ATTSD_PROJECTS_ROOT)
     command      Task: initial prompt sent to claude (usually a /slash-command)
     exec         Dispatch: argv list, exec'd directly with no shell. The seed is
                  appended as one further element, so it can never be word-split

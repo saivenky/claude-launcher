@@ -48,25 +48,25 @@ import time
 import typing
 import uuid
 
-HOST = os.environ.get("CLAUDE_LAUNCHER_HOST", "0.0.0.0")
-PORT = int(os.environ.get("CLAUDE_LAUNCHER_PORT", "8765"))
-DEFAULT_DIR = os.path.expanduser(os.environ.get("CLAUDE_LAUNCHER_DEFAULT_DIR", "~"))
-PROJECTS_ROOT = os.path.expanduser(os.environ.get("CLAUDE_LAUNCHER_PROJECTS_ROOT", "~/projects"))
-COMMAND = os.environ.get("CLAUDE_LAUNCHER_COMMAND", "cl")
-REMOTE = os.environ.get("CLAUDE_LAUNCHER_REMOTE", "1").strip().lower() not in (
+HOST = os.environ.get("ATTSD_HOST", "0.0.0.0")
+PORT = int(os.environ.get("ATTSD_PORT", "8765"))
+DEFAULT_DIR = os.path.expanduser(os.environ.get("ATTSD_DEFAULT_DIR", "~"))
+PROJECTS_ROOT = os.path.expanduser(os.environ.get("ATTSD_PROJECTS_ROOT", "~/projects"))
+COMMAND = os.environ.get("ATTSD_COMMAND", "cl")
+REMOTE = os.environ.get("ATTSD_REMOTE", "1").strip().lower() not in (
     "0", "false", "no", "off", "",
 )
 
 # The dedicated tmux socket AND session name a Run lives in (ADR 0010). One
 # detached `tmux -L <socket>` server holds a single session of this name; each
-# Run is a window in it. Env-overridable in the spirit of CLAUDE_LAUNCHER_COMMAND.
-TMUX_SOCKET = os.environ.get("CLAUDE_LAUNCHER_TMUX_SOCKET", "claude-launcher")
+# Run is a window in it. Env-overridable in the spirit of ATTSD_COMMAND.
+TMUX_SOCKET = os.environ.get("ATTSD_TMUX_SOCKET", "attsd")
 
 # Respond (typing into a live Run, incl. approving a permission) removes the
 # human-in-the-loop backstop, so it is gated by a shared secret — checked with
 # hmac.compare_digest, sent by the client in the JSON body. Unset => Respond is
 # disabled entirely; the read-only Board still works. See ADR 0007.
-TOKEN = os.environ.get("CLAUDE_LAUNCHER_TOKEN", "")
+TOKEN = os.environ.get("ATTSD_TOKEN", "")
 MAX_RESPOND_CHARS = 2000
 
 # A seed is typed on a phone, not piped. Anything longer is a paste accident, and
@@ -232,7 +232,7 @@ def _tmux(*args: str, check: bool = True) -> subprocess.CompletedProcess:
 
 
 def _ensure_tmux() -> None:
-    """Idempotently ensure the detached claude-launcher server+session exist.
+    """Idempotently ensure the detached attsd server+session exist.
 
     The tmux analogue of iTerm's `activate` + create-window-if-none. When the
     session is absent we create it, then pin the render geometry: `default-size
@@ -2941,7 +2941,7 @@ def _text_route(pane: _PaneRead) -> _TextRoute:
 
 
 def _tmux_server_down() -> bool:
-    """True when the claude-launcher tmux server isn't running.
+    """True when the attsd tmux server isn't running.
 
     A dead detached server takes every Run with it, so list_runs returns [] —
     indistinguishable from 'server up, zero Runs'. `has-session` exits non-zero
@@ -3437,7 +3437,7 @@ class Handler(BaseHTTPRequestHandler):
     def _handle_respond(self, body: dict) -> None:
         # Auth gate first: no token configured => Respond is off entirely.
         if not TOKEN:
-            self._fail(403, "respond disabled: set CLAUDE_LAUNCHER_TOKEN")
+            self._fail(403, "respond disabled: set ATTSD_TOKEN")
             return
         if not hmac.compare_digest(self._str(body, "token"), TOKEN):
             self._fail(401, "bad token")
@@ -3513,7 +3513,7 @@ class Handler(BaseHTTPRequestHandler):
     def _handle_clear(self, body: dict) -> None:
         # Modifies a live Run's input, so it is token-gated like Respond.
         if not TOKEN:
-            self._fail(403, "respond disabled: set CLAUDE_LAUNCHER_TOKEN")
+            self._fail(403, "respond disabled: set ATTSD_TOKEN")
             return
         if not hmac.compare_digest(self._str(body, "token"), TOKEN):
             self._fail(401, "bad token")
@@ -3703,10 +3703,10 @@ class Handler(BaseHTTPRequestHandler):
 
 def main() -> None:
     if not shutil.which("tmux"):
-        sys.exit("claude-launcher: tmux not found on PATH — it is the Run substrate (ADR 0010)")
+        sys.exit("attsd: tmux not found on PATH — it is the Run substrate (ADR 0010)")
     _load_state()   # restore per-session priority, snooze + Nicknames from the last run
     server = ThreadingHTTPServer((HOST, PORT), Handler)
-    print(f"claude-launcher listening on {HOST}:{PORT}", file=sys.stderr)
+    print(f"attsd listening on {HOST}:{PORT}", file=sys.stderr)
     try:
         server.serve_forever()
     except KeyboardInterrupt:
