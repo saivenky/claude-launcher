@@ -11,7 +11,8 @@
     3. (Optional) Adjust EnvironmentVariables.PATH if your `python3`
        lives somewhere unusual.
     4. Copy to ~/Library/LaunchAgents/
-    5. launchctl load ~/Library/LaunchAgents/com.saivenky.attsd.plist
+    5. launchctl bootstrap gui/$UID ~/Library/LaunchAgents/com.saivenky.attsd.plist
+    6. launchctl kickstart -k gui/$UID/com.saivenky.attsd
 -->
 <plist version="1.0">
 <dict>

@@ -546,7 +546,7 @@ class HttpEndpointTests(_HttpCase):
         self.assertIn("connect-src 'self'", csp)
         self.assertNotIn("unsafe-inline", csp.split("style-src")[0])
         self.assertIn('<script src="board.js"></script>', body)
-        self.assertIn("claude board", body)
+        self.assertIn("AttSD board", body)
         self.assertIn("<noscript>", body)
 
     def test_board_js_is_served_and_innerhtml_is_the_lone_exception(self):

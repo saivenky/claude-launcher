@@ -220,13 +220,19 @@ body and check it with `hmac.compare_digest`.
 A template is in `launchd/com.saivenky.attsd.plist`.
 
 ```sh
-cp launchd/com.saivenky.attsd.plist ~/Library/LaunchAgents/
-# then replace __SERVER_PY__ and __HOME__ inside the copy
-# Edit: replace __SERVER_PY__ with the absolute path to server.py
-launchctl load   ~/Library/LaunchAgents/com.saivenky.attsd.plist
-launchctl unload ~/Library/LaunchAgents/com.saivenky.attsd.plist  # stop
-tail -F ~/Library/Logs/attsd.log                                            # logs
+sed -e "s|__SERVER_PY__|$HOME/projects/attsd/server.py|" \
+    -e "s|__HOME__|$HOME|" \
+    launchd/com.saivenky.attsd.plist > ~/Library/LaunchAgents/com.saivenky.attsd.plist
+
+launchctl bootstrap gui/$UID ~/Library/LaunchAgents/com.saivenky.attsd.plist
+launchctl kickstart -k gui/$UID/com.saivenky.attsd   # start, or restart after an edit
+launchctl bootout   gui/$UID/com.saivenky.attsd      # stop
+tail -F ~/Library/Logs/attsd.log                     # logs
 ```
+
+Use `bootstrap`/`bootout`, not the legacy `load`/`unload`. `load` registers the
+job but does not reliably honour `RunAtLoad`, so the server sits at `runs = 0`
+and never starts; `launchctl print gui/$UID/com.saivenky.attsd` shows the truth.
 
 ## License
 

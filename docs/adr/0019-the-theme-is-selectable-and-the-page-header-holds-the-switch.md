@@ -58,7 +58,7 @@ settings surface.
 
 ## Decision
 
-The control is three buttons in `<header>`, beside `◆ claude board`. State lives
+The control is three buttons in `<header>`, beside `◆ AttSD board`. State lives
 in `localStorage` under `cl_theme`: absent means auto, `light` and `dark` pin.
 Every storage access is wrapped, following the `cl_swipe` precedent — reaching
 `localStorage` at all throws where cookies are blocked, and this runs at load.
