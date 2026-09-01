@@ -2439,6 +2439,15 @@ _TOGGLE_MARKS = " ✔✓xX"
 # one of them ends the widget's question block.
 _RULE_CHARS = set("─—-═")
 
+# Claude Code 2.1.252 draws the Ask's question inside a left gutter — every
+# wrapped line of it starts `│ `. 2.1.220 drew the same text bare, and the
+# transcript's structured question has never carried it, so leaving the glyph on
+# makes the rendered prompt disagree with the tool_use that raised it: every Ask
+# reads `unmatched`, loses its cursor, and goes untappable. ADR 0020's fifth
+# version-pinned assumption, found the same way as the first four — by capturing
+# the frame a current Claude Code actually paints.
+_GUTTER_RE = re.compile(r"^[│┃|]\s?")
+
 # ── Derived from the vocabulary above; the shapes, not the glyphs. ──
 # A rendered selector line: an optional cursor glyph, an optional "N." / "N)"
 # index, then the label. Claude Code marks the current option with a cursor
@@ -2763,6 +2772,7 @@ def _pane_question(text: str) -> str:
         s = ln.strip()
         if s and set(s) <= _RULE_CHARS:           # a horizontal rule → end of the header block
             break
+        s = _GUTTER_RE.sub("", s).strip()         # 2.1.252 wraps the question in `│ `
         if s:
             q.append(s)
     return " ".join(q)[:200]

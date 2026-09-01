@@ -61,11 +61,20 @@ wrong-answer table).
 
 ## `ask_single.*` — a one-question AskUserQuestion, bare checkbox header
 
-**Claude Code 2.1.220.** Captured 2026-08-02 from the `claude-launcher` session
-that wrote ADR 0020 (`ac51fb45…`, pane `%64`). 326 of the 425 asks on disk hold
+**Claude Code 2.1.252.** Re-captured 2026-09-01 from a probe Run in
+`~/projects/attsd` (`8b210576…`, pane `%4`), replacing the 2.1.220 original
+taken from the session that wrote ADR 0020. 326 of the 425 asks on disk hold
 one question, so this is the
 **common** shape, not a degenerate one: no tab strip, a bare ` ☐ multiSelect`
 header, three options.
+
+**What the re-capture found.** 2.1.252 draws the question inside a left gutter —
+every wrapped line of it starts `│ `, where 2.1.220 drew it bare. The
+transcript's structured question has never carried that glyph, so the rendered
+prompt no longer matched the `tool_use` that raised it: every Ask read
+`unmatched`, lost its cursor and went untappable. Live on the Board, and
+invisible for as long as the fixtures stayed pinned to 2.1.220. `_GUTTER_RE` in
+`server.py` strips it; this frame is the regression test.
 
 - `ask_single.pane` / `.ansi` — the frame, `-p` and `-e`.
 - `ask_single.jsonl` — the last five conversational rows, ending on the pending
@@ -93,8 +102,8 @@ Its free-text row renders `Type something` with no full stop.
 
 ## `idle_box.*` — an ordinary idle frame, no widget, empty input box
 
-**Claude Code 2.1.220.** Captured 2026-08-02 from pane `%59`, Session
-`c6b5e741…` (`~/projects/strength-log`), idle between turns.
+**Claude Code 2.1.252.** Re-captured 2026-09-01 from a probe Run in
+`~/projects/attsd` (pane `%4`), idle between turns.
 
 - `idle_box.pane` / `.ansi` — the frame, `-p` and `-e`.
 - No `.jsonl`: nothing about this frame depends on the transcript, and a

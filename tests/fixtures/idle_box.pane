@@ -1,37 +1,40 @@
 
-  - My (a) "training-prep keeps authoring the initial range" was wrong — it doesn't author anything. The question is really about the microcycle
-  note.
-  - You asked whether per-mesocycle range changes would play well with this. They're already how it works. 15–20 isn't stale data — it's your
-  current stated intent for this block. A retune to 8–12 in the store would silently contradict the note you're still maintaining, and next
-  mesocycle you'd write 15–20 again and it would never take effect. That's the mirror image of today's bug: instead of a range nothing can
-  change, a range your authoring can't change.
+  Read 1 file
 
-  Revised options — who owns the range:
+⏺ User answered Claude's questions:
+  ⎿  · 30 of the 425 asks on disk carry a multiSelect question, where the widget wants space-to-toggle then enter. How
+     should the phone drive that? → One tap = one toggle, then a separate done (Recommended)
 
-  - (a) Store wins; retire the microcycle's rep-range column. The retune owns it outright, the agent stops sending. Clean single owner, but you
-  lose the ability to deliberately set a range per mesocycle — the thing you told me you want.
-  - (b) Microcycle authors, store adapts within the block. (Recommended.) A posted range that differs from the last one posted for that exercise
-  is a deliberate re-authoring and overwrites the stored range; a posted range identical to the last is a no-op, so the nightly repost never
-  clobbers a retune. New exercises get their range on first sight for free. You keep per-mesocycle intent, the retune adapts inside it, and
-  neither silently beats the other.
-  - (c) The retune writes back into the microcycle note. Truest to "one source", but it means strength-log editing a vault file the training
-  agent owns — a new cross-repo write path, and ADR 0039 spent real effort keeping that surface small.
+⏺ Answer recorded: one tap = one toggle, separate done.
 
-  I'd take (b). It's a change to ticket 02's scope — from "stop sending" to "adopt on change" — and it's implementable entirely inside
-  strength-log, so personal-agents needs no change at all.
+✻ Churned for 10s · done 9:28 AM
 
-  Worth noting under (b): accepting a retune to 8–12 while the note still says 15–20 leaves them disagreeing until you next edit the microcycle.
-  That's tolerable — the note is intent, the store is what the app runs on — but if that bothers you, (c) is the only option that fixes it.
+❯ Read /tmp/probe-toggled.md and follow it exactly.
 
-  Slice 03 is unaffected and still running.
+  Read 1 file
 
-✻ Waiting for 1 background agent to finish
+⏺ User answered Claude's questions:
+  ⎿  · Disregard — this is a fixture probe, not a real question. A driver will tick rows 1 and 2 and capture the frame,
+     so we know how a toggled multiSelect row renders. Any answer is fine. → Row one, Row two
 
-─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+⏺ Rows one and two selected.
+
+✻ Cogitated for 8s · done 9:30 AM
+
+❯ Read /tmp/probe-multi.md and follow it exactly.
+
+  Read 1 file
+
+⏺ User declined to answer questions
+  ⎿  · Ticket 3 (detector) is verifiable via the real-data oracle but not demoable — you can't see anything until ticket
+     4. Keep them split or merge into one tracer bullet? (Keep split (Recommended) / Merge into one)
+     · The range move is expand then contract. Should the contract half land in the same ticket as the expand, or as its
+     own? (Its own ticket (Recommended) / Same ticket)
+
+✻ Sautéed for 8s · done 9:31 AM
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 ❯ 
-─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-  📁 strength-log | 🌿 main* | 🤖 Opus 5 (1M context) | 🧠 13% (131K / 1M) | 💰 $16.89                                                       /rc
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  📁 attsd | 🌿 main* | 🤖 Opus 5 (1M context) | 🧠 2% (21K / 1M) | 💰 $0.32                                       /rc
   ⏵⏵ auto mode on (shift+tab to cycle)
-
-  ⏺ main
-  ◯ general-purpose  Inspecting inner thigh classify output                                                               4m 22s · ↓ 65.1k tokens
