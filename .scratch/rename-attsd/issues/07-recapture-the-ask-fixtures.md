@@ -17,9 +17,26 @@ thing the cutover cannot verify from the inside.
 
 **Blocked by:** 06 — socket `attsd` must exist and be serving Runs.
 
-**Status:** ready-for-agent
+**Status:** landed
 
-- [ ] `ask_single` and `ask_toggled` `.jsonl`, `.pane`, `.ansi` all regenerated on socket `attsd`
-- [ ] No fixture contains `claude-launcher`
-- [ ] Wrapping in `.pane`/`.ansi` is consistent with the capture width — no impossible break points
-- [ ] `python -m unittest discover -s tests` and `ruff check .` pass
+- [x] `ask_single` and `ask_toggled` `.jsonl`, `.pane`, `.ansi` all regenerated on socket `attsd`
+- [x] No fixture contains `claude-launcher`
+- [x] Wrapping in `.pane`/`.ansi` is consistent with the capture width — no impossible break points
+- [x] `python -m unittest discover -s tests` and `ruff check .` pass
+
+## Comments
+
+Re-captured all four families on 2.1.252, not the two this ticket named: a
+mixed-version fixture set would have been worse than either end of it.
+
+The re-capture did what it was for. 2.1.252 draws the Ask's question inside a
+`|` gutter where 2.1.220 drew it bare, so the rendered prompt stopped matching
+the `tool_use` that raised it — every Ask read `unmatched`, lost its cursor and
+went untappable on the Board. Live, and invisible for as long as the fixtures
+stayed pinned to 2.1.220. Fixed by `_GUTTER_RE`; the re-captured `ask_single` is
+the regression test.
+
+It also turned up something the fixtures cannot fully fix: on 2.1.252 a pending
+`AskUserQuestion` is not written to the transcript until it is answered, and then
+backdated. `ask_multi` and `ask_toggled` therefore pair a live frame with a tail
+trimmed after the `tool_use`. Recorded in ADR 0028 and in both stanzas.

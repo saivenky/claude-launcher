@@ -33,10 +33,20 @@ changelog, which is the whole premise of ADR 0020.
 
 ## `ask_multi.*` — a two-question AskUserQuestion, tmux renderer
 
-**Claude Code 2.1.220.** Captured 2026-08-02 from a live **Blocked** Run in
-`~/projects/strength-log` (session `c6b5e741…`, pane `%59`), blocked on an
+**Claude Code 2.1.252.** Re-captured 2026-09-01 from a probe Run in
+`~/projects/attsd` (`8b210576…`, pane `%4`), blocked on an
 `AskUserQuestion` carrying two
-questions (`Granularity`, `Expand/contract`). 99 of 425 asks across
+questions (`Granularity`, `Expand/contract`). Replaces the 2.1.220 original,
+which was taken from a live Run in `~/projects/strength-log`.
+
+**Its `.jsonl` was trimmed, deliberately.** 2.1.252 does not write an assistant
+turn until it completes, and a pending `AskUserQuestion` does not complete one:
+the `tool_use` reaches the file only once the Ask is answered, backdated to when
+it was raised (ADR 0028). So the pane-plus-pending-`tool_use` pairing these tests
+need cannot be observed live on this version. The frames were taken with the
+widget up; the tail was taken after answering and cut immediately after the
+`tool_use`, removing the answer that arrived later. Every retained row is
+verbatim — nothing was authored. 99 of 425 asks across
 `~/.claude/projects` carry more than one question, so this is the ordinary case,
 not an exotic one.
 
@@ -44,8 +54,9 @@ not an exotic one.
 - `ask_multi.ansi` — the same frame with `-e`, kept because the current tab is
   marked by ANSI attributes that `-p` drops.
 - `ask_multi.jsonl` — the last five conversational rows of the transcript,
-  ending on the pending `tool_use`. Note it *is* on disk while pending, which
-  ADR 0009 assumed was usually not the case.
+  ending on the pending `tool_use`. On 2.1.220 it *was* on disk while pending,
+  which ADR 0009 had assumed was usually not the case; on 2.1.252 it is not, and
+  ADR 0009's original assumption holds again. See ADR 0028.
 
 What it reproduces: the pane's option lines are **not contiguous** in this
 renderer — each option's description sits on the lines below its label, where
@@ -84,9 +95,18 @@ invisible for as long as the fixtures stayed pinned to 2.1.220. `_GUTTER_RE` in
 
 ## `ask_toggled.*` — a multiSelect mid-answer, two rows ticked
 
-**Claude Code 2.1.220.** Captured 2026-08-02 by driving a probe
-`AskUserQuestion` (`Space`, `Down`, `Space`) in the same session
-(`ac51fb45…`, pane `%64`) and grabbing the frame. It is the only capture that
+**Claude Code 2.1.252.** Re-captured 2026-09-01 by driving a probe
+`AskUserQuestion` (`Space`, `Down`, `Space`) in a probe Run in
+`~/projects/attsd` (`8b210576…`, pane `%4`) and grabbing the frame.
+
+**Its `.jsonl` was trimmed, deliberately.** 2.1.252 does not write an assistant
+turn until it completes, and a pending `AskUserQuestion` does not complete one:
+the `tool_use` reaches the file only once the Ask is answered, backdated to when
+it was raised (ADR 0028). So the pane-plus-pending-`tool_use` pairing these tests
+need cannot be observed live on this version. The frames were taken with the
+widget up; the tail was taken after answering and cut immediately after the
+`tool_use`, removing the answer that arrived later. Every retained row is
+verbatim — nothing was authored. It is the only capture that
 shows a *ticked* row, and it corrects two things the earlier pair could not:
 
 - The toggle box renders **inside the label** — `1. [✔] Row one`, `3. [ ] Row

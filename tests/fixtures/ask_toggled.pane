@@ -1,26 +1,26 @@
+  ⎿  · Disregard — this is a fixture probe, not a real question. A driver will tick rows 1 and 2 and capture the frame,
+     so we know how a toggled multiSelect row renders. Any answer is fine. → Row one, Row two
 
+⏺ Rows one and two selected.
 
-⏺ Diff reads well. Independent check — my own probes, not their tests:
+✻ Crunched for 7s · done 9:38 AM
 
-  Ran 3 shell commands
+❯ Read /tmp/probe-toggled.md and follow it exactly.
 
-⏺ Slice 1 validated independently — options exclude affordances, prose above the header is out of scope, tabs parse with
-  Submit correctly excluded, the false ⚠ is gone, the cursor genuinely reads (moving the glyph moves it), and both the
-  iTerm regression fixture and the permission menu still work through their own path. Slice 2 now.
+⏺ User declined to answer questions
+  ⎿  · Disregard — this is a fixture probe, not a real question. A driver will tick rows 1 and 2 and capture the frame,
+     so we know how a toggled multiSelect row renders. Any answer is fine. (Row one / Row two / Row three)
 
-⏺ Agent(Slice 2: Ask Set on the server) Opus 5 (1M context)
-  ⎿  Backgrounded agent (↓ to manage · ctrl+o to expand)
-  ⎿  Allowed by auto mode classifier
+✻ Churned for 3s · done 9:41 AM
 
-⏺ Slice 2 is running. Meanwhile, filling the gap slice 1 flagged — no capture on hand shows how a ticked multiSelect row
-  renders, which slice 3 needs. That's an experiment, not a file conflict:
+❯ Read /tmp/probe-toggled.md and follow it exactly.
 
-  Ran 1 shell command
+  Read 1 file
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 ←  ☒ Fixture  ✔ Submit  →
 
-Disregard — this is a fixture probe, not a real question. A driver will tick rows 1 and 2 and capture the frame, so
-slice 3 knows how a toggled multiSelect row renders. Any answer is fine.
+│ Disregard — this is a fixture probe, not a real question. A driver will tick rows 1 and 2 and capture the frame, so we
+│ know how a toggled multiSelect row renders. Any answer is fine.
 
   1. [✔] Row one
   First row. The driver sends Space here, then Down, then Space again, so rows one and two should both come back ticked
