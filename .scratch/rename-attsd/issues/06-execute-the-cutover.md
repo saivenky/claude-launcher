@@ -30,11 +30,15 @@ and leaves no tmux, no LaunchAgent, and no agent left to repair it.
 **Runbook:** `.scratch/rename-attsd/cutover.md` — written and ready; the
 remaining work is a human running it.
 
-**Status:** ready-for-human
+**Status:** landed
 
 - [x] A runbook exists with the exact commands in order and a check after each
-- [ ] All eight Runs are drained and then resumed on socket `attsd`
-- [ ] Both directories renamed; no path still says `claude-launcher`
-- [ ] `--resume` from `~/projects/attsd` shows the full session history
-- [ ] The new LaunchAgent is loaded and the server is reachable from the phone
-- [ ] Logs are landing in `~/Library/Logs/attsd.log`
+- [x] All eight Runs are drained and then resumed on socket `attsd`
+- [x] Both directories renamed; no path still says `claude-launcher`
+- [x] `--resume` from `~/projects/attsd` shows the full session history
+- [x] The new LaunchAgent is loaded and the server is reachable from the phone
+- [x] Logs are landing in `~/Library/Logs/attsd.log`
+
+## Comments
+
+Run by hand from Terminal.app. Repo, remote and the 28-file project slug all moved; the old socket is dead. Two things the runbook got wrong and the cutover exposed: `launchctl load` registers a job without honouring `RunAtLoad`, so the server sat at `runs = 0` until `kickstart` (README now says `bootstrap`/`kickstart`); and deleting the old LaunchAgent destroyed the only copy of `ATTSD_DEFAULT_DIR` and `ATTSD_TOKEN`, which the repo template never carried. DEFAULT_DIR restored, TOKEN rotated.

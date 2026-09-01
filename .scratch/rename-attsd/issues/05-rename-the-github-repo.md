@@ -10,8 +10,12 @@ an agent's.
 
 **Blocked by:** None — can start immediately.
 
-**Status:** ready-for-human
+**Status:** landed
 
-- [ ] Repository renamed to `attsd` on GitHub
-- [ ] `git remote -v` shows the new URL
-- [ ] A `git fetch` succeeds against the renamed remote
+- [x] Repository renamed to `attsd` on GitHub
+- [x] `git remote -v` shows the new URL
+- [x] A `git fetch` succeeds against the renamed remote
+
+## Comments
+
+Done during the cutover. An empty `attsd` repo had been created first, so the script deleted it and then renamed `claude-launcher`, keeping the history, the issues and the redirect from the old URL. Visibility stayed public.
