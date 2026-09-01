@@ -30,6 +30,16 @@
     <dict>
         <key>PATH</key>
         <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+
+        <!-- Config lives here, not in the repo. Add whichever you need; the
+             README's environment table lists them all. The installed copy is
+             the only record of these, so back it up before you touch it.
+
+        <key>ATTSD_DEFAULT_DIR</key>
+        <string>/Users/you/somewhere</string>
+        <key>ATTSD_TOKEN</key>
+        <string>a-shared-secret-enabling-Respond</string>
+        -->
     </dict>
 
     <key>RunAtLoad</key>

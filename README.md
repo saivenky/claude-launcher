@@ -230,6 +230,13 @@ launchctl bootout   gui/$UID/com.saivenky.attsd      # stop
 tail -F ~/Library/Logs/attsd.log                     # logs
 ```
 
+The installed copy under `~/Library/LaunchAgents/` is where configuration
+actually lives — `ATTSD_TOKEN` above all, since an unset token disables Respond
+entirely. The repo only ships the template, so **the installed plist is the sole
+record of your settings**: copy it somewhere before deleting or replacing it.
+Editing it needs a full `bootout` then `bootstrap` to take effect; `kickstart`
+alone restarts the process against the config launchd already has.
+
 Use `bootstrap`/`bootout`, not the legacy `load`/`unload`. `load` registers the
 job but does not reliably honour `RunAtLoad`, so the server sits at `runs = 0`
 and never starts; `launchctl print gui/$UID/com.saivenky.attsd` shows the truth.
